@@ -1,0 +1,3 @@
+Still in development.  See docs in cachedb.c for more details.
+
+Note: that this version has only had release and coverage testing in one Linux (Ubuntu 12.04 - 64bit) and no W32 versions

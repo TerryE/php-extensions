@@ -1,0 +1,21 @@
+// $Id$
+// config.w32 for cachedb extension
+//
+// *** HEALTH WARNING *** Neither this W32 build script nor the W32 variant have been tested 
+//
+ARG_ENABLE("cachedb", "Whether to enable CacheDB support", "yes");
+ARG_ENABLE("cachedb-debug", "Whether to enable CacheDB debug", "no");
+
+if(PHP_CACHEDB != 'no') {
+	var cachedb_sources = 	'php_cachedb.c cachedb.c';
+
+	if(PHP_cachedb_DEBUG != 'no') {
+		ADD_FLAG('CFLAGS_CACHEDB', '/D __DEBUG_CACHEDB__=1');
+	}
+
+	AC_DEFINE('HAVE_CACHEDB', 1);
+
+	PHP_INSTALL_HEADERS("ext/cachedb", "cachedb.h");
+
+	EXTENSION('cachedb', cachedb_sources);
+}

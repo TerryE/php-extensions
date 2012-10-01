@@ -1,0 +1,9 @@
+Please see cachedb.c source code for further details on this implementation.
+
+To build this for production use:
+
+  ./configure --enable-cachedb
+
+And for development:
+
+  CFLAGS='-O0 -g' ./configure --enable-cachedb --enable-debug --enable-maintainer-zts --with-php-config=<path to dev php version> 
