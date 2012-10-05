@@ -31,7 +31,6 @@
 #define LPC_POOL_H
 
 #include "lpc.h"
-#include "lpc_sma.h"
 
 /* #define LPC_POOL_DEBUG 1 */
 
@@ -61,54 +60,30 @@ typedef enum {
 typedef struct _lpc_pool lpc_pool;
 
 typedef void  (*lpc_pcleanup_t)(lpc_pool *pool TSRMLS_DC);
-
 typedef void* (*lpc_palloc_t)(lpc_pool *pool, size_t size TSRMLS_DC);
 typedef void  (*lpc_pfree_t) (lpc_pool *pool, void* p TSRMLS_DC);
-
 typedef void* (*lpc_protect_t)  (void *p);
 typedef void* (*lpc_unprotect_t)(void *p);
 
 struct _lpc_pool {
-    lpc_pool_type   type;
-
     lpc_malloc_t    allocate;
     lpc_free_t      deallocate;
 
     lpc_palloc_t    palloc;
     lpc_pfree_t     pfree;
 
-	lpc_protect_t   protect;
-	lpc_unprotect_t unprotect;
-
     lpc_pcleanup_t  cleanup;
 
     size_t          size;
     size_t          used;
-
-    /* lpc_realpool and lpc_unpool add more here */
 };
 
 #define lpc_pool_alloc(pool, size)  ((void *) pool->palloc(pool, size TSRMLS_CC))
 #define lpc_pool_free(pool, ptr) 	((void)   pool->pfree (pool, ptr TSRMLS_CC))
 
-#define lpc_pool_protect(pool, ptr)  (pool->protect ? \
-										(pool)->protect((ptr)) : (ptr))
-
-#define lpc_pool_unprotect(pool, ptr)  (pool->unprotect ? \
-											(pool)->unprotect((ptr)) : (ptr))
-
-extern void lpc_pool_init();
-
-extern lpc_pool* lpc_pool_create(lpc_pool_type pool_type,
-                            lpc_malloc_t allocate,
-                            lpc_free_t deallocate,
-							lpc_protect_t protect,
-							lpc_unprotect_t unprotect
-							TSRMLS_DC);
-
+extern lpc_pool* lpc_pool_create(lpc_malloc_t allocate, lpc_free_t deallocate TSRMLS_DC);
 extern void lpc_pool_destroy(lpc_pool* pool TSRMLS_DC);
-
-extern void* lpc_pmemcpy(const void* p, size_t n, lpc_pool* pool TSRMLS_DC);
-extern void* lpc_pstrdup(const char* s, lpc_pool* pool TSRMLS_DC);
+void* LPC_ALLOC lpc_pstrdup(const char* s, lpc_pool* pool TSRMLS_DC);
+void* LPC_ALLOC lpc_pmemcpy(const void* p, size_t n, lpc_pool* pool TSRMLS_DC);
 
 #endif

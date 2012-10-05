@@ -28,18 +28,11 @@
 #include "lpc_globals.h"
 #include "lpc_bin.h"
 #include "lpc_zend.h"
-#include "lpc_sma.h"
 #include "lpc_pool.h"
 #include "ext/standard/md5.h"
 #include "ext/standard/crc32.h"
 
-extern lpc_cache_t* lpc_cache;
-extern lpc_cache_t* lpc_user_cache;
-
-extern int _lpc_store(char *strkey, int strkey_len, const zval *val, const uint ttl, const int exclusive TSRMLS_DC); /* this is hacky */
-
 #define LPC_BINDUMP_DEBUG 0
-
 
 #if LPC_BINDUMP_DEBUG
 
@@ -82,7 +75,6 @@ extern int _lpc_store(char *strkey, int strkey_len, const zval *val, const uint 
 
 #endif
 
-
 static void *lpc_bd_alloc(size_t size TSRMLS_DC);
 static void lpc_bd_free(void *ptr TSRMLS_DC);
 static void *lpc_bd_alloc_ex(void *ptr_new, size_t size TSRMLS_DC);
@@ -107,7 +99,6 @@ static void lpc_swizzle_arg_info_array(lpc_bd_t *bd, zend_llist *ll, const zend_
 
 static lpc_bd_t* lpc_swizzle_bd(lpc_bd_t* bd, zend_llist *ll TSRMLS_DC);
 static int lpc_unswizzle_bd(lpc_bd_t *bd, int flags TSRMLS_DC);
-
 
 /* {{{ lpc_bd_alloc
  *  callback for copy_* functions */
@@ -648,7 +639,7 @@ static inline void lpc_bin_fixup_class_entry(zend_class_entry *ce) {
 /* }}} */
 
 /* {{{ lpc_bin_dump */
-lpc_bd_t* lpc_bin_dump(HashTable *files, HashTable *user_vars TSRMLS_DC) {
+lpc_bd_t* lpc_bin_dump(HashTable *files TSRMLS_DC) {
 
     int i;
     uint fcount;
@@ -661,25 +652,15 @@ lpc_bd_t* lpc_bin_dump(HashTable *files, HashTable *user_vars TSRMLS_DC) {
     long size=0;
     lpc_context_t ctxt;
     void *pool_ptr;
+    lpc_cache_t* lpc_cache = LPCG(lpc_cache);
 
     zend_llist_init(&ll, sizeof(void*), NULL, 0);
     zend_hash_init(&LPCG(lpc_bd_alloc_list), 0, NULL, NULL, 0);
 
     /* flip the hash for faster filter checking */
     files = lpc_flip_hash(files);
-    user_vars = lpc_flip_hash(user_vars);
-
+    
     /* get size and entry counts */
-    for(i=0; i < lpc_user_cache->num_slots; i++) {
-        sp = lpc_user_cache->slots[i];
-        for(; sp != NULL; sp = sp->next) {
-            if(lpc_bin_checkfilter(user_vars, sp->key.data.user.identifier, sp->key.data.user.identifier_len)) {
-                size += sizeof(lpc_bd_entry_t*) + sizeof(lpc_bd_entry_t);
-                size += sp->value->mem_size - (sizeof(lpc_cache_entry_t) - sizeof(lpc_cache_entry_value_t));
-                count++;
-            }
-        }
-    }
     for(i=0; i < lpc_cache->num_slots; i++) {
         sp = lpc_cache->slots[i];
         for(; sp != NULL; sp = sp->next) {
@@ -701,7 +682,7 @@ lpc_bd_t* lpc_bin_dump(HashTable *files, HashTable *user_vars TSRMLS_DC) {
     bd->size = size;
     pool_ptr = emalloc(sizeof(lpc_pool));
     lpc_bd_alloc_ex(pool_ptr, sizeof(lpc_pool) TSRMLS_CC);
-    ctxt.pool = lpc_pool_create(LPC_UNPOOL, lpc_bd_alloc, lpc_bd_free, NULL, NULL TSRMLS_CC);  /* ideally the pool wouldn't be alloc'd as part of this */
+    ctxt.pool = lpc_pool_create(lpc_bd_alloc, lpc_bd_free TSRMLS_CC);  /* ideally the pool wouldn't be alloc'd as part of this */
     if (!ctxt.pool) { /* TODO need to cleanup */
         lpc_warning("Unable to allocate memory for pool." TSRMLS_CC);
         return NULL;
@@ -710,34 +691,6 @@ lpc_bd_t* lpc_bin_dump(HashTable *files, HashTable *user_vars TSRMLS_DC) {
     lpc_bd_alloc_ex((void*)((long)bd + sizeof(lpc_bd_t)), bd->size - sizeof(lpc_bd_t) -1 TSRMLS_CC);
     bd->num_entries = count;
     bd->entries = lpc_bd_alloc_ex(NULL, sizeof(lpc_bd_entry_t) * count TSRMLS_CC);
-
-    /* User entries */
-    zend_hash_init(&LPCG(copied_zvals), 0, NULL, NULL, 0);
-    count = 0;
-    for(i=0; i < lpc_user_cache->num_slots; i++) {
-        sp = lpc_user_cache->slots[i];
-        for(; sp != NULL; sp = sp->next) {
-            if(lpc_bin_checkfilter(user_vars, sp->key.data.user.identifier, sp->key.data.user.identifier_len)) {
-                ep = &bd->entries[count];
-                ep->type = sp->value->type;
-                ep->val.user.info = lpc_bd_alloc(sp->value->data.user.info_len TSRMLS_CC);
-                memcpy(ep->val.user.info, sp->value->data.user.info, sp->value->data.user.info_len);
-                ep->val.user.info_len = sp->value->data.user.info_len;
-                ep->val.user.val = lpc_copy_zval(NULL, sp->value->data.user.val, &ctxt TSRMLS_CC);
-                ep->val.user.ttl = sp->value->data.user.ttl;
-
-                /* swizzle pointers */
-                lpc_swizzle_ptr(bd, &ll, &bd->entries[count].val.user.info);
-                zend_hash_clean(&LPCG(copied_zvals));
-                lpc_swizzle_zval(bd, &ll, bd->entries[count].val.user.val TSRMLS_CC);
-                lpc_swizzle_ptr(bd, &ll, &bd->entries[count].val.user.val);
-
-                count++;
-            }
-        }
-    }
-    zend_hash_destroy(&LPCG(copied_zvals));
-    LPCG(copied_zvals).nTableSize=0;
 
     /* File entries */
     for(i=0; i < lpc_cache->num_slots; i++) {
@@ -818,10 +771,6 @@ lpc_bd_t* lpc_bin_dump(HashTable *files, HashTable *user_vars TSRMLS_DC) {
         zend_hash_destroy(files);
         efree(files);
     }
-    if(user_vars) {
-        zend_hash_destroy(user_vars);
-        efree(user_vars);
-    }
 
     efree(pool_ptr);
 
@@ -852,7 +801,7 @@ int lpc_bin_load(lpc_bd_t *bd, int flags TSRMLS_DC) {
     t = lpc_time();
 
     for(i = 0; i < bd->num_entries; i++) {
-        ctxt.pool = lpc_pool_create(LPC_SMALL_POOL, lpc_sma_malloc, lpc_sma_free, lpc_sma_protect, lpc_sma_unprotect TSRMLS_CC);
+        ctxt.pool = lpc_pool_create(lpc_php_malloc, lpc_php_free TSRMLS_CC);
         if (!ctxt.pool) { /* TODO need to cleanup previous pools */
             lpc_warning("Unable to allocate memory for pool." TSRMLS_CC);
             goto failure;
@@ -865,29 +814,20 @@ int lpc_bin_load(lpc_bd_t *bd, int flags TSRMLS_DC) {
             case LPC_CACHE_KEY_FPFILE:
                 ctxt.copy = LPC_COPY_IN_OPCODE;
 
-                HANDLE_BLOCK_INTERRUPTIONS();
-#if NONBLOCKING_LOCK_AVAILABLE
-                if(LPCG(write_lock)) {
-                    if(!lpc_cache_write_lock(lpc_cache TSRMLS_CC)) {
-                        HANDLE_UNBLOCK_INTERRUPTIONS();
-                        return -1;
-                    }
-                }
-#endif
                 if(! (alloc_op_array = lpc_copy_op_array(NULL, ep->val.file.op_array, &ctxt TSRMLS_CC))) {
                     goto failure;
                 }
                 lpc_bin_fixup_op_array(alloc_op_array);
 
-                if(! (alloc_functions = lpc_sma_malloc(sizeof(lpc_function_t) * (ep->num_functions + 1) TSRMLS_CC))) {
+                if(! (alloc_functions = lpc_php_malloc(sizeof(lpc_function_t) * (ep->num_functions + 1) TSRMLS_CC))) {
                     goto failure;
                 }
                 for(i2=0; i2 < ep->num_functions; i2++) {
-                    if(! (alloc_functions[i2].name = lpc_xmemcpy(ep->val.file.functions[i2].name, ep->val.file.functions[i2].name_len + 1, lpc_sma_malloc TSRMLS_CC))) {
+                    if(! (alloc_functions[i2].name = lpc_xmemcpy(ep->val.file.functions[i2].name, ep->val.file.functions[i2].name_len + 1, lpc_php_malloc TSRMLS_CC))) {
                         goto failure;
                     }
                     alloc_functions[i2].name_len = ep->val.file.functions[i2].name_len;
-                    if(! (alloc_functions[i2].function = lpc_sma_malloc(sizeof(zend_function) TSRMLS_CC))) {
+                    if(! (alloc_functions[i2].function = lpc_php_malloc(sizeof(zend_function) TSRMLS_CC))) {
                         goto failure;
                     }
                     switch(ep->val.file.functions[i2].function->type) {
@@ -913,11 +853,11 @@ int lpc_bin_load(lpc_bd_t *bd, int flags TSRMLS_DC) {
                 alloc_functions[i2].name = NULL;
                 alloc_functions[i2].function = NULL;
 
-                if(! (alloc_classes = lpc_sma_malloc(sizeof(lpc_class_t) * (ep->num_classes + 1) TSRMLS_CC))) {
+                if(! (alloc_classes = lpc_php_malloc(sizeof(lpc_class_t) * (ep->num_classes + 1) TSRMLS_CC))) {
                     goto failure;
                 }
                 for(i2=0; i2 < ep->num_classes; i2++) {
-                    if(! (alloc_classes[i2].name = lpc_xmemcpy(ep->val.file.classes[i2].name, ep->val.file.classes[i2].name_len+1, lpc_sma_malloc TSRMLS_CC))) {
+                    if(! (alloc_classes[i2].name = lpc_xmemcpy(ep->val.file.classes[i2].name, ep->val.file.classes[i2].name_len+1, lpc_php_malloc TSRMLS_CC))) {
                         goto failure;
                     }
                     alloc_classes[i2].name_len = ep->val.file.classes[i2].name_len;
@@ -925,7 +865,7 @@ int lpc_bin_load(lpc_bd_t *bd, int flags TSRMLS_DC) {
                         goto failure;
                     }
                     lpc_bin_fixup_class_entry(alloc_classes[i2].class_entry);
-                    if(! (alloc_classes[i2].parent_name = lpc_xstrdup(ep->val.file.classes[i2].parent_name, lpc_sma_malloc TSRMLS_CC))) {
+                    if(! (alloc_classes[i2].parent_name = lpc_xstrdup(ep->val.file.classes[i2].parent_name, lpc_php_malloc TSRMLS_CC))) {
                         if(ep->val.file.classes[i2].parent_name != NULL) {
                             goto failure;
                         }
@@ -942,23 +882,12 @@ int lpc_bin_load(lpc_bd_t *bd, int flags TSRMLS_DC) {
                     goto failure;
                 }
 
-                if ((ret = lpc_cache_insert(lpc_cache, cache_key, cache_entry, &ctxt, t TSRMLS_CC)) != 1) {
+                if ((ret = lpc_cache_insert(LPCG(lpc_cache), cache_key, cache_entry, &ctxt, t TSRMLS_CC)) != 1) {
                     if(ret==-1) {
                         goto failure;
                     }
                 }
 
-#if NONBLOCKING_LOCK_AVAILABLE
-                if(LPCG(write_lock)) {
-                    lpc_cache_write_unlock(lpc_cache TSRMLS_CC);
-                }
-#endif
-                HANDLE_UNBLOCK_INTERRUPTIONS();
-
-                break;
-            case LPC_CACHE_KEY_USER:
-                ctxt.copy = LPC_COPY_IN_USER;
-                _lpc_store(ep->val.user.info, ep->val.user.info_len, ep->val.user.val, ep->val.user.ttl, 0 TSRMLS_CC);
                 break;
             default:
                 break;
@@ -970,12 +899,6 @@ int lpc_bin_load(lpc_bd_t *bd, int flags TSRMLS_DC) {
 failure:
     lpc_pool_destroy(ctxt.pool TSRMLS_CC);
     lpc_warning("Unable to allocate memory for lpc binary load/dump functionality." TSRMLS_CC);
-#if NONBLOCKING_LOCK_AVAILABLE
-    if(LPCG(write_lock)) {
-        lpc_cache_write_unlock(lpc_cache TSRMLS_CC);
-    }
-#endif
-    HANDLE_UNBLOCK_INTERRUPTIONS();
     return -1;
 } /* }}} */
 

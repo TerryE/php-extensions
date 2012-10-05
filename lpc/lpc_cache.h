@@ -38,16 +38,13 @@
 
 #include "lpc.h"
 #include "lpc_compile.h"
-#include "lpc_lock.h"
 #include "lpc_pool.h"
 #include "lpc_main.h"
 #include "TSRM.h"
 
 #define LPC_CACHE_ENTRY_FILE   1
-#define LPC_CACHE_ENTRY_USER   2
 
 #define LPC_CACHE_KEY_FILE     1
-#define LPC_CACHE_KEY_USER     2
 #define LPC_CACHE_KEY_FPFILE   3
 
 #ifdef PHP_WIN32
@@ -58,28 +55,6 @@ typedef ino_t lpc_ino_t;
 typedef dev_t lpc_dev_t;
 #endif
 
-/* {{{ cache locking macros */
-#define CACHE_LOCK(cache)        { LOCK(cache->header->lock);   cache->has_lock = 1; }
-#define CACHE_UNLOCK(cache)      { UNLOCK(cache->header->lock); cache->has_lock = 0; }
-#define CACHE_SAFE_LOCK(cache)   { if ((++cache->has_lock) == 1) LOCK(cache->header->lock); }
-#define CACHE_SAFE_UNLOCK(cache) { if ((--cache->has_lock) == 0) UNLOCK(cache->header->lock); }
-
-#if (RDLOCK_AVAILABLE == 1) && defined(HAVE_ATOMIC_OPERATIONS)
-#define USE_READ_LOCKS 1
-#define CACHE_RDLOCK(cache)      { RDLOCK(cache->header->lock);  cache->has_lock = 0; }
-#define CACHE_SAFE_INC(cache, obj) { ATOMIC_INC(obj); }
-#define CACHE_SAFE_DEC(cache, obj) { ATOMIC_DEC(obj); }
-#else
-#define USE_READ_LOCKS 0
-#define CACHE_RDLOCK(cache)      { LOCK(cache->header->lock);  cache->has_lock = 1; }
-#define CACHE_SAFE_INC(cache, obj) { CACHE_SAFE_LOCK(cache); obj++; CACHE_SAFE_UNLOCK(cache);}
-#define CACHE_SAFE_DEC(cache, obj) { CACHE_SAFE_LOCK(cache); obj--; CACHE_SAFE_UNLOCK(cache);}
-#endif
-
-#define CACHE_FAST_INC(cache, obj) { obj++; }
-#define CACHE_FAST_DEC(cache, obj) { obj--; }
-/* }}} */
-
 /* {{{ struct definition: lpc_cache_key_t */
 #define T lpc_cache_t*
 typedef struct lpc_cache_t lpc_cache_t; /* opaque cache type */
@@ -89,10 +64,6 @@ typedef union _lpc_cache_key_data_t {
         lpc_dev_t device;             /* the filesystem device */
         lpc_ino_t inode;              /* the filesystem inode */
     } file;
-    struct {
-        const char *identifier;
-        int identifier_len;
-    } user;
     struct {
         const char *fullpath;
         int fullpath_len;
@@ -131,12 +102,6 @@ typedef union _lpc_cache_entry_value_t {
         lpc_class_t* classes;       /* array of lpc_class_t's */
         long halt_offset;           /* value of __COMPILER_HALT_OFFSET__ for the file */
     } file;
-    struct {
-        char *info;
-        int info_len;
-        zval *val;
-        unsigned int ttl;
-    } user;
 } lpc_cache_entry_value_t;
 
 typedef struct lpc_cache_entry_t lpc_cache_entry_t;
@@ -167,14 +132,14 @@ struct lpc_cache_entry_t {
  * is needed.  This helps in cleaning up the cache and ensuring that entries 
  * hit frequently stay cached and ones not hit very often eventually disappear.
  */
-extern T lpc_cache_create(int size_hint, int gc_ttl, int ttl TSRMLS_DC);
+extern T lpc_cache_create(TSRMLS_D);
 
 /*
  * lpc_cache_destroy releases any OS resources associated with a cache object.
  * Under apache, this function can be safely called by the child processes
  * when they exit.
  */
-extern void lpc_cache_destroy(T cache TSRMLS_DC);
+extern void lpc_cache_destroy(TSRMLS_D);
 
 /*
  * lpc_cache_clear empties a cache. This can safely be called at any time,
@@ -197,9 +162,6 @@ extern void lpc_cache_clear(T cache TSRMLS_DC);
 extern int lpc_cache_insert(T cache, lpc_cache_key_t key,
                             lpc_cache_entry_t* value, lpc_context_t* ctxt, time_t t TSRMLS_DC);
 
-extern int lpc_cache_user_insert(T cache, lpc_cache_key_t key,
-                            lpc_cache_entry_t* value, lpc_context_t* ctxt, time_t t, int exclusive TSRMLS_DC);
-
 extern int *lpc_cache_insert_mult(lpc_cache_t* cache, lpc_cache_key_t* keys,
                             lpc_cache_entry_t** values, lpc_context_t *ctxt, time_t t, int num_entries TSRMLS_DC);
 
@@ -210,34 +172,6 @@ extern int *lpc_cache_insert_mult(lpc_cache_t* cache, lpc_cache_key_t* keys,
  * key is a value created by lpc_cache_make_file_key for file keys.
  */
 extern lpc_cache_entry_t* lpc_cache_find(T cache, lpc_cache_key_t key, time_t t TSRMLS_DC);
-
-/*
- * lpc_cache_user_find searches for a cache entry by its hashed identifier,
- * and returns a pointer to the entry if found, NULL otherwise.
- *
- */
-extern lpc_cache_entry_t* lpc_cache_user_find(T cache, char* strkey, int keylen, time_t t TSRMLS_DC);
-
-/*
- * lpc_cache_user_exists searches for a cache entry by its hashed identifier,
- * and returns a pointer to the entry if found, NULL otherwise.  This is a
- * quick non-locking version of lpc_cache_user_find that does not modify the
- * shared memory segment in any way.
- *
- */
-extern lpc_cache_entry_t* lpc_cache_user_exists(T cache, char* strkey, int keylen, time_t t TSRMLS_DC);
-
-/*
- * lpc_cache_delete and lpc_cache_user_delete finds an entry in the cache and deletes it.
- */
-extern int lpc_cache_delete(lpc_cache_t* cache, char *filename, int filename_len TSRMLS_DC);
-extern int lpc_cache_user_delete(lpc_cache_t* cache, char *strkey, int keylen TSRMLS_DC);
-
-/* lpc_cach_fetch_zval takes a zval in the cache and reconstructs a runtime
- * zval from it.
- *
- */
-zval* lpc_cache_fetch_zval(zval* dst, const zval* src, lpc_context_t* ctxt TSRMLS_DC);
 
 /*
  * lpc_cache_release decrements the reference count associated with a cache
@@ -286,21 +220,12 @@ extern lpc_cache_entry_t* lpc_cache_make_file_entry(const char* filename,
 
 zend_bool lpc_compile_cache_entry(lpc_cache_key_t key, zend_file_handle* h, int type, time_t t, zend_op_array** op_array_pp, lpc_cache_entry_t** cache_entry_pp TSRMLS_DC);
 
-/*
- * lpc_cache_make_user_entry creates an lpc_cache_entry_t object given an info string
- * and the zval to be stored.
- */
-extern lpc_cache_entry_t* lpc_cache_make_user_entry(const char* info, int info_len, const zval *val, lpc_context_t* ctxt, const unsigned int ttl TSRMLS_DC);
-
-extern int lpc_cache_make_user_key(lpc_cache_key_t* key, char* identifier, int identifier_len, const time_t t);
-
 /* {{{ struct definition: slot_t */
 typedef struct slot_t slot_t;
 struct slot_t {
     lpc_cache_key_t key;        /* slot key */
     lpc_cache_entry_t* value;   /* slot value */
     slot_t* next;               /* next slot in linked list */
-    unsigned long num_hits;     /* number of hits to this bucket */
     time_t creation_time;       /* time slot was initialized */
     time_t deletion_time;       /* time slot was removed from cache */
     time_t access_time;         /* time slot was last accessed */
@@ -311,49 +236,24 @@ struct slot_t {
    Any values that must be shared among processes should go in here. */
 typedef struct cache_header_t cache_header_t;
 struct cache_header_t {
-    lpc_lck_t lock;             /* read/write lock (exclusive blocking cache lock) */
-    lpc_lck_t wrlock;           /* write lock (non-blocking used to prevent cache slams) */
-    unsigned long num_hits;     /* total successful hits in cache */
-    unsigned long num_misses;   /* total unsuccessful hits in cache */
-    unsigned long num_inserts;  /* total successful inserts in cache */
-    unsigned long expunges;     /* total number of expunges */
     slot_t* deleted_list;       /* linked list of to-be-deleted slots */
     time_t start_time;          /* time the above counters were reset */
-    zend_bool busy;             /* Flag to tell clients when we are busy cleaning the cache */
     int num_entries;            /* Statistic on the number of entries */
     size_t mem_size;            /* Statistic on the memory size used by this cache */
     lpc_keyid_t lastkey;        /* the key that is being inserted (user cache) */
 };
 /* }}} */
 
-typedef void (*lpc_expunge_cb_t)(T cache, size_t n TSRMLS_DC); 
-
 /* {{{ struct definition: lpc_cache_t */
 struct lpc_cache_t {
-    void* shmaddr;                /* process (local) address of shared cache */
+    void* addr;                   /* process (local) address of now private previously shared cache */
     cache_header_t* header;       /* cache header (stored in SHM) */
     slot_t** slots;               /* array of cache slots (stored in SHM) */
     int num_slots;                /* number of slots in cache */
-    int gc_ttl;                   /* maximum time on GC list for a slot */
-    int ttl;                      /* if slot is needed and entry's access time is older than this ttl, remove it */
-    lpc_expunge_cb_t expunge_cb;  /* cache specific expunge callback to free up sma memory */
-    uint has_lock;                /* flag for possible recursive locks within the same process */
 };
 /* }}} */
 
 extern zval* lpc_cache_info(T cache, zend_bool limited TSRMLS_DC);
-extern void lpc_cache_unlock(lpc_cache_t* cache TSRMLS_DC);
-extern zend_bool lpc_cache_busy(lpc_cache_t* cache);
-extern zend_bool lpc_cache_write_lock(lpc_cache_t* cache TSRMLS_DC);
-extern void lpc_cache_write_unlock(lpc_cache_t* cache TSRMLS_DC);
-extern zend_bool lpc_cache_is_last_key(lpc_cache_t* cache, lpc_cache_key_t* key, unsigned int h, time_t t TSRMLS_DC);
-
-/* used by lpc_rfc1867 to update data in-place - not to be used elsewhere */
-
-typedef int (*lpc_cache_updater_t)(lpc_cache_t*, lpc_cache_entry_t*, void* data);
-extern int _lpc_cache_user_update(lpc_cache_t* cache, char *strkey, int keylen,
-                                    lpc_cache_updater_t updater, void* data TSRMLS_DC);
-
 
 #undef T
 #endif

@@ -18,6 +18,11 @@
  
 /* $Id: lpc_php_pcre.h 307048 2011-01-03 23:53:17Z kalle $ */
 
+/*
+  This include file is only invoked on PHP versions up to php-5.2.2 where php_pcre.h was not installed 
+  correctly and this version fixes this problem to allow LPC to be built and still use pcre.
+ */
+
 #ifndef PHP_PCRE_H
 #define PHP_PCRE_H
 

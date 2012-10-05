@@ -42,7 +42,7 @@ typedef int (*lpc_register_serializer_t)(const char* name,
  * to any function in this file.
  */
 #define LPC_SERIALIZER_ABI "0"
-#define LPC_SERIALIZER_CONSTANT "\000apc_register_serializer-" LPC_SERIALIZER_ABI
+#define LPC_SERIALIZER_CONSTANT "\000lpc_register_serializer-" LPC_SERIALIZER_ABI
 
 #if !defined(LPC_UNUSED)
 # if defined(__GNUC__)

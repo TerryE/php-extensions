@@ -33,11 +33,9 @@
 #include "lpc_php.h"
 #include "lpc_main.h"
 #include "lpc.h"
-#include "lpc_lock.h"
 #include "lpc_cache.h"
 #include "lpc_compile.h"
 #include "lpc_globals.h"
-#include "lpc_sma.h"
 #include "lpc_stack.h"
 #include "lpc_zend.h"
 #include "lpc_pool.h"
@@ -110,7 +108,7 @@ int lpc_lookup_function_hook(char *name, int len, ulong hash, zend_function **fe
     lpc_context_t ctxt = {0,};
     TSRMLS_FETCH();
 
-    ctxt.pool = lpc_pool_create(LPC_UNPOOL, lpc_php_malloc, lpc_php_free, lpc_sma_protect, lpc_sma_unprotect TSRMLS_CC);
+    ctxt.pool = lpc_pool_create(lpc_php_malloc, lpc_php_free TSRMLS_CC);
     ctxt.copy = LPC_COPY_OUT_OPCODE;
 
     if(zend_hash_quick_find(LPCG(lazy_function_table), name, len, hash, (void**)&fn) == SUCCESS) {
@@ -244,7 +242,7 @@ int lpc_lookup_class_hook(char *name, int len, ulong hash, zend_class_entry ***c
         return FAILURE;
     }
 
-    ctxt.pool = lpc_pool_create(LPC_UNPOOL, lpc_php_malloc, lpc_php_free, lpc_sma_protect, lpc_sma_unprotect TSRMLS_CC);
+    ctxt.pool = lpc_pool_create(lpc_php_malloc, lpc_php_free TSRMLS_CC);
     ctxt.copy = LPC_COPY_OUT_OPCODE;
 
     if(install_class(*cl, &ctxt, 0 TSRMLS_CC) == FAILURE) {
@@ -382,7 +380,7 @@ default_compile:
 
     lpc_stack_pop(LPCG(cache_stack)); /* pop out cache_entry */
 
-    lpc_cache_release(lpc_cache, cache_entry TSRMLS_CC);
+    lpc_cache_release(LPCG(lpc_cache), cache_entry TSRMLS_CC);
 
     /* cannot free up cache data yet, it maybe in use */
 
@@ -411,8 +409,7 @@ zend_bool lpc_compile_cache_entry(lpc_cache_key_t key, zend_file_handle* h, int 
         return FAILURE;
     }
 
-    ctxt.pool = lpc_pool_create(LPC_MEDIUM_POOL, lpc_sma_malloc, lpc_sma_free, 
-                                                 lpc_sma_protect, lpc_sma_unprotect TSRMLS_CC);
+    ctxt.pool = lpc_pool_create(lpc_php_malloc, lpc_php_free TSRMLS_CC);
     if (!ctxt.pool) {
         lpc_warning("Unable to allocate memory for pool." TSRMLS_CC);
         return FAILURE;
@@ -492,7 +489,7 @@ static zend_op_array* my_compile_file(zend_file_handle* h,
     int bailout=0;
 	const char* filename = NULL;
 
-    if (!LPCG(enabled) || lpc_cache_busy(lpc_cache)) {
+    if (!LPCG(enabled)) {
         return old_compile_file(h, type TSRMLS_CC);
     }
 
@@ -512,7 +509,7 @@ static zend_op_array* my_compile_file(zend_file_handle* h,
     } else if(!LPCG(cache_by_default)) {
         return old_compile_file(h, type TSRMLS_CC);
     }
-    LPCG(current_cache) = lpc_cache;
+    LPCG(current_cache) = LPCG(lpc_cache);
 
 
     t = lpc_time();
@@ -526,7 +523,7 @@ static zend_op_array* my_compile_file(zend_file_handle* h,
 
     if(!LPCG(force_file_update)) {
         /* search for the file in the cache */
-        cache_entry = lpc_cache_find(lpc_cache, key, t TSRMLS_CC);
+        cache_entry = lpc_cache_find(LPCG(lpc_cache), key, t TSRMLS_CC);
         ctxt.force_update = 0;
     } else {
         cache_entry = NULL;
@@ -536,8 +533,7 @@ static zend_op_array* my_compile_file(zend_file_handle* h,
     if (cache_entry != NULL) {
         int dummy = 1;
         
-        ctxt.pool = lpc_pool_create(LPC_UNPOOL, lpc_php_malloc, lpc_php_free,
-                                                lpc_sma_protect, lpc_sma_unprotect TSRMLS_CC);
+        ctxt.pool = lpc_pool_create(lpc_php_malloc, lpc_php_free TSRMLS_CC);
         if (!ctxt.pool) {
             lpc_warning("Unable to allocate memory for pool." TSRMLS_CC);
             return old_compile_file(h, type TSRMLS_CC);
@@ -552,10 +548,7 @@ static zend_op_array* my_compile_file(zend_file_handle* h,
         op_array = cached_compile(h, type, &ctxt TSRMLS_CC);
 
         if(op_array) {
-#ifdef LPC_FILEHITS
-            /* If the file comes from the cache, add it to the global request file list */
-            add_next_index_string(LPCG(filehits), h->filename, 1);
-#endif
+
             /* this is an unpool, which has no cleanup - this only free's the pool header */
             lpc_pool_destroy(ctxt.pool TSRMLS_CC);
             
@@ -595,22 +588,11 @@ static zend_op_array* my_compile_file(zend_file_handle* h,
         key.mtime = fileinfo.st_buf.sb.st_mtime;
     }
 
-    HANDLE_BLOCK_INTERRUPTIONS();
-
-#if NONBLOCKING_LOCK_AVAILABLE
-    if(LPCG(write_lock)) {
-        if(!lpc_cache_write_lock(lpc_cache TSRMLS_CC)) {
-            HANDLE_UNBLOCK_INTERRUPTIONS();
-            return old_compile_file(h, type TSRMLS_CC);
-        }
-    }
-#endif
-
     zend_try {
         if (lpc_compile_cache_entry(key, h, type, t, &op_array, &cache_entry TSRMLS_CC) == SUCCESS) {
             ctxt.pool = cache_entry->pool;
             ctxt.copy = LPC_COPY_IN_OPCODE;
-            if (lpc_cache_insert(lpc_cache, key, cache_entry, &ctxt, t TSRMLS_CC) != 1) {
+            if (lpc_cache_insert(LPCG(lpc_cache), key, cache_entry, &ctxt, t TSRMLS_CC) != 1) {
                 lpc_pool_destroy(ctxt.pool TSRMLS_CC);
                 ctxt.pool = NULL;
             }
@@ -621,134 +603,9 @@ static zend_op_array* my_compile_file(zend_file_handle* h,
 
     LPCG(current_cache) = NULL;
 
-#if NONBLOCKING_LOCK_AVAILABLE
-    if(LPCG(write_lock)) {
-        lpc_cache_write_unlock(lpc_cache TSRMLS_CC);
-    }
-#endif
-    HANDLE_UNBLOCK_INTERRUPTIONS();
-
     if (bailout) zend_bailout();
 
     return op_array;
-}
-/* }}} */
-
-/* {{{ data preload */
-
-extern int _lpc_store(char *strkey, int strkey_len, const zval *val, const unsigned int ttl, const int exclusive TSRMLS_DC);
-
-static zval* data_unserialize(const char *filename TSRMLS_DC)
-{
-    zval* retval;
-    long len = 0;
-    struct stat sb;
-    char *contents, *tmp;
-    FILE *fp;
-    php_unserialize_data_t var_hash;
-
-    if(VCWD_STAT(filename, &sb) == -1) {
-        return NULL;
-    }
-
-    fp = fopen(filename, "rb");
-
-    len = sizeof(char)*sb.st_size;
-
-    tmp = contents = malloc(len);
-
-    if(!contents) {
-       return NULL;
-    }
-
-    if(fread(contents, 1, len, fp) < 1) {	
-      free(contents);
-      return NULL;
-    }
-
-    MAKE_STD_ZVAL(retval);
-
-    PHP_VAR_UNSERIALIZE_INIT(var_hash);
-    
-    /* I wish I could use json */
-    if(!php_var_unserialize(&retval, (const unsigned char**)&tmp, (const unsigned char*)(contents+len), &var_hash TSRMLS_CC)) {
-        zval_ptr_dtor(&retval);
-        return NULL;
-    }
-
-    PHP_VAR_UNSERIALIZE_DESTROY(var_hash);
-
-    free(contents);
-    fclose(fp);
-
-    return retval;
-}
-
-static int lpc_load_data(const char *data_file TSRMLS_DC)
-{
-    char *p;
-    char key[MAXPATHLEN] = {0,};
-    unsigned int key_len;
-    zval *data;
-
-    p = strrchr(data_file, DEFAULT_SLASH);
-
-    if(p && p[1]) {
-        strlcpy(key, p+1, sizeof(key));
-        p = strrchr(key, '.');
-
-        if(p) {
-            p[0] = '\0';
-            key_len = strlen(key);
-
-            data = data_unserialize(data_file TSRMLS_CC);
-            if(data) {
-                _lpc_store(key, key_len, data, 0, 1 TSRMLS_CC);
-            }
-            return 1;
-        }
-    }
-
-    return 0;
-}
-
-static int lpc_walk_dir(const char *path TSRMLS_DC)
-{
-    char file[MAXPATHLEN]={0,};
-    int ndir, i;
-    char *p = NULL;
-    struct dirent **namelist = NULL;
-
-    if ((ndir = php_scandir(path, &namelist, 0, php_alphasort)) > 0)
-    {
-        for (i = 0; i < ndir; i++)
-        {
-            /* check for extension */
-            if (!(p = strrchr(namelist[i]->d_name, '.'))
-                    || (p && strcmp(p, ".data")))
-            {
-                free(namelist[i]);
-                continue;
-            }
-            snprintf(file, MAXPATHLEN, "%s%c%s",
-                    path, DEFAULT_SLASH, namelist[i]->d_name);
-            if(!lpc_load_data(file TSRMLS_CC))
-            {
-                /* print error */
-            }
-            free(namelist[i]);
-        }
-        free(namelist);
-    }
-
-    return 1;
-}
-
-void lpc_data_preload(TSRMLS_D)
-{
-    if(!LPCG(preload_path)) return;
-
-    lpc_walk_dir(LPCG(preload_path) TSRMLS_CC);
 }
 /* }}} */
 
@@ -801,29 +658,20 @@ lpc_serializer_t* lpc_get_serializers(TSRMLS_D)
 int lpc_module_init(int module_number TSRMLS_DC)
 {
     /* lpc initialization */
-#if LPC_MMAP
-    lpc_sma_init(LPCG(shm_segments), LPCG(shm_size), LPCG(mmap_file_mask) TSRMLS_CC);
-#else
-    lpc_sma_init(LPCG(shm_segments), LPCG(shm_size), NULL TSRMLS_CC);
-#endif
-    lpc_cache = lpc_cache_create(LPCG(num_files_hint), LPCG(gc_ttl), LPCG(ttl) TSRMLS_CC);
-    lpc_user_cache = lpc_cache_create(LPCG(user_entries_hint), LPCG(gc_ttl), LPCG(user_ttl) TSRMLS_CC);
+
+    LPCG(lpc_cache) = lpc_cache_create(TSRMLS_C);
 
     /* override compilation */
     old_compile_file = zend_compile_file;
     zend_compile_file = my_compile_file;
-    REGISTER_LONG_CONSTANT("\000apc_magic", (long)&set_compile_hook, CONST_PERSISTENT | CONST_CS);
-    REGISTER_LONG_CONSTANT("\000apc_compile_file", (long)&my_compile_file, CONST_PERSISTENT | CONST_CS);
+    REGISTER_LONG_CONSTANT("\000lpc_magic", (long)&set_compile_hook, CONST_PERSISTENT | CONST_CS);
+    REGISTER_LONG_CONSTANT("\000lpc_compile_file", (long)&my_compile_file, CONST_PERSISTENT | CONST_CS);
     REGISTER_LONG_CONSTANT(LPC_SERIALIZER_CONSTANT, (long)&_lpc_register_serializer, CONST_PERSISTENT | CONST_CS);
 
     /* test out the constant function pointer */
     lpc_register_serializer("php", LPC_SERIALIZER_NAME(php), LPC_UNSERIALIZER_NAME(php), NULL TSRMLS_CC);
 
     assert(lpc_serializers[0].name != NULL);
-
-    lpc_pool_init();
-
-    lpc_data_preload(TSRMLS_C);
 
 #if LPC_HAVE_LOOKUP_HOOKS
     if(LPCG(lazy_functions)) {
@@ -884,12 +732,10 @@ int lpc_module_shutdown(TSRMLS_D)
                     cache_entry->data.file.classes[i].name_len+1);
             }
         }
-        lpc_cache_release(lpc_cache, cache_entry TSRMLS_CC);
+        lpc_cache_release(LPCG(lpc_cache), cache_entry TSRMLS_CC);
     }
 
-    lpc_cache_destroy(lpc_cache TSRMLS_CC);
-    lpc_cache_destroy(lpc_user_cache TSRMLS_CC);
-    lpc_sma_cleanup(TSRMLS_C);
+    lpc_cache_destroy(TSRMLS_C);
 
 #ifdef ZEND_ENGINE_2_4
     lpc_interned_strings_shutdown(TSRMLS_C);
@@ -952,7 +798,7 @@ static void lpc_deactivate(TSRMLS_D)
                 lpc_free_class_entry_after_execution(zce TSRMLS_CC);
             }
         }
-        lpc_cache_release(lpc_cache, cache_entry TSRMLS_CC);
+        lpc_cache_release(LPCG(lpc_cache), cache_entry TSRMLS_CC);
     }
 }
 /* }}} */
@@ -984,11 +830,6 @@ int lpc_request_init(TSRMLS_D)
     }
 #endif
 
-#ifdef LPC_FILEHITS
-    ALLOC_INIT_ZVAL(LPCG(filehits));
-    array_init(LPCG(filehits));
-#endif
-
     return 0;
 }
 
@@ -1003,14 +844,9 @@ int lpc_request_shutdown(TSRMLS_D)
     if(LPCG(lazy_function_table)) {
         zend_hash_destroy(LPCG(lazy_function_table));
         efree(LPCG(lazy_function_table));
-    }
-#endif
+#endif   
 
     lpc_deactivate(TSRMLS_C);
-
-#ifdef LPC_FILEHITS
-    zval_ptr_dtor(&LPCG(filehits));
-#endif
 
     return 0;
 }

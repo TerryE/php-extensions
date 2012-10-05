@@ -39,41 +39,11 @@
 #include "lpc_php.h"
 #include "lpc_main.h"
 
-/* {{{ struct lpc_rfc1867_data */
-
-typedef struct _lpc_rfc1867_data lpc_rfc1867_data;
-
-struct _lpc_rfc1867_data {
-    char tracking_key[64];
-    int  key_length;
-    size_t content_length;
-    char filename[128];
-    char name[64];
-    char *temp_filename;
-    int cancel_upload;
-    double start_time;
-    size_t bytes_processed;
-    size_t prev_bytes_processed;
-    int update_freq;
-    double rate;
-    int started;
-};
-/* }}} */
-
-
 ZEND_BEGIN_MODULE_GLOBALS(lpc)
     /* configuration parameters */
     zend_bool enabled;      /* if true, lpc is enabled (defaults to true) */
     long shm_segments;      /* number of shared memory segments to use */
     long shm_size;          /* size of each shared memory segment (in MB) */
-    long num_files_hint;    /* parameter to lpc_cache_create */
-    long user_entries_hint;
-    long gc_ttl;            /* parameter to lpc_cache_create */
-    long ttl;               /* parameter to lpc_cache_create */
-    long user_ttl;
-#if LPC_MMAP
-    char *mmap_file_mask;   /* mktemp-style file-mask to pass to mmap */
-#endif
     char** filters;         /* array of regex filters that prevent caching */
     void* compiled_filters; /* compiled regex filters */
 
@@ -88,19 +58,9 @@ ZEND_BEGIN_MODULE_GLOBALS(lpc)
     zend_bool fpstat;            /* true if fullpath includes should be stat'ed */
     zend_bool canonicalize;      /* true if relative paths should be canonicalized in no-stat mode */
     zend_bool stat_ctime;        /* true if ctime in addition to mtime should be checked */
-    zend_bool write_lock;        /* true for a global write lock */
-    zend_bool slam_defense;      /* true for user cache slam defense */ 
     zend_bool report_autofilter; /* true for auto-filter warnings */
     zend_bool include_once;      /* Override the ZEND_INCLUDE_OR_EVAL opcode handler to avoid pointless fopen()s [still experimental] */
     lpc_optimize_function_t lpc_optimize_function;   /* optimizer function callback */
-#ifdef MULTIPART_EVENT_FORMDATA
-    zend_bool rfc1867;            /* Flag to enable rfc1867 handler */
-    char* rfc1867_prefix;         /* Key prefix */
-    char* rfc1867_name;           /* Name of hidden field to activate upload progress/key suffix */
-    double rfc1867_freq;          /* Update frequency as percentage or bytes */
-    long rfc1867_ttl;             /* TTL for rfc1867 entries */
-    lpc_rfc1867_data rfc1867_data;/* Per-request data */
-#endif
     HashTable copied_zvals;      /* my_copy recursion detection list */
     zend_bool force_file_update; /* force files to be updated during lpc_compile_file */
     char canon_path[MAXPATHLEN]; /* canonical path for key data */
@@ -109,8 +69,7 @@ ZEND_BEGIN_MODULE_GLOBALS(lpc)
 #endif
     zend_bool coredump_unmap;    /* Trap signals that coredump and unmap shared memory */
     lpc_cache_t *current_cache;  /* current cache being modified/read */
-    char *preload_path;
-    zend_bool file_md5;           /* record md5 hash of files */
+    zend_bool file_md5;          /* record md5 hash of files */
     void *lpc_bd_alloc_ptr;      /* bindump alloc() ptr */
     void *lpc_bd_alloc_ubptr;    /* bindump alloc() upper bound ptr */
     HashTable lpc_bd_alloc_list; /* bindump alloc() ptr list */
@@ -122,8 +81,12 @@ ZEND_BEGIN_MODULE_GLOBALS(lpc)
 #ifdef ZEND_ENGINE_2_4
     long shm_strings_buffer;
 #endif
-    char *serializer_name;       /* the serializer config option */
-    lpc_serializer_t *serializer;/* the actual serializer in use */
+    char *serializer_name;        /* the serializer config option */
+    lpc_serializer_t *serializer; /* the actual serializer in use */
+    lpc_cache_t* lpc_cache;       /* the global compiler cache */
+	zend_bool force_cache_delete; /* Flag that the file D/B is to be deleted and further loading disabbled */
+    char *clear_cookie;	          /* Name of Cookie which will force a cache clear */
+    char *clear_parameter;        /* Name of Request parameter which will force a cache clear */
 ZEND_END_MODULE_GLOBALS(lpc)
 
 /* (the following declaration is defined in php_lpc.c) */
@@ -136,8 +99,6 @@ ZEND_EXTERN_MODULE_GLOBALS(lpc)
 #endif
 
 /* True globals */
-extern lpc_cache_t* lpc_cache;       /* the global compiler cache */
-extern lpc_cache_t* lpc_user_cache;  /* the global user content cache */
 extern void* lpc_compiled_filters;   /* compiled filters */
 
 #endif

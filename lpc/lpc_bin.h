@@ -48,7 +48,7 @@ typedef struct _lpc_bd_t {
     void ***swizzled_ptrs;
 } lpc_bd_t;
 
-lpc_bd_t* lpc_bin_dump(HashTable *files, HashTable *user_vars TSRMLS_DC);
+lpc_bd_t* lpc_bin_dump(HashTable *files TSRMLS_DC);
 int lpc_bin_load(lpc_bd_t *bd, int flags TSRMLS_DC);
 
 #endif
