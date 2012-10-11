@@ -25,82 +25,166 @@
 
  */
 
-/* $Id: lpc_pool.c 307328 2011-01-10 06:21:53Z gopalv $ */
+/* $Id: $ */
 
 
 #include "lpc_pool.h"
+#include "lpc_globals.h"
+
 #include <assert.h>
 
 #ifdef HAVE_VALGRIND_MEMCHECK_H
 #include <valgrind/memcheck.h>
 #endif
 
-/* {{{ lpc_pool_destroy */
-void lpc_pool_destroy(lpc_pool *pool TSRMLS_DC)
+/* The APC REALPOOL and BDPOOL implementations used a hastable to track individual 
+ * elements and for the DTOR.  However, since the element DTOR is private, a simple
+ * linked list is maintained as a prefix to individual elements enabling the pool
+ * DTOR to chain down this to cleanup.
+ */
+
+/* emalloc but relay the calling location reference */
+#define pool_emalloc(size) _emalloc((size) ZEND_FILE_LINE_RELAY_CC ZEND_FILE_LINE_EMPTY_CC)
+
+#define BD_ALLOC_UNIT 16384*sizeof(void *)
+
+/* {{{ _lpc_pool_create */
+lpc_pool* _lpc_pool_create(lpc_pool_type_t type TSRMLS_DC ZEND_FILE_LINE_DC)
 {
-    lpc_free_t deallocate = pool->deallocate;
-    lpc_pcleanup_t cleanup = pool->cleanup;
+    lpc_pool *pool;
 
-    cleanup(pool TSRMLS_CC);
-    deallocate(pool TSRMLS_CC);
-}
-/* }}} */
+	switch(type) {
+ 
+		case LPC_LOCALPOOL:
+		case LPC_SHAREDPOOL:
+		case LPC_SERIALPOOL:
+			break;
 
-static void* _lpc_pool_alloc(lpc_pool* pool, size_t size TSRMLS_DC) 
-{
-    lpc_malloc_t allocate = pool->allocate;
+		default:
+#ifdef ZEND_DEBUG
+			lpc_error("Invalid pool type %d at %s:%d" TSRMLS_CC, type ZEND_FILE_LINE_RELAY_CC);
+#else
+			lpc_error("Invalid pool type %d" TSRMLS_CC type);
+#endif
+			return 0;
+	}
 
-    pool->size += size;
-    pool->used += size;
+    pool = pool_emalloc(sizeof(lpc_pool));
 
-    return allocate(size TSRMLS_CC);
-}
+#ifdef APC_DEBUG
+	pool->orig_filename = estrdup(__zend_filename);
+	pool->orig_lineno   = __zend_lineno;
+#endif
 
-static void _lpc_pool_free(lpc_pool* pool, void *ptr TSRMLS_DC)
-{
-    lpc_free_t deallocate = ((lpc_pool*) pool)->deallocate;
-    deallocate(ptr TSRMLS_CC);
-}
+	pool->type  = type;
+    pool->size  = 0;
+    pool->count = 0;
 
-static void _lpc_pool_cleanup(lpc_pool* pool TSRMLS_DC)
-{
-}
+	if (type == LPC_SERIALPOOL) {
+		pool->bd_storage   = pool_emalloc(BD_ALLOC_UNIT);
+		pool->bd_allocated = BD_ALLOC_UNIT;
+		pool->element_tail = NULL;
 
-lpc_pool* lpc_pool_create(lpc_malloc_t allocate, lpc_free_t deallocate TSRMLS_DC)
-{
-    lpc_pool* pool = allocate(sizeof(lpc_pool) TSRMLS_CC);
+	} else {
+		pool->bd_storage   = NULL;
+		pool->bd_allocated = 0;
+		pool->element_tail = &(pool->element_head);
+	}
+	pool->bd_next_free     = 0;
+	pool->element_head     = NULL;
 
-    if (!pool) {
-        return NULL;
-    }
-
-    pool->allocate   = allocate;
-    pool->deallocate = deallocate;
-
-    pool->palloc     = _lpc_pool_alloc;
-    pool->pfree      = _lpc_pool_free;
-    pool->cleanup    = _lpc_pool_cleanup;
-
-    pool->used       = 0;
-    pool->size       = 0;
-
+    zend_hash_next_index_insert(&LPCG(pools), &pool, sizeof(lpc_pool *), NULL);
     return pool;
 }
 /* }}} */
 
-/* {{{ lpc_pstrdup */
-void* LPC_ALLOC lpc_pstrdup(const char* s, lpc_pool* pool TSRMLS_DC)
+/* {{{ _lpc_pool_destroy */
+inline static void free_entry (void *p) { efree(p); }
+void _lpc_pool_destroy(lpc_pool *pool TSRMLS_DC ZEND_FILE_LINE_DC)
 {
-    return s != NULL ? lpc_pmemcpy(s, (strlen(s) + 1), pool TSRMLS_CC) : NULL;
+	if (pool->type == LPC_SERIALPOOL) {
+		efree(pool->bd_storage);
+	} else if (pool->element_head != NULL) {
+		void *e, *e_nxt;
+		int i;
+		/* Walk the linked list freeing the element storage */
+		for (e = pool->element_head, i=0 ; e != pool->element_tail; e = e_nxt) {
+			e_nxt = *((void **) e);
+lpc_debug("freeing pool element %d at %x in pool %x" TSRMLS_CC, i++, (uint) e, (uint) pool); 
+			efree(e);
+		}
+	}
+
+#ifdef APC_DEBUG
+	efree(pool->orig_filename);
+#endif
+
+    efree(pool);
+}
+/* }}} */
+
+/* {{{ _lpc_pool_alloc */
+void* _lpc_pool_alloc(lpc_pool* pool, size_t size TSRMLS_DC ZEND_FILE_LINE_DC)
+{
+	void *element;
+
+ 	if (pool->type == LPC_SERIALPOOL) {
+		/* Unlike APC, LPC explicitly rounds up any sizes to the next sizeof(void *)
+		 * boundary as it would be nice for this code to work on ARM without barfing */
+		size_t rounded_size = (size + sizeof(void *) - 1) & (~((size_t) (sizeof(void *)-1)));
+		rounded_size += sizeof(off_t);
+
+		/* grow the serial storage by another alloc unit size if necessary */
+		if (pool->bd_next_free + rounded_size > pool->bd_allocated) {
+			pool->bd_allocated += BD_ALLOC_UNIT;
+			pool->bd_storage    = erealloc(pool->bd_storage, pool->bd_allocated);
+		}
+
+		element = (unsigned char *) pool->bd_storage + (off_t) pool->bd_next_free;
+		pool->bd_next_free += rounded_size;
+		*((size_t *) element) = pool->bd_next_free;   /* PIC offset of next element */
+		element = ((size_t *) element)+1;             /* bump past offset to element itself */
+
+	} else {  /* LPC_LOCALPOOL or LPC_SHAREDPOOL */
+
+		element = pool_emalloc(sizeof(void *) + size);
+		*((void **)pool->element_tail) = element;    /* chain last element to this one */
+		pool->element_tail = element;		         /* and update tail pointer */
+		element = ((void **) element)+1;             /* bump past link to element itself */
+
+	}
+
+#if LPC_BINDUMP_DEBUG & 0
+			lpc_notice("lpc_bd_alloc: rval: 0x%x  offset: 0x%x  pool_size: 0x%x  size: %d" TSRMLS_CC, 
+			            (ulong) element, pool->bd_next_free, pool->bd_pool_size, size);
+#endif
+
+    pool->size += size;
+    pool->count++;
+
+    return element;
+}
+/* }}} */
+
+/* There is no longer any lpc_pool_free function as the only free operation is in the pool DTOR */
+
+/* {{{ lpc_pstrdup */
+
+void* _lpc_pool_strdup(const char* s, lpc_pool* pool TSRMLS_DC ZEND_FILE_LINE_DC)
+{
+    return (s != NULL) ? 
+		_lpc_pool_memcpy(s, (strlen(s) + 1), pool TSRMLS_CC ZEND_FILE_LINE_RELAY_CC) : 
+		NULL;
 }
 /* }}} */
 
 /* {{{ lpc_pmemcpy */
-void* LPC_ALLOC lpc_pmemcpy(const void* p, size_t n, lpc_pool* pool TSRMLS_DC)
+void* _lpc_pool_memcpy(const void* p, size_t n, lpc_pool* pool TSRMLS_DC ZEND_FILE_LINE_DC)
 {
     void* q;
 
-    if (p != NULL && (q = lpc_pool_alloc(pool, n)) != NULL) {
+    if (p != NULL && 
+		(q = _lpc_pool_alloc(pool, n TSRMLS_CC ZEND_FILE_LINE_RELAY_CC)) != NULL) {
         memcpy(q, p, n);
         return q;
     }
@@ -108,7 +192,7 @@ void* LPC_ALLOC lpc_pmemcpy(const void* p, size_t n, lpc_pool* pool TSRMLS_DC)
 }
 /* }}} */
 
-
+#define pool_emalloc(size) _emalloc((size) ZEND_FILE_LINE_RELAY_CC ZEND_FILE_LINE_EMPTY_CC)
 /*
  * Local variables:
  * tab-width: 4

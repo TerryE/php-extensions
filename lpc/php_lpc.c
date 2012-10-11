@@ -53,53 +53,10 @@ PHP_FUNCTION(lpc_bin_load);
 
 /* {{{ ZEND_DECLARE_MODULE_GLOBALS(lpc) */
 ZEND_DECLARE_MODULE_GLOBALS(lpc)
+/* }}} */
 
-static void php_lpc_init_globals(zend_lpc_globals* lpc_globals TSRMLS_DC)
-{
-    lpc_globals->filters = NULL;
-    lpc_globals->compiled_filters = NULL;
-    lpc_globals->initialized = 0;
-    lpc_globals->cache_stack = lpc_stack_create(0 TSRMLS_CC);
-    lpc_globals->cache_by_default = 1;
-    lpc_globals->fpstat = 1;
-    lpc_globals->canonicalize = 1;
-    lpc_globals->stat_ctime = 0;
-    lpc_globals->report_autofilter = 0;
-    lpc_globals->include_once = 0;
-    lpc_globals->lpc_optimize_function = NULL;
-    memset(&lpc_globals->copied_zvals, 0, sizeof(HashTable));
-    lpc_globals->force_file_update = 0;
-    lpc_globals->coredump_unmap = 0;
-    lpc_globals->use_request_time = 1;
-    lpc_globals->lazy_class_table = NULL;
-    lpc_globals->lazy_function_table = NULL;
-    lpc_globals->serializer_name = NULL;
-    lpc_globals->serializer = NULL;
-    lpc_globals->lpc_cache = NULL;
-    lpc_globals->clear_cookie = NULL;
-    lpc_globals->clear_parameter = NULL;
-}
-
-static void php_lpc_shutdown_globals(zend_lpc_globals* lpc_globals TSRMLS_DC)
-{
-    /* deallocate the ignore patterns */
-    if (lpc_globals->filters != NULL) {
-        int i;
-        for (i=0; lpc_globals->filters[i] != NULL; i++) {
-            lpc_efree(lpc_globals->filters[i] TSRMLS_CC);
-        }
-        lpc_efree(lpc_globals->filters TSRMLS_CC);
-    }
-
-    /* the stack should be empty */
-    assert(lpc_stack_size(lpc_globals->cache_stack) == 0);
-
-    /* lpc cleanup */
-    lpc_stack_destroy(lpc_globals->cache_stack TSRMLS_CC);
-
-    /* the rest of the globals are cleaned up in lpc_module_shutdown() */
-}
-
+/* {{{ proto long lpc_atol( string str, int str_len)
+	   Chain to zend_atol, except for PHP 5.2.x which doesn't handle [KMG], so in this case reimplement */
 static long lpc_atol(const char *str, int str_len)
 {
 #if PHP_MAJOR_VERSION >= 6 || PHP_MAJOR_VERSION == 5 && PHP_MINOR_VERSION >= 3
@@ -116,56 +73,46 @@ static long lpc_atol(const char *str, int str_len)
 
     if (str_len > 0) {
         switch (str[str_len - 1]) {
-            case 'g':
-            case 'G':
+            case 'g': case 'G':
                 retval *= 1024;
                 /* break intentionally missing */
-            case 'm':
-            case 'M':
+            case 'm': case 'M':
                 retval *= 1024;
                 /* break intentionally missing */
-            case 'k':
-            case 'K':
+            case 'k': case 'K':
                 retval *= 1024;
                 break;
         }
     }
-
     return retval;
 #endif
 }
-
 /* }}} */
 
-/* {{{ PHP_INI */
-
-static PHP_INI_MH(OnUpdate_filters) /* {{{ */
-{
-    LPCG(filters) = lpc_tokenize(new_value, ',' TSRMLS_CC);
-    return SUCCESS;
-}
+/* {{{ PHP_INI 
+   Register INI entries.  Note the the SYSTEM / PERDIR split is subject to review */
 
 #define std_ini_bool(k,d,s,a,v)  STD_PHP_INI_BOOLEAN("lpc." k,d,s,a,v,zend_lpc_globals, lpc_globals) 
 #define std_ini_entry(k,d,s,a,v) STD_PHP_INI_ENTRY("lpc." k,d,s,a,v,zend_lpc_globals, lpc_globals) 
+#define perdir_ini_entry(k,d) PHP_INI_ENTRY("lpc." k,d,PHP_INI_PERDIR,NULL) 
 PHP_INI_BEGIN()
-std_ini_bool( "enabled",                 "1", PHP_INI_SYSTEM, OnUpdateBool,   enabled)
-std_ini_bool( "cache_by_default",        "1", PHP_INI_ALL,    OnUpdateBool,   cache_by_default)
-std_ini_bool( "enable_cli",              "0", PHP_INI_SYSTEM, OnUpdateBool,   enable_cli)
-std_ini_entry("file_update_protection",  "2", PHP_INI_SYSTEM, OnUpdateLong,   file_update_protection)
-std_ini_entry("max_file_size",          "1M", PHP_INI_SYSTEM, OnUpdateLong,   max_file_size)
-std_ini_entry("stat_percentage",         "0", PHP_INI_SYSTEM, OnUpdateLong,   fpstat)
-std_ini_entry("clear_cookie",    (char*)NULL, PHP_INI_SYSTEM, OnUpdateString, clear_cookie)
-std_ini_entry("clear_parameter", (char*)NULL, PHP_INI_SYSTEM, OnUpdateString, clear_parameter)
-PHP_INI_ENTRY("filters",                NULL, PHP_INI_SYSTEM, OnUpdate_filters)
+std_ini_bool( "enabled",                    "1", PHP_INI_SYSTEM, OnUpdateBool,   enabled)
+std_ini_bool( "cache_by_default",           "1", PHP_INI_ALL,    OnUpdateBool,   cache_by_default)
+std_ini_bool( "enable_cli",                 "0", PHP_INI_SYSTEM, OnUpdateBool,   enable_cli)
+std_ini_entry("file_update_protection",     "2", PHP_INI_SYSTEM, OnUpdateLong,   file_update_protection)
+perdir_ini_entry("max_file_size",          "1M")
+perdir_ini_entry("stat_percentage",         "0")
+perdir_ini_entry("clear_cookie",    (char*)NULL)
+perdir_ini_entry("clear_parameter", (char*)NULL)
+perdir_ini_entry("filters",                NULL)
 PHP_INI_END()
-
 /* }}} */
 
 /* {{{ PHP_MINFO_FUNCTION(lpc) */
 static PHP_MINFO_FUNCTION(lpc)
 {
    	char buf[100];
-#define info_convert(f,v) snprintf(buf, sizeof(buf), f, LPCG(v)) 
+#define info_convert(f,v) snprintf(buf, sizeof(buf)-1, f, LPCG(v)) 
     int i;
 
     php_info_print_table_start();
@@ -198,24 +145,80 @@ static PHP_MINFO_FUNCTION(lpc)
 }
 /* }}} */
 
+/* {{{ PHP_GINIT_FUNCTION(lpc) 
+       Global CTOR for LPC  */
+static PHP_GINIT_FUNCTION(lpc)
+{
+   /* Since the default scope of globals is now the request, the CTOR simply
+    * zero-fills the global structure and any non-zero elements are assigned
+    * in MINIT or RINIT as appropriate.
+    */  
+	memset(lpc_globals, 0, sizeof(zend_lpc_globals));
+}
+/* }}} */
+
+/* {{{ PHP_GSHUTDOWN_FUNCTION(lpc)
+       Global DTOR for LPC  */
+static PHP_GSHUTDOWN_FUNCTION(lpc)
+{
+   /* As for the CTOR, the DTOR functions are normally invoked as part of M/RSHUTDOWN.
+    * However, as a safety net the DTOR does a safe cleanup of any of the following 
+    * LPCG allocated elements */ 
+#if 0
+    char** filters;              /* array of regex filters that prevent caching */
+    void* compiled_filters;      /* compiled regex filters */
+    lpc_stack_t* cache_stack;    /* the stack of cached executable code */
+    lpc_cache_t *current_cache;  /* current cache being modified/read */
+    void *lpc_bd_alloc_ptr;      /* bindump alloc() ptr */
+    void *lpc_bd_alloc_ubptr;    /* bindump alloc() upper bound ptr */
+    HashTable *lazy_function_table;  /* lazy function entry table */
+    HashTable *lazy_class_table;     /* lazy class entry table */
+    char *serializer_name;        /* the serializer config option */
+    lpc_serializer_t *serializer; /* the actual serializer in use */
+    lpc_cache_t* lpc_cache;       /* the global compiler cache */
+    char *clear_cookie;	          /* Name of Cookie which will force a cache clear */
+    char *clear_parameter;        /* Name of Request parameter which will force a cache clear */
+#endif
+
+    /* deallocate the ignore patterns */
+    if (lpc_globals->filters != NULL) {
+        int i;
+        for (i=0; lpc_globals->filters[i] != NULL; i++) {
+            lpc_efree(lpc_globals->filters[i] TSRMLS_CC);
+        }
+        lpc_efree(lpc_globals->filters TSRMLS_CC);
+    }
+
+    /* the stack should be empty */
+    assert(lpc_stack_size(lpc_globals->cache_stack) == 0);
+
+    /* lpc cleanup */
+    lpc_stack_destroy(lpc_globals->cache_stack TSRMLS_CC);
+
+    /* the rest of the globals are cleaned up in lpc_module_shutdown() */
+}
+/* }}} */
+
 /* {{{ PHP_MINIT_FUNCTION(lpc) */
 static PHP_MINIT_FUNCTION(lpc)
 {
-    ZEND_INIT_MODULE_GLOBALS(lpc, php_lpc_init_globals, php_lpc_shutdown_globals);
+    LPCG(cache_by_default) = 1;
+    LPCG(fpstat) = 1;
+    LPCG(canonicalize) = 1;
+    LPCG(use_request_time) = 1;
 
     REGISTER_INI_ENTRIES();
 
     if (LPCG(enabled)) {
-        if(LPCG(initialized)) {
-            lpc_process_init(module_number TSRMLS_CC);
-        } else {
+        if(!LPCG(initialized)) {
             lpc_module_init(module_number TSRMLS_CC);
             lpc_zend_init(TSRMLS_C);
-            lpc_process_init(module_number TSRMLS_CC);
         }
-
-        zend_register_long_constant("LPC_BIN_VERIFY_MD5", sizeof("LPC_BIN_VERIFY_MD5"), LPC_BIN_VERIFY_MD5, (CONST_CS | CONST_PERSISTENT), module_number TSRMLS_CC);
-        zend_register_long_constant("LPC_BIN_VERIFY_CRC32", sizeof("LPC_BIN_VERIFY_CRC32"), LPC_BIN_VERIFY_CRC32, (CONST_CS | CONST_PERSISTENT), module_number TSRMLS_CC);
+ 
+        zend_register_long_constant("LPC_BIN_VERIFY_MD5", sizeof("LPC_BIN_VERIFY_MD5"), LPC_BIN_VERIFY_MD5, 
+                                    (CONST_CS | CONST_PERSISTENT), module_number TSRMLS_CC);
+        zend_register_long_constant("LPC_BIN_VERIFY_CRC32", sizeof("LPC_BIN_VERIFY_CRC32"), LPC_BIN_VERIFY_CRC32,
+                                    (CONST_CS | CONST_PERSISTENT), module_number TSRMLS_CC);
     }
 
     return SUCCESS;
@@ -226,16 +229,9 @@ static PHP_MINIT_FUNCTION(lpc)
 static PHP_MSHUTDOWN_FUNCTION(lpc)
 {
     if(LPCG(enabled)) {
-        lpc_process_shutdown(TSRMLS_C);
         lpc_zend_shutdown(TSRMLS_C);
         lpc_module_shutdown(TSRMLS_C);
-#ifndef ZTS
-        php_lpc_shutdown_globals(&lpc_globals);
-#endif
     }
-#ifdef ZTS
-    ts_free_id(lpc_globals_id);
-#endif
     UNREGISTER_INI_ENTRIES();
     return SUCCESS;
 }
@@ -245,8 +241,14 @@ static PHP_MSHUTDOWN_FUNCTION(lpc)
 static PHP_RINIT_FUNCTION(lpc)
 {
     if(LPCG(enabled)) {
-        lpc_request_init(TSRMLS_C);
+		LPCG(cache_stack)     = lpc_stack_create(0 TSRMLS_CC);
+		LPCG(lpc_cache)       = lpc_cache_create(TSRMLS_C);
+		LPCG(max_file_size)   = lpc_atol(INI_STR("lpc.max_file_size"),0);
+		LPCG(fpstat)          = INI_INT("lpc.stat_percentage");
+		LPCG(clear_cookie)    = INI_STR("lpc.clear_cookie");
+		LPCG(clear_parameter) = INI_STR("lpc.clear_parameter");
 
+        lpc_request_init(TSRMLS_C);
     }
     return SUCCESS;
 }
@@ -289,7 +291,6 @@ PHP_FUNCTION(lpc_cache_info)
 /* {{{ proto void lpc_clear_cache() */
 PHP_FUNCTION(lpc_clear_cache)
 {
-
 	LPCG(force_cache_delete) = 1;
     RETURN_TRUE;
 }
@@ -460,7 +461,7 @@ PHP_FUNCTION(lpc_compile_file) {
             if (rval && rval[c] != 1) {
                 add_assoc_long(return_value, Z_STRVAL_PP(hentry), -2);  /* -2: input or cache insertion error */
                 if (cache_entries[c]) {
-                    lpc_pool_destroy(cache_entries[c]->pool TSRMLS_CC);
+                    lpc_pool_destroy(cache_entries[c]->pool);
                 }
             }
             if (op_arrays[c]) {
@@ -468,7 +469,7 @@ PHP_FUNCTION(lpc_compile_file) {
                 efree(op_arrays[c]);
             }
             if (atomic_fail && cache_entries[c]) {
-                lpc_pool_destroy(cache_entries[c]->pool TSRMLS_CC);
+                lpc_pool_destroy(cache_entries[c]->pool);
             }
             if (keys[c].type == LPC_CACHE_KEY_FPFILE) {
                 efree((void*)keys[c].data.fpfile.fullpath);
@@ -609,18 +610,21 @@ zend_function_entry lpc_functions[] = {
 /* }}} */
 
 /* {{{ module definition structure */
-
 zend_module_entry lpc_module_entry = {
     STANDARD_MODULE_HEADER,
-    "lpc",
-    lpc_functions,
-    PHP_MINIT(lpc),
-    PHP_MSHUTDOWN(lpc),
-    PHP_RINIT(lpc),
-    PHP_RSHUTDOWN(lpc),
-    PHP_MINFO(lpc),
-    PHP_LPC_VERSION,
-    STANDARD_MODULE_PROPERTIES
+    "lpc",                       /* extension name */
+    lpc_functions,               /* function list */
+    PHP_MINIT(lpc),              /* process startup */
+    PHP_MSHUTDOWN(lpc),          /* process shutdown */
+    PHP_RINIT(lpc),              /* request startup */
+    PHP_RSHUTDOWN(lpc),          /* request shutdown */
+    PHP_MINFO(lpc),              /* extension info */
+    NO_VERSION_YET,              /* extension version */
+	PHP_MODULE_GLOBALS(lpc),     /* globals descriptor */
+	PHP_GINIT(lpc),              /* globals ctor */
+	PHP_GSHUTDOWN(lpc),          /* globals dtor */
+	NULL,                        /* No post deactivate */
+	STANDARD_MODULE_PROPERTIES_EX
 };
 
 #ifdef COMPILE_DL_LPC

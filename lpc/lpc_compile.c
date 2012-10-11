@@ -1475,6 +1475,7 @@ lpc_class_t* lpc_copy_new_classes(zend_op_array* op_array, int old_count, lpc_co
 #endif
 
 /* {{{ my_prepare_op_array_for_execution */
+#define lpc_xmemcpy(p,n,ignore) _lpc_pool_memcpy(p,n,ctxt->pool TSRMLS_CC ZEND_FILE_LINE_CC)
 static int my_prepare_op_array_for_execution(zend_op_array* dst, zend_op_array* src, lpc_context_t* ctxt TSRMLS_DC) 
 {
     /* combine my_fetch_global_vars and my_copy_data_exceptions.

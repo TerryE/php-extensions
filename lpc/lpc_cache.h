@@ -139,7 +139,7 @@ extern T lpc_cache_create(TSRMLS_D);
  * Under apache, this function can be safely called by the child processes
  * when they exit.
  */
-extern void lpc_cache_destroy(TSRMLS_D);
+extern void lpc_cache_destroy(lpc_cache_t *cache TSRMLS_DC);
 
 /*
  * lpc_cache_clear empties a cache. This can safely be called at any time,

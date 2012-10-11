@@ -25,65 +25,70 @@
 
  */
 
-/* $Id: lpc_pool.h 307048 2011-01-03 23:53:17Z kalle $ */
+/* $Id: $ */
 
 #ifndef LPC_POOL_H
 #define LPC_POOL_H
 
 #include "lpc.h"
+#include "zend.h"
 
-/* #define LPC_POOL_DEBUG 1 */
-
+/* A pool is a group of dynamically allocated memory objects with a common set of properties:
+ *   *  They share the same memory alloc and free methods
+ *   *  They are individually be created (and destroyed) by the same pool methods
+ *   *  The pool DTOR will also deallocate any remaining elements in the pool.
+ *
+ * In fact in the APC/LPC implementation, all element destruction is carried out (or should    
+ * be) by the pool DTOR, and hence the element DTOR is private to the pool.
+ *
+ * In APC the term "REALPOOL" was used for pools allocated in shared memory.  The concept of 
+ * an "UNPOOL" also existed and was considered to be a dummy pool in local memory also
+ * a variant of unpool used a serial "BD" allocator.  No DTOR was implemented for unpools 
+ * resulting in memory leakage of the unpool contents on destruction.  For REAL and DB pools, a 
+ * HashTable was used to track allocation items so that destruction can automatically clean up.
+ * 
+ * For the LPC implementation I have adopted three pool types */
 typedef enum {
-    LPC_UNPOOL         = 0x0,
-    LPC_SMALL_POOL     = 0x1,
-    LPC_MEDIUM_POOL    = 0x2,
-    LPC_LARGE_POOL     = 0x3,
-    LPC_POOL_SIZE_MASK = 0x7,   /* waste a bit */
-#if LPC_POOL_DEBUG
-    LPC_POOL_REDZONES  = 0x08,
-    LPC_POOL_SIZEINFO  = 0x10,
-    LPC_POOL_OPT_MASK  = 0x18
+    LPC_LOCALPOOL   = 0x0,  /* A pool in the process private address space */
+    LPC_SHAREDPOOL  = 0x1,  /* A pool that was in SMA in APC (but implemented as LOCAL in LPC) */
+	LPC_SERIALPOOL  = 0x2   /* A variant of LOCAL in which all storage is in a contiguous block */
+} lpc_pool_type_t;
+/*
+ * In LPC there is no functional difference between LOCAL and SHARED pools; this distinction 
+ * is only maintained to facilitate regression of this implementation back into APC.
+ *
+ * The public interface to the pool is encapsulated in the following macros.  Note that all 
+ * pool elements must be created through one of the constuctors, and that no public element
+ * destructor exists.  Also note that the allocator macros with "trsmls" parameters are framed this
+ * way to maintain source compatibility with the existing code use and avoid unnecessary code changes.
+ */
+#define lpc_pool_create(type) ((lpc_pool *) _lpc_pool_create(type TSRMLS_CC ZEND_FILE_LINE_CC))
+#define lpc_pool_destroy(pool)  _lpc_pool_destroy(pool TSRMLS_CC ZEND_FILE_LINE_CC)
+#define lpc_pool_alloc(pool, size)  ((void *) _lpc_pool_alloc(pool, size TSRMLS_CC ZEND_FILE_LINE_CC))
+#define lpc_pstrdup(s,ptrsmls)  ((void *) _lpc_pool_strdup((s),ptrsmls ZEND_FILE_LINE_CC))
+#define lpc_pmemcpy(p,n,ptrsmls) ((void *) _lpc_pool_memcpy(p,n,ptrsmls ZEND_FILE_LINE_CC))
+
+/* The pool is implemented with the following type and extern calls */
+
+typedef struct _lpc_pool {
+	lpc_pool_type_t type;
+#ifdef APC_DEBUG
+	char           *orig_filename;
+	uint            orig_lineno;
 #endif
-} lpc_pool_type;
+	uint			count;              /* count of pool elements*/
+    size_t          size;               /* sum of individual element sizes */
+	void           *element_head;       /* only used for LOCAL & SHARED implementation */
+    void           *element_tail;       /* only used for LOCAL & SHARED implementation */
+	void           *bd_storage;         /* only used for SERIAL implementation */
+	off_t           bd_next_free;       /* only used for SERIAL implementation */
+	size_t          bd_allocated;       /* only used for SERIAL implementation */
+} lpc_pool;
 
-#if LPC_POOL_DEBUG
-#define LPC_POOL_HAS_SIZEINFO(pool) ((pool->type & LPC_POOL_SIZEINFO)!=0)
-#define LPC_POOL_HAS_REDZONES(pool) ((pool->type & LPC_POOL_REDZONES)!=0)
-#else
-/* let gcc optimize away the optional features */
-#define LPC_POOL_HAS_SIZEINFO(pool) (0)
-#define LPC_POOL_HAS_REDZONES(pool) (0)
-#endif
+extern lpc_pool* _lpc_pool_create(lpc_pool_type_t type TSRMLS_DC ZEND_FILE_LINE_DC);
+extern void _lpc_pool_destroy(lpc_pool* pool TSRMLS_DC ZEND_FILE_LINE_DC);
+extern void* _lpc_pool_alloc(lpc_pool* pool, size_t size TSRMLS_DC ZEND_FILE_LINE_DC);
+extern void* _lpc_pool_strdup(const char* s, lpc_pool* pool TSRMLS_DC ZEND_FILE_LINE_DC);
+extern void* _lpc_pool_memcpy(const void* p, size_t n, lpc_pool* pool TSRMLS_DC ZEND_FILE_LINE_DC);
 
-
-typedef struct _lpc_pool lpc_pool;
-
-typedef void  (*lpc_pcleanup_t)(lpc_pool *pool TSRMLS_DC);
-typedef void* (*lpc_palloc_t)(lpc_pool *pool, size_t size TSRMLS_DC);
-typedef void  (*lpc_pfree_t) (lpc_pool *pool, void* p TSRMLS_DC);
-typedef void* (*lpc_protect_t)  (void *p);
-typedef void* (*lpc_unprotect_t)(void *p);
-
-struct _lpc_pool {
-    lpc_malloc_t    allocate;
-    lpc_free_t      deallocate;
-
-    lpc_palloc_t    palloc;
-    lpc_pfree_t     pfree;
-
-    lpc_pcleanup_t  cleanup;
-
-    size_t          size;
-    size_t          used;
-};
-
-#define lpc_pool_alloc(pool, size)  ((void *) pool->palloc(pool, size TSRMLS_CC))
-#define lpc_pool_free(pool, ptr) 	((void)   pool->pfree (pool, ptr TSRMLS_CC))
-
-extern lpc_pool* lpc_pool_create(lpc_malloc_t allocate, lpc_free_t deallocate TSRMLS_DC);
-extern void lpc_pool_destroy(lpc_pool* pool TSRMLS_DC);
-void* LPC_ALLOC lpc_pstrdup(const char* s, lpc_pool* pool TSRMLS_DC);
-void* LPC_ALLOC lpc_pmemcpy(const void* p, size_t n, lpc_pool* pool TSRMLS_DC);
-
-#endif
+#endif /* LPC_POOL_H */

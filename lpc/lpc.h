@@ -66,10 +66,11 @@ typedef void* (*lpc_malloc_t)(size_t TSRMLS_DC);
 typedef void  (*lpc_free_t)  (void * TSRMLS_DC);
 
 /* wrappers for memory allocation routines */
-extern void* lpc_emalloc(size_t n TSRMLS_DC);
-extern void* lpc_erealloc(void* p, size_t n TSRMLS_DC);
-extern void lpc_efree(void* p TSRMLS_DC);
-extern char* lpc_estrdup(const char* s TSRMLS_DC);
+static inline void* lpc_emalloc(size_t n TSRMLS_DC)           { return pemalloc (n, 1); }
+static inline void* lpc_erealloc(void* p, size_t n TSRMLS_DC) { return perealloc (p, n, 1); }
+static inline void  lpc_efree(void* p TSRMLS_DC)              { return pefree (p, 1); }
+static inline char* lpc_estrdup(const char* s TSRMLS_DC)      { return pestrdup (s, 1); }
+
 extern void* lpc_xstrdup(const char* s, lpc_malloc_t f TSRMLS_DC);
 extern void* lpc_xmemcpy(const void* p, size_t n, lpc_malloc_t f TSRMLS_DC);
 
@@ -80,8 +81,6 @@ extern void lpc_notice(const char *format TSRMLS_DC, ...);
 extern void lpc_debug(const char *format TSRMLS_DC, ...);
 
 /* string and text manipulation */
-extern char* lpc_append(const char* s, const char* t TSRMLS_DC);
-extern char* lpc_substr(const char* s, int start, int length TSRMLS_DC);
 extern char** lpc_tokenize(const char* s, char delim TSRMLS_DC);
 
 /* filesystem functions */

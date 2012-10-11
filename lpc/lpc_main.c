@@ -38,12 +38,20 @@
 #include "lpc_globals.h"
 #include "lpc_stack.h"
 #include "lpc_zend.h"
+#include "zend_API.h"
+#include "zend_alloc.h"
+#include "zend_hash.h"
+#include "zend_variables.h"
 #include "lpc_pool.h"
 #include "lpc_string.h"
 #include "SAPI.h"
 #include "php_scandir.h"
 #include "ext/standard/php_var.h"
 #include "ext/standard/md5.h"
+
+#define hash_reset(h) zend_hash_internal_pointer_reset(h)
+#define hash_get(h,e) zend_hash_get_current_data(h, (void **) &e)
+#define hash_next(h) zend_hash_move_forward(h)
 
 #define LPC_MAX_SERIALIZERS 16
 
@@ -108,7 +116,7 @@ int lpc_lookup_function_hook(char *name, int len, ulong hash, zend_function **fe
     lpc_context_t ctxt = {0,};
     TSRMLS_FETCH();
 
-    ctxt.pool = lpc_pool_create(lpc_php_malloc, lpc_php_free TSRMLS_CC);
+    ctxt.pool = lpc_pool_create(LPC_LOCALPOOL);
     ctxt.copy = LPC_COPY_OUT_OPCODE;
 
     if(zend_hash_quick_find(LPCG(lazy_function_table), name, len, hash, (void**)&fn) == SUCCESS) {
@@ -242,7 +250,7 @@ int lpc_lookup_class_hook(char *name, int len, ulong hash, zend_class_entry ***c
         return FAILURE;
     }
 
-    ctxt.pool = lpc_pool_create(lpc_php_malloc, lpc_php_free TSRMLS_CC);
+    ctxt.pool = lpc_pool_create(LPC_LOCALPOOL);
     ctxt.copy = LPC_COPY_OUT_OPCODE;
 
     if(install_class(*cl, &ctxt, 0 TSRMLS_CC) == FAILURE) {
@@ -340,8 +348,8 @@ int lpc_declared_class_hook(zval *classes, zend_uint mask, zend_uint comply) {
 
 /* {{{ cached_compile */
 static zend_op_array* cached_compile(zend_file_handle* h,
-                                        int type,
-                                        lpc_context_t* ctxt TSRMLS_DC)
+                                     int type,
+                                     lpc_context_t* ctxt TSRMLS_DC)
 {
     lpc_cache_entry_t* cache_entry;
     int i, ii;
@@ -389,7 +397,8 @@ default_compile:
 /* }}} */
 
 /* {{{ lpc_compile_cache_entry  */
-zend_bool lpc_compile_cache_entry(lpc_cache_key_t key, zend_file_handle* h, int type, time_t t, zend_op_array** op_array, lpc_cache_entry_t** cache_entry TSRMLS_DC) {
+zend_bool lpc_compile_cache_entry(lpc_cache_key_t key, zend_file_handle* h, int type, time_t t, 
+                                  zend_op_array** op_array, lpc_cache_entry_t** cache_entry TSRMLS_DC) {
     int num_functions, num_classes;
     lpc_function_t* alloc_functions;
     zend_op_array* alloc_op_array;
@@ -409,7 +418,7 @@ zend_bool lpc_compile_cache_entry(lpc_cache_key_t key, zend_file_handle* h, int 
         return FAILURE;
     }
 
-    ctxt.pool = lpc_pool_create(lpc_php_malloc, lpc_php_free TSRMLS_CC);
+    ctxt.pool = lpc_pool_create(LPC_SHAREDPOOL);
     if (!ctxt.pool) {
         lpc_warning("Unable to allocate memory for pool." TSRMLS_CC);
         return FAILURE;
@@ -459,7 +468,7 @@ zend_bool lpc_compile_cache_entry(lpc_cache_key_t key, zend_file_handle* h, int 
     if(!path && key.type == LPC_CACHE_KEY_FPFILE) path = (char*)key.data.fpfile.fullpath;
     if(!path) path=h->filename;
 
-    lpc_debug("2. h->opened_path=[%s]  h->filename=[%s]\n" TSRMLS_CC, h->opened_path?h->opened_path:"null",h->filename);
+    lpc_debug("2. h->opened_path=[%s]  h->filename=[%s]" TSRMLS_CC, h->opened_path?h->opened_path:"null",h->filename);
 
     if(!(*cache_entry = lpc_cache_make_file_entry(path, alloc_op_array, alloc_functions, alloc_classes, &ctxt TSRMLS_CC))) {
         goto freepool;
@@ -468,7 +477,7 @@ zend_bool lpc_compile_cache_entry(lpc_cache_key_t key, zend_file_handle* h, int 
     return SUCCESS;
 
 freepool:
-    lpc_pool_destroy(ctxt.pool TSRMLS_CC);
+    lpc_pool_destroy(ctxt.pool);
     ctxt.pool = NULL;
 
     return FAILURE;
@@ -514,7 +523,7 @@ static zend_op_array* my_compile_file(zend_file_handle* h,
 
     t = lpc_time();
 
-    lpc_debug("1. h->opened_path=[%s]  h->filename=[%s]\n" TSRMLS_CC, h->opened_path?h->opened_path:"null",h->filename);
+    lpc_debug("1. h->opened_path=[%s]  h->filename=[%s]" TSRMLS_CC, h->opened_path?h->opened_path:"null",h->filename);
 
     /* try to create a cache key; if we fail, give up on caching */
     if (!lpc_cache_make_file_key(&key, h->filename, PG(include_path), t TSRMLS_CC)) {
@@ -533,7 +542,7 @@ static zend_op_array* my_compile_file(zend_file_handle* h,
     if (cache_entry != NULL) {
         int dummy = 1;
         
-        ctxt.pool = lpc_pool_create(lpc_php_malloc, lpc_php_free TSRMLS_CC);
+        ctxt.pool = lpc_pool_create(LPC_LOCALPOOL);
         if (!ctxt.pool) {
             lpc_warning("Unable to allocate memory for pool." TSRMLS_CC);
             return old_compile_file(h, type TSRMLS_CC);
@@ -550,7 +559,7 @@ static zend_op_array* my_compile_file(zend_file_handle* h,
         if(op_array) {
 
             /* this is an unpool, which has no cleanup - this only free's the pool header */
-            lpc_pool_destroy(ctxt.pool TSRMLS_CC);
+            lpc_pool_destroy(ctxt.pool);
             
             /* We might leak fds without this hack */
             if (h->type != ZEND_HANDLE_FILENAME) {
@@ -577,12 +586,12 @@ static zend_op_array* my_compile_file(zend_file_handle* h,
             fileinfo.st_buf.sb = *tmp_buf;
         } else {
             if (lpc_search_paths(h->filename, PG(include_path), &fileinfo TSRMLS_CC) != 0) {
-                lpc_debug("Stat failed %s - bailing (%s) (%d)\n" TSRMLS_CC,h->filename,SG(request_info).path_translated);
+                lpc_debug("Stat failed %s - bailing (%s) (%d)" TSRMLS_CC,h->filename,SG(request_info).path_translated);
                 return old_compile_file(h, type TSRMLS_CC);
             }
         }
         if (LPCG(max_file_size) < fileinfo.st_buf.sb.st_size) { 
-            lpc_debug("File is too big %s (%ld) - bailing\n" TSRMLS_CC, h->filename, fileinfo.st_buf.sb.st_size);
+            lpc_debug("File is too big %s (%ld) - bailing" TSRMLS_CC, h->filename, fileinfo.st_buf.sb.st_size);
             return old_compile_file(h, type TSRMLS_CC);
         }
         key.mtime = fileinfo.st_buf.sb.st_mtime;
@@ -593,7 +602,7 @@ static zend_op_array* my_compile_file(zend_file_handle* h,
             ctxt.pool = cache_entry->pool;
             ctxt.copy = LPC_COPY_IN_OPCODE;
             if (lpc_cache_insert(LPCG(lpc_cache), key, cache_entry, &ctxt, t TSRMLS_CC) != 1) {
-                lpc_pool_destroy(ctxt.pool TSRMLS_CC);
+                lpc_pool_destroy(ctxt.pool);
                 ctxt.pool = NULL;
             }
         }
@@ -659,8 +668,6 @@ int lpc_module_init(int module_number TSRMLS_DC)
 {
     /* lpc initialization */
 
-    LPCG(lpc_cache) = lpc_cache_create(TSRMLS_C);
-
     /* override compilation */
     old_compile_file = zend_compile_file;
     zend_compile_file = my_compile_file;
@@ -705,60 +712,10 @@ int lpc_module_shutdown(TSRMLS_D)
     /* restore compilation */
     zend_compile_file = old_compile_file;
 
-    /*
-     * In case we got interrupted by a SIGTERM or something else during execution
-     * we may have cache entries left on the stack that we need to check to make
-     * sure that any functions or classes these may have added to the global function
-     * and class tables are removed before we blow away the memory that hold them.
-     * 
-     * This is merely to remove memory leak warnings - as the process is terminated
-     * immediately after shutdown. The following while loop can be removed without
-     * affecting anything else.
-     */
-    while (lpc_stack_size(LPCG(cache_stack)) > 0) {
-        int i;
-        lpc_cache_entry_t* cache_entry = (lpc_cache_entry_t*) lpc_stack_pop(LPCG(cache_stack));
-        if (cache_entry->data.file.functions) {
-            for (i = 0; cache_entry->data.file.functions[i].function != NULL; i++) {
-                zend_hash_del(EG(function_table),
-                    cache_entry->data.file.functions[i].name,
-                    cache_entry->data.file.functions[i].name_len+1);
-            }
-        }
-        if (cache_entry->data.file.classes) {
-            for (i = 0; cache_entry->data.file.classes[i].class_entry != NULL; i++) {
-                zend_hash_del(EG(class_table),
-                    cache_entry->data.file.classes[i].name,
-                    cache_entry->data.file.classes[i].name_len+1);
-            }
-        }
-        lpc_cache_release(LPCG(lpc_cache), cache_entry TSRMLS_CC);
-    }
-
-    lpc_cache_destroy(TSRMLS_C);
-
-#ifdef ZEND_ENGINE_2_4
-    lpc_interned_strings_shutdown(TSRMLS_C);
-#endif
-
     LPCG(initialized) = 0;
     return 0;
 }
-
 /* }}} */
-
-/* {{{ process init and shutdown */
-int lpc_process_init(int module_number TSRMLS_DC)
-{
-    return 0;
-}
-
-int lpc_process_shutdown(TSRMLS_D)
-{
-    return 0;
-}
-/* }}} */
-
 
 /* {{{ lpc_deactivate */
 static void lpc_deactivate(TSRMLS_D)
@@ -800,6 +757,43 @@ static void lpc_deactivate(TSRMLS_D)
         }
         lpc_cache_release(LPCG(lpc_cache), cache_entry TSRMLS_CC);
     }
+/////  unwind code from MSHUTDOWN needs to be folded in RSHUTDOWN now that caches and stacks only have a request lifetime
+#if 0
+    /*
+     * In case we got interrupted by a SIGTERM or something else during execution
+     * we may have cache entries left on the stack that we need to check to make
+     * sure that any functions or classes these may have added to the global function
+     * and class tables are removed before we blow away the memory that hold them.
+     * 
+     * This is merely to remove memory leak warnings - as the process is terminated
+     * immediately after shutdown. The following while loop can be removed without
+     * affecting anything else.
+     */
+    while (lpc_stack_size(LPCG(cache_stack)) > 0) {
+        int i;
+        lpc_cache_entry_t* cache_entry = (lpc_cache_entry_t*) lpc_stack_pop(LPCG(cache_stack));
+        if (cache_entry->data.file.functions) {
+            for (i = 0; cache_entry->data.file.functions[i].function != NULL; i++) {
+                zend_hash_del(EG(function_table),
+                    cache_entry->data.file.functions[i].name,
+                    cache_entry->data.file.functions[i].name_len+1);
+            }
+        }
+        if (cache_entry->data.file.classes) {
+            for (i = 0; cache_entry->data.file.classes[i].class_entry != NULL; i++) {
+                zend_hash_del(EG(class_table),
+                    cache_entry->data.file.classes[i].name,
+                    cache_entry->data.file.classes[i].name_len+1);
+            }
+        }
+        lpc_cache_release(LPCG(lpc_cache), cache_entry TSRMLS_CC);
+    }
+#endif
+    lpc_cache_destroy(LPCG(lpc_cache) TSRMLS_CC);
+
+#ifdef ZEND_ENGINE_2_4
+    lpc_interned_strings_shutdown(TSRMLS_C);
+#endif
 }
 /* }}} */
 
@@ -807,6 +801,9 @@ static void lpc_deactivate(TSRMLS_D)
 
 int lpc_request_init(TSRMLS_D)
 {
+	LPCG(filters) = lpc_tokenize(INI_STR("lpc.filters"), ',' TSRMLS_CC);
+	zend_hash_init(&LPCG(pools), 10, NULL, NULL, 0);
+
     lpc_stack_clear(LPCG(cache_stack));
     if (!LPCG(compiled_filters) && LPCG(filters)) {
         /* compile regex filters here to avoid race condition between MINIT of PCRE and LPC.
@@ -835,7 +832,7 @@ int lpc_request_init(TSRMLS_D)
 
 int lpc_request_shutdown(TSRMLS_D)
 {
-
+	lpc_pool **pool_ptr;
 #if LPC_HAVE_LOOKUP_HOOKS
     if(LPCG(lazy_class_table)) {
         zend_hash_destroy(LPCG(lazy_class_table));
@@ -847,6 +844,12 @@ int lpc_request_shutdown(TSRMLS_D)
 #endif   
 
     lpc_deactivate(TSRMLS_C);
+
+	/* loop over pools to destroy each pool */
+	for (hash_reset(&LPCG(pools)); hash_get(&LPCG(pools), pool_ptr) == SUCCESS; hash_next(&LPCG(pools))) {
+		lpc_pool_destroy(*pool_ptr);
+	}
+	zend_hash_destroy(&LPCG(pools));
 
     return 0;
 }

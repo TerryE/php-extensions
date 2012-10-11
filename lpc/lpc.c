@@ -46,58 +46,6 @@
 #   include "ext/standard/php_smart_str.h"
 #endif
 
-#define NELEMS(a) (sizeof(a)/sizeof((a)[0]))
-
-/* {{{ memory allocation wrappers */
-
-void* lpc_emalloc(size_t n TSRMLS_DC)
-{
-    void* p = malloc(n);
-    if (p == NULL) {
-        lpc_error("lpc_emalloc: malloc failed to allocate %u bytes:" TSRMLS_CC, n);
-        return NULL;
-    }
-    return p;
-}
-
-void* lpc_erealloc(void* p, size_t n TSRMLS_DC)
-{
-    p = realloc(p, n);
-    if (p == NULL) {
-        lpc_error("lpc_erealloc: realloc failed to allocate %u bytes:" TSRMLS_CC, n);
-        return NULL;
-    }
-    return p;
-}
-
-void lpc_efree(void* p TSRMLS_DC)
-{
-    if (p == NULL) {
-        lpc_error("lpc_efree: attempt to free null pointer" TSRMLS_CC);
-        return;
-    }
-    free(p);
-}
-
-char* LPC_ALLOC lpc_estrdup(const char* s TSRMLS_DC)
-{
-    int len;
-    char* dup;
-
-    if (s == NULL) {
-        return NULL;
-    }
-    len = strlen(s);
-    dup = (char*) malloc(len+1);
-    if (dup == NULL) {
-        lpc_error("lpc_estrdup: malloc failed to allocate %u bytes:" TSRMLS_CC, len+1);
-        return NULL;
-    }
-    memcpy(dup, s, len);
-    dup[len] = '\0';
-    return dup;
-}
-
 void* LPC_ALLOC lpc_xstrdup(const char* s, lpc_malloc_t f TSRMLS_DC)
 {
     return s != NULL ? lpc_xmemcpy(s, strlen(s)+1, f TSRMLS_CC) : NULL;
@@ -146,46 +94,6 @@ void lpc_debug(const char *format TSRMLS_DC, ...) {}
 
 /* {{{ string and text manipulation */
 
-char* lpc_append(const char* s, const char* t TSRMLS_DC)
-{
-    int slen;
-    int tlen;
-    char* p;
-
-    slen = strlen(s);
-    tlen = strlen(t);
-
-    p = (char*) lpc_emalloc((slen + tlen + 1) * sizeof(char) TSRMLS_CC);
-    memcpy(p, s, slen);
-    memcpy(p + slen, t, tlen + 1);
-
-    return p;
-}
-
-char* lpc_substr(const char* s, int start, int length TSRMLS_DC)
-{
-    char* substr;
-    int src_len = strlen(s);
-
-    /* bring start into range */
-    if (start < 0) {
-        start = 0;
-    }
-    else if (start >= src_len) {
-        start = src_len - 1;
-    }
-
-    /* bring length into range */
-    if (length < 0 || src_len - start < length) {
-        length = src_len - start;
-    }
-
-    /* create the substring */
-    substr = lpc_xmemcpy(s + start, length + 1, lpc_emalloc TSRMLS_CC);
-    substr[length] = '\0';
-    return substr;
-}
-
 char** lpc_tokenize(const char* s, char delim TSRMLS_DC)
 {
     char** tokens;      /* array of tokens, NULL terminated */
@@ -219,8 +127,9 @@ char** lpc_tokenize(const char* s, char delim TSRMLS_DC)
         }
 
         /* save the current token */
-        tokens[n] = lpc_substr(s, cur, next-cur TSRMLS_CC);
-
+        tokens[n] = lpc_emalloc((next-cur)+1 TSRMLS_CC);
+		memcpy(tokens[n], s + cur, next-cur);
+		tokens[n][next-cur] = '\0';
         tokens[++n] = NULL;
         cur = next + 1;
     }
@@ -241,12 +150,12 @@ static int lpc_restat(lpc_fileinfo_t *fileinfo TSRMLS_DC)
     hFile = CreateFile(fileinfo->fullpath, GENERIC_WRITE, FILE_SHARE_WRITE|FILE_SHARE_READ, NULL, OPEN_ALWAYS, FILE_FLAG_BACKUP_SEMANTICS, NULL);
 
     if (!hFile) {
-        lpc_debug("Cannot create a file HANDLE for %s\n" TSRMLS_CC, fileinfo->fullpath);
+        lpc_debug("Cannot create a file HANDLE for %s" TSRMLS_CC, fileinfo->fullpath);
         return -1;
     }
 
     if (!GetFileInformationByHandle(hFile, &hInfo)) {
-        lpc_debug("Cannot get file information from handle\n" TSRMLS_CC);
+        lpc_debug("Cannot get file information from handle" TSRMLS_CC);
         CloseHandle(hFile);
         return -1;
     }

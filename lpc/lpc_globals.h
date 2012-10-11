@@ -64,15 +64,12 @@ ZEND_BEGIN_MODULE_GLOBALS(lpc)
     HashTable copied_zvals;      /* my_copy recursion detection list */
     zend_bool force_file_update; /* force files to be updated during lpc_compile_file */
     char canon_path[MAXPATHLEN]; /* canonical path for key data */
-#ifdef LPC_FILEHITS
-    zval *filehits;              /* Files that came from the cache for this request */
-#endif
     zend_bool coredump_unmap;    /* Trap signals that coredump and unmap shared memory */
     lpc_cache_t *current_cache;  /* current cache being modified/read */
     zend_bool file_md5;          /* record md5 hash of files */
-    void *lpc_bd_alloc_ptr;      /* bindump alloc() ptr */
-    void *lpc_bd_alloc_ubptr;    /* bindump alloc() upper bound ptr */
-    HashTable lpc_bd_alloc_list; /* bindump alloc() ptr list */
+//    void *lpc_bd_alloc_ptr;      /* bindump alloc() ptr */
+//    void *lpc_bd_alloc_ubptr;    /* bindump alloc() upper bound ptr */
+//    HashTable lpc_bd_alloc_list; /* bindump alloc() ptr list */
     zend_bool use_request_time;  /* use the SAPI request start time for TTL */
     zend_bool lazy_functions;        /* enable/disable lazy function loading */
     HashTable *lazy_function_table;  /* lazy function entry table */
@@ -84,9 +81,11 @@ ZEND_BEGIN_MODULE_GLOBALS(lpc)
     char *serializer_name;        /* the serializer config option */
     lpc_serializer_t *serializer; /* the actual serializer in use */
     lpc_cache_t* lpc_cache;       /* the global compiler cache */
+	HashTable pools;              /* Table of created pools */
 	zend_bool force_cache_delete; /* Flag that the file D/B is to be deleted and further loading disabbled */
     char *clear_cookie;	          /* Name of Cookie which will force a cache clear */
     char *clear_parameter;        /* Name of Request parameter which will force a cache clear */
+	void* lpc_compiled_filters;   /* compiled filters */
 ZEND_END_MODULE_GLOBALS(lpc)
 
 /* (the following declaration is defined in php_lpc.c) */
@@ -98,8 +97,6 @@ ZEND_EXTERN_MODULE_GLOBALS(lpc)
 # define LPCG(v) (lpc_globals.v)
 #endif
 
-/* True globals */
-extern void* lpc_compiled_filters;   /* compiled filters */
 
 #endif
 

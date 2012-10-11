@@ -111,7 +111,7 @@ slot_t* make_slot(lpc_cache_key_t key, lpc_cache_entry_t* value, slot_t* next, t
 /* {{{ free_slot */
 static void free_slot(slot_t* slot TSRMLS_DC)
 {
-    lpc_pool_destroy(slot->value->pool TSRMLS_CC);
+    lpc_pool_destroy(slot->value->pool);
 }
 /* }}} */
 
@@ -138,21 +138,14 @@ static void remove_slot(lpc_cache_t* cache, slot_t** slot TSRMLS_DC)
 lpc_cache_t* lpc_cache_create(TSRMLS_D)
 {
 int size_hint;
-    lpc_cache_t* cache;
-    int cache_size;
+    lpc_cache_t *cache;
     int num_slots;
 
     num_slots = make_prime(size_hint > 0 ? size_hint : 2000);
 
-    cache = (lpc_cache_t*) lpc_emalloc(sizeof(lpc_cache_t) TSRMLS_CC);
-    cache_size = sizeof(cache_header_t) + num_slots*sizeof(slot_t*);
+    cache = (lpc_cache_t*) emalloc(sizeof(lpc_cache_t));
 
-    cache->addr = lpc_php_malloc(cache_size TSRMLS_CC);
-    if(!cache->addr) {
-        lpc_error("Unable to allocate memory for cache structures." TSRMLS_CC);
-        return NULL;
-    }
-    memset(cache->addr, 0, cache_size);
+    cache->addr = ecalloc(1, sizeof(cache_header_t) + num_slots*sizeof(slot_t*));
 
     cache->header = (cache_header_t*) cache->addr;
     cache->header->deleted_list = NULL;
@@ -160,16 +153,18 @@ int size_hint;
  
     cache->slots = (slot_t**) (((char*) cache->addr) + sizeof(cache_header_t));
     cache->num_slots = num_slots;
-    memset(cache->slots, 0, sizeof(slot_t*)*num_slots);
 
     return cache;
 }
 /* }}} */
 
 /* {{{ lpc_cache_destroy */
-void lpc_cache_destroy(TSRMLS_D)
+void lpc_cache_destroy(lpc_cache_t *cache TSRMLS_DC)
 {
-    lpc_efree(LPCG(lpc_cache) TSRMLS_CC);
+	if (cache->addr != NULL) {
+		efree(cache->addr);
+	}
+    efree(cache);
 }
 /* }}} */
 
@@ -208,7 +203,7 @@ static inline int _lpc_cache_insert(lpc_cache_t* cache,
         return 0;
     }
 
-    lpc_debug("Inserting [%s]\n" TSRMLS_CC, value->data.file.filename);
+    lpc_debug("Inserting [%s]" TSRMLS_CC, value->data.file.filename);
 
     if(key.type == LPC_CACHE_KEY_FILE) slot = &cache->slots[hash(key) % cache->num_slots];
     else slot = &cache->slots[string_nhash_8(key.data.fpfile.fullpath, key.data.fpfile.fullpath_len) % cache->num_slots];
@@ -338,7 +333,7 @@ int lpc_cache_make_file_key(lpc_cache_key_t* key,
     assert(key != NULL);
 
     if (!filename || !SG(request_info).path_translated) {
-        lpc_debug("No filename and no path_translated - bailing\n" TSRMLS_CC);
+        lpc_debug("No filename and no path_translated - bailing" TSRMLS_CC);
         goto cleanup;
     }
 
@@ -385,13 +380,13 @@ int lpc_cache_make_file_key(lpc_cache_key_t* key,
         fileinfo->st_buf.sb = *tmp_buf;
     } else {
         if (lpc_search_paths(filename, include_path, fileinfo TSRMLS_CC) != 0) {
-            lpc_debug("Stat failed %s - bailing (%s) (%d)\n" TSRMLS_CC, filename,SG(request_info).path_translated);
+            lpc_debug("Stat failed %s - bailing (%s) (%d)" TSRMLS_CC, filename,SG(request_info).path_translated);
             goto cleanup;
         }
     }
 
     if(LPCG(max_file_size) < fileinfo->st_buf.sb.st_size) {
-        lpc_debug("File is too big %s (%d - %ld) - bailing\n" TSRMLS_CC, filename,t,fileinfo->st_buf.sb.st_size);
+        lpc_debug("File is too big %s (%d - %ld) - bailing" TSRMLS_CC, filename,t,fileinfo->st_buf.sb.st_size);
         goto cleanup;
     }
 
@@ -408,7 +403,7 @@ int lpc_cache_make_file_key(lpc_cache_key_t* key,
      * configurable, but the default is still 2 seconds.
      */
     if(LPCG(file_update_protection) && (t - fileinfo->st_buf.sb.st_mtime < LPCG(file_update_protection)) && !LPCG(force_file_update)) {
-        lpc_debug("File is too new %s (%d - %d) - bailing\n" TSRMLS_CC,filename,t,fileinfo->st_buf.sb.st_mtime);
+        lpc_debug("File is too new %s (%d - %d) - bailing" TSRMLS_CC,filename,t,fileinfo->st_buf.sb.st_mtime);
         goto cleanup;
     }
 
@@ -467,10 +462,10 @@ lpc_cache_entry_t* lpc_cache_make_file_entry(const char* filename,
 
     entry->data.file.filename  = lpc_pstrdup(filename, pool TSRMLS_CC);
     if(!entry->data.file.filename) {
-        lpc_debug("lpc_cache_make_file_entry: entry->data.file.filename is NULL - bailing\n" TSRMLS_CC);
+        lpc_debug("lpc_cache_make_file_entry: entry->data.file.filename is NULL - bailing" TSRMLS_CC);
         return NULL;
     }
-    lpc_debug("lpc_cache_make_file_entry: entry->data.file.filename is [%s]\n" TSRMLS_CC,entry->data.file.filename);
+    lpc_debug("lpc_cache_make_file_entry: entry->data.file.filename is [%s]" TSRMLS_CC,entry->data.file.filename);
     entry->data.file.op_array  = op_array;
     entry->data.file.functions = functions;
     entry->data.file.classes   = classes;
