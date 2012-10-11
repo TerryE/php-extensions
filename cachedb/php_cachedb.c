@@ -130,16 +130,13 @@ const zend_function_entry cachedb_functions[] = {
 #define MAX_DB_FILES 10
 ZEND_BEGIN_MODULE_GLOBALS(cachedb)
 	cachedb_pt db[MAX_DB_FILES];
-ZEND_END_MODULE_GLOBALS(cachedb); 
+ZEND_END_MODULE_GLOBALS(cachedb)
 
 ZEND_DECLARE_MODULE_GLOBALS(cachedb)
-
 
 PHP_RINIT_FUNCTION(cachedb);
 PHP_RSHUTDOWN_FUNCTION(cachedb);
 PHP_MINFO_FUNCTION(cachedb);
-
-ZEND_DECLARE_MODULE_GLOBALS(cachedb);
 
 zend_module_entry cachedb_module_entry = {
 	STANDARD_MODULE_HEADER_EX,

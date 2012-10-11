@@ -121,7 +121,7 @@ static const char _cachedb_close_err[] = "Internal error during close of cachedb
 #define hash_count(h) zend_hash_num_elements(h)
 
 #define hash_init(h,c) zend_hash_init(h, c, NULL, ZVAL_PTR_DTOR, 0)
-#define hash_reset(h) zend_hash_internal_pointer_reset(index_list)
+#define hash_reset(h) zend_hash_internal_pointer_reset(h)
 #define hash_get(h,e) zend_hash_get_current_data(h, (void **) &e)
 #define hash_key(h,s,l) zend_hash_get_current_key_ex(h, &s, &s##_length, &l, 0, 0)
 #define hash_next(h) zend_hash_move_forward(h)
