@@ -64,7 +64,6 @@ if test "$PHP_LPC" != "no"; then
                lpc_zend.c \
                lpc_stack.c \
                lpc_pool.c \
-               lpc_bin.c \
                lpc_string.c "
 
   PHP_NEW_EXTENSION(lpc, $lpc_sources, $ext_shared,, \\$(LPC_CFLAGS))

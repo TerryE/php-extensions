@@ -28,7 +28,6 @@
 /* $Id: $ */
 
 #include "lpc.h"
-#include "lpc_globals.h"
 #include "lpc_php.h"
 
 #ifdef ZEND_ENGINE_2_4
@@ -56,11 +55,11 @@ static const char *lpc_dummy_new_interned_string_for_php(const char *str, int le
 }
 
 static void lpc_dummy_interned_strings_snapshot_for_php(TSRMLS_D)
-{
+{ENTER(lpc_dummy_interned_strings_snapshot_for_php)
 }
 
 static void lpc_dummy_interned_strings_restore_for_php(TSRMLS_D)
-{
+{ENTER(lpc_dummy_interned_strings_restore_for_php)
 }
 
 char *lpc_new_interned_string(char *arKey, int nKeyLength TSRMLS_DC)
@@ -125,7 +124,7 @@ char *lpc_new_interned_string(char *arKey, int nKeyLength TSRMLS_DC)
 }
 
 static void lpc_copy_internal_strings(TSRMLS_D)
-{
+{ENTER(lpc_copy_internal_strings)
     Bucket *p, *q;
 
     p = CG(function_table)->pListHead;
@@ -188,7 +187,7 @@ static void lpc_copy_internal_strings(TSRMLS_D)
 }
 
 void lpc_interned_strings_init(TSRMLS_D)
-{
+{ENTER(lpc_interned_strings_init)
     int count = LPCG(shm_strings_buffer) / (sizeof(Bucket) + sizeof(Bucket*) * 2);
 
     lpc_interned_strings_data = (lpc_interned_strings_data_t*) lpc_php_malloc(LPCG(shm_strings_buffer) TSRMLS_CC);

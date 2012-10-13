@@ -33,7 +33,7 @@
 #define PHP_LPC_H
 
 #include "lpc_php.h"
-#include "lpc_globals.h"
+#include "lpc.h"
 
 #define PHP_LPC_VERSION "3.1.7"
 

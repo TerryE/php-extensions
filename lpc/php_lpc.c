@@ -31,7 +31,6 @@
 #include "lpc_zend.h"
 #include "lpc_cache.h"
 #include "lpc_main.h"
-#include "lpc_bin.h"
 #include "php_globals.h"
 #include "php_ini.h"
 #include "ext/standard/info.h"
@@ -47,8 +46,6 @@
 PHP_FUNCTION(lpc_cache_info);
 PHP_FUNCTION(lpc_clear_cache);
 PHP_FUNCTION(lpc_compile_file);
-PHP_FUNCTION(lpc_bin_dump);
-PHP_FUNCTION(lpc_bin_load);
 /* }}} */
 
 /* {{{ ZEND_DECLARE_MODULE_GLOBALS(lpc) */
@@ -58,7 +55,7 @@ ZEND_DECLARE_MODULE_GLOBALS(lpc)
 /* {{{ proto long lpc_atol( string str, int str_len)
 	   Chain to zend_atol, except for PHP 5.2.x which doesn't handle [KMG], so in this case reimplement */
 static long lpc_atol(const char *str, int str_len)
-{
+{ENTER(lpc_atol)
 #if PHP_MAJOR_VERSION >= 6 || PHP_MAJOR_VERSION == 5 && PHP_MINOR_VERSION >= 3
     return zend_atol(str, str_len);
 #else
@@ -110,7 +107,7 @@ PHP_INI_END()
 
 /* {{{ PHP_MINFO_FUNCTION(lpc) */
 static PHP_MINFO_FUNCTION(lpc)
-{
+{ENTER(PHP_MINFO_FUNCTION)
    	char buf[100];
 #define info_convert(f,v) snprintf(buf, sizeof(buf)-1, f, LPCG(v)) 
     int i;
@@ -148,7 +145,7 @@ static PHP_MINFO_FUNCTION(lpc)
 /* {{{ PHP_GINIT_FUNCTION(lpc) 
        Global CTOR for LPC  */
 static PHP_GINIT_FUNCTION(lpc)
-{
+{ENTER(PHP_GINIT_FUNCTION)
    /* Since the default scope of globals is now the request, the CTOR simply
     * zero-fills the global structure and any non-zero elements are assigned
     * in MINIT or RINIT as appropriate.
@@ -160,7 +157,7 @@ static PHP_GINIT_FUNCTION(lpc)
 /* {{{ PHP_GSHUTDOWN_FUNCTION(lpc)
        Global DTOR for LPC  */
 static PHP_GSHUTDOWN_FUNCTION(lpc)
-{
+{ENTER(PHP_GSHUTDOWN_FUNCTION)
    /* As for the CTOR, the DTOR functions are normally invoked as part of M/RSHUTDOWN.
     * However, as a safety net the DTOR does a safe cleanup of any of the following 
     * LPCG allocated elements */ 
@@ -196,6 +193,7 @@ static PHP_GSHUTDOWN_FUNCTION(lpc)
     lpc_stack_destroy(lpc_globals->cache_stack TSRMLS_CC);
 
     /* the rest of the globals are cleaned up in lpc_module_shutdown() */
+	if (1) { ENTER(DUMP) }
 }
 /* }}} */
 
@@ -213,12 +211,7 @@ static PHP_MINIT_FUNCTION(lpc)
         if(!LPCG(initialized)) {
             lpc_module_init(module_number TSRMLS_CC);
             lpc_zend_init(TSRMLS_C);
-        }
- 
-        zend_register_long_constant("LPC_BIN_VERIFY_MD5", sizeof("LPC_BIN_VERIFY_MD5"), LPC_BIN_VERIFY_MD5, 
-                                    (CONST_CS | CONST_PERSISTENT), module_number TSRMLS_CC);
-        zend_register_long_constant("LPC_BIN_VERIFY_CRC32", sizeof("LPC_BIN_VERIFY_CRC32"), LPC_BIN_VERIFY_CRC32,
-                                    (CONST_CS | CONST_PERSISTENT), module_number TSRMLS_CC);
+        } 
     }
 
     return SUCCESS;
@@ -227,7 +220,7 @@ static PHP_MINIT_FUNCTION(lpc)
 
 /* {{{ PHP_MSHUTDOWN_FUNCTION(lpc) */
 static PHP_MSHUTDOWN_FUNCTION(lpc)
-{
+{ENTER(PHP_MSHUTDOWN_FUNCTION)
     if(LPCG(enabled)) {
         lpc_zend_shutdown(TSRMLS_C);
         lpc_module_shutdown(TSRMLS_C);
@@ -256,7 +249,7 @@ static PHP_RINIT_FUNCTION(lpc)
 
 /* {{{ PHP_RSHUTDOWN_FUNCTION(lpc) */
 static PHP_RSHUTDOWN_FUNCTION(lpc)
-{
+{ENTER(PHP_RSHUTDOWN_FUNCTION)
     if(LPCG(enabled)) {
         lpc_request_shutdown(TSRMLS_C);
     }
@@ -296,13 +289,15 @@ PHP_FUNCTION(lpc_clear_cache)
 }
 /* }}} */    
 
-void *lpc_erealloc_wrapper(void *ptr, size_t size) {
+void *lpc_erealloc_wrapper(void *ptr, size_t size) 
+{
     return _erealloc(ptr, size, 0 ZEND_FILE_LINE_CC ZEND_FILE_LINE_EMPTY_CC);
 }
 
 /* {{{ proto mixed lpc_compile_file(mixed filenames [, bool atomic])
  */
-PHP_FUNCTION(lpc_compile_file) {
+PHP_FUNCTION(lpc_compile_file) 
+{
     zval *file;
     zend_file_handle file_handle;
     zend_op_array *op_array;
@@ -330,8 +325,8 @@ PHP_FUNCTION(lpc_compile_file) {
         return;
     }
 
-    if (Z_TYPE_P(file) != IS_ARRAY && Z_TYPE_P(file) != IS_STRING) {
-        lpc_warning("lpc_compile_file argument must be a string or an array of strings" TSRMLS_CC);
+    if (Z_TYPE_P(file) != IS_STRING) {
+        lpc_warning("lpc_compile_file argument must be a string" TSRMLS_CC);
         RETURN_FALSE;
     }
 
@@ -383,106 +378,6 @@ PHP_FUNCTION(lpc_compile_file) {
             RETVAL_FALSE;
         }
         zend_destroy_file_handle(&file_handle TSRMLS_CC);
-
-    } else { /* IS_ARRAY */
-
-        array_init(return_value);
-
-        t = lpc_time();
-
-        op_arrays = ecalloc(Z_ARRVAL_P(file)->nNumOfElements, sizeof(zend_op_array*));
-        cache_entries = ecalloc(Z_ARRVAL_P(file)->nNumOfElements, sizeof(lpc_cache_entry_t*));
-        keys = ecalloc(Z_ARRVAL_P(file)->nNumOfElements, sizeof(lpc_cache_key_t));
-        zend_hash_internal_pointer_reset_ex(Z_ARRVAL_P(file), &hpos);
-        while(zend_hash_get_current_data_ex(Z_ARRVAL_P(file), (void**)&hentry, &hpos) == SUCCESS) {
-            if (Z_TYPE_PP(hentry) != IS_STRING) {
-                lpc_warning("lpc_compile_file array values must be strings, aborting." TSRMLS_CC);
-                break;
-            }
-            file_handle.type = ZEND_HANDLE_FILENAME;
-            file_handle.filename = Z_STRVAL_PP(hentry);
-            file_handle.free_filename = 0;
-            file_handle.opened_path = NULL;
-
-            if (!lpc_cache_make_file_key(&(keys[i]), file_handle.filename, PG(include_path), t TSRMLS_CC)) {
-                add_assoc_long(return_value, Z_STRVAL_PP(hentry), -1);  /* -1: compilation error */
-                lpc_warning("Error compiling %s in lpc_compile_file." TSRMLS_CC, file_handle.filename);
-                break;
-            }
-
-            if (keys[i].type == LPC_CACHE_KEY_FPFILE) {
-                keys[i].data.fpfile.fullpath = estrndup(keys[i].data.fpfile.fullpath, keys[i].data.fpfile.fullpath_len);
-            }
-
-            orig_current_execute_data = EG(current_execute_data);
-            zend_try {
-                if (lpc_compile_cache_entry(keys[i], &file_handle, ZEND_INCLUDE, t, &op_arrays[i], &cache_entries[i] TSRMLS_CC) != SUCCESS) {
-                    op_arrays[i] = NULL;
-                    cache_entries[i] = NULL;
-                    add_assoc_long(return_value, Z_STRVAL_PP(hentry), -2);  /* -2: input or cache insertion error */
-                    lpc_warning("Error compiling %s in lpc_compile_file." TSRMLS_CC, file_handle.filename);
-                }
-            } zend_catch {
-                EG(current_execute_data) = orig_current_execute_data;
-                EG(in_execution) = 1;
-                CG(unclean_shutdown) = 0;
-                op_arrays[i] = NULL;
-                cache_entries[i] = NULL;
-                add_assoc_long(return_value, Z_STRVAL_PP(hentry), -1);  /* -1: compilation error */
-                lpc_warning("Error compiling %s in lpc_compile_file." TSRMLS_CC, file_handle.filename);
-            } zend_end_try();
-
-            zend_destroy_file_handle(&file_handle TSRMLS_CC);
-            if(op_arrays[i] != NULL) {
-                count++;
-            }
-
-            /* clean out the function/class tables */
-            zend_hash_clean(&cg_function_table);
-            zend_hash_clean(&cg_class_table);
-
-            zend_hash_move_forward_ex(Z_ARRVAL_P(file), &hpos);
-            i++;
-        }
-
-        /* atomically update the cache if no errors or not atomic */
-        ctxt.copy = LPC_COPY_IN_OPCODE;
-        ctxt.force_update = 1;
-        if (count == i || !atomic) {
-            rval = lpc_cache_insert_mult(LPCG(lpc_cache), keys, cache_entries, &ctxt, t, i TSRMLS_CC);
-            atomic_fail = 0;
-        } else {
-            atomic_fail = 1;
-        }
-
-        zend_hash_internal_pointer_reset_ex(Z_ARRVAL_P(file), &hpos);
-        for(c=0; c < i; c++) {
-            zend_hash_get_current_data_ex(Z_ARRVAL_P(file), (void**)&hentry, &hpos);
-            if (rval && rval[c] != 1) {
-                add_assoc_long(return_value, Z_STRVAL_PP(hentry), -2);  /* -2: input or cache insertion error */
-                if (cache_entries[c]) {
-                    lpc_pool_destroy(cache_entries[c]->pool);
-                }
-            }
-            if (op_arrays[c]) {
-                destroy_op_array(op_arrays[c] TSRMLS_CC);
-                efree(op_arrays[c]);
-            }
-            if (atomic_fail && cache_entries[c]) {
-                lpc_pool_destroy(cache_entries[c]->pool);
-            }
-            if (keys[c].type == LPC_CACHE_KEY_FPFILE) {
-                efree((void*)keys[c].data.fpfile.fullpath);
-            }
-            zend_hash_move_forward_ex(Z_ARRVAL_P(file), &hpos);
-        }
-        efree(op_arrays);
-        efree(keys);
-        efree(cache_entries);
-        if (rval) {
-            efree(rval);
-        }
-
     }
 
     /* Return class/function tables to previous states, destroy temp tables */
@@ -502,66 +397,6 @@ PHP_FUNCTION(lpc_compile_file) {
 }
 /* }}} */
 
-////  Will ultimately be removed
-
-/* {{{ proto mixed lpc_bin_dump([array files)
-    Returns a binary dump of the given files from the LPC cache.
-    A NULL for files signals a dump of every entry, while array() will dump nothing.
- */
-PHP_FUNCTION(lpc_bin_dump) {
-
-    zval *z_files = NULL;
-    HashTable *h_files;
-    lpc_bd_t *bd;
-
-    if(!LPCG(enabled)) {
-        lpc_warning("LPC is not enabled, lpc_bin_dump not available." TSRMLS_CC);
-        RETURN_FALSE;
-    }
-
-    if (zend_parse_parameters(ZEND_NUM_ARGS() TSRMLS_CC, "|a!a!", &z_files) == FAILURE) {
-        return;
-    }
-
-    h_files = z_files ? Z_ARRVAL_P(z_files) : NULL;
-    bd = lpc_bin_dump(h_files TSRMLS_CC);
-    if(bd) {
-        RETVAL_STRINGL((char*)bd, bd->size-1, 0);
-    } else {
-        lpc_error("Unknown error encountered during lpc_bin_dump." TSRMLS_CC);
-        RETVAL_NULL();
-    }
-
-    return;
-}
-
-/* {{{ proto mixed lpc_bin_load(string data, [int flags])
-    Load the given binary dump into the LPC file cache.
- */
-PHP_FUNCTION(lpc_bin_load) {
-
-    int data_len;
-    char *data;
-    long flags = 0;
-
-    if(!LPCG(enabled)) {
-        lpc_warning("LPC is not enabled, lpc_bin_load not available." TSRMLS_CC);
-        RETURN_FALSE;
-    }
-
-    if (zend_parse_parameters(ZEND_NUM_ARGS() TSRMLS_CC, "s|l", &data, &data_len, &flags) == FAILURE) {
-        return;
-    }
-
-    if(!data_len || data_len != ((lpc_bd_t*)data)->size -1) {
-        lpc_error("lpc_bin_load string argument does not appear to be a valid LPC binary dump due to size (%d vs expected %d)." TSRMLS_CC, data_len, ((lpc_bd_t*)data)->size -1);
-        RETURN_FALSE;
-    }
-
-    lpc_bin_load((lpc_bd_t*)data, (int)flags TSRMLS_CC);
-
-    RETURN_TRUE;
-}
 
 /* {{{ arginfo */
 #if (PHP_MAJOR_VERSION >= 6 || (PHP_MAJOR_VERSION == 5 && PHP_MINOR_VERSION >= 3))
@@ -586,16 +421,6 @@ ZEND_BEGIN_ARG_INFO_EX(arginfo_lpc_compile_file, 0, 0, 1)
     ZEND_ARG_INFO(0, atomic)
 ZEND_END_ARG_INFO()
 
-PHP_LPC_ARGINFO
-ZEND_BEGIN_ARG_INFO_EX(arginfo_lpc_bin_dump, 0, 0, 0)
-    ZEND_ARG_INFO(0, files)
-ZEND_END_ARG_INFO()
-
-PHP_LPC_ARGINFO
-ZEND_BEGIN_ARG_INFO_EX(arginfo_lpc_bin_load, 0, 0, 1)
-    ZEND_ARG_INFO(0, data)
-    ZEND_ARG_INFO(0, flags)
-ZEND_END_ARG_INFO()
 /* }}} */
 
 /* {{{ lpc_functions[] */
@@ -603,8 +428,6 @@ zend_function_entry lpc_functions[] = {
     PHP_FE(lpc_cache_info,          arginfo_lpc_cache_info)
     PHP_FE(lpc_clear_cache,         arginfo_lpc_clear_cache)
     PHP_FE(lpc_compile_file,        arginfo_lpc_compile_file)
-    PHP_FE(lpc_bin_dump,            arginfo_lpc_bin_dump)
-    PHP_FE(lpc_bin_load,            arginfo_lpc_bin_load)
     {NULL, NULL, NULL}
 };
 /* }}} */

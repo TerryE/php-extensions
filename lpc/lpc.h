@@ -34,6 +34,15 @@
 #ifndef LPC_H
 #define LPC_H
 
+#define                    APC_DEBUG   1
+// #define                  __DEBUG_LPC__ 1
+
+#ifdef APC_DEBUG
+#  define ENTER(s) int dummy_to_be_ignored = lpc_debug_enter(#s);
+extern int lpc_debug_enter(char *s);
+#else 
+#  define ENTER(s) 
+#endif
 /*
  * This module defines utilities and helper functions used elsewhere in LPC.
  */
@@ -61,6 +70,11 @@
 #include "php.h"
 #include "main/php_streams.h"
 
+#include "lpc_cache.h"
+#include "lpc_stack.h"
+#include "lpc_php.h"
+#include "lpc_main.h"
+
 /* typedefs for extensible memory allocators */
 typedef void* (*lpc_malloc_t)(size_t TSRMLS_DC);
 typedef void  (*lpc_free_t)  (void * TSRMLS_DC);
@@ -70,9 +84,6 @@ static inline void* lpc_emalloc(size_t n TSRMLS_DC)           { return pemalloc 
 static inline void* lpc_erealloc(void* p, size_t n TSRMLS_DC) { return perealloc (p, n, 1); }
 static inline void  lpc_efree(void* p TSRMLS_DC)              { return pefree (p, 1); }
 static inline char* lpc_estrdup(const char* s TSRMLS_DC)      { return pestrdup (s, 1); }
-
-extern void* lpc_xstrdup(const char* s, lpc_malloc_t f TSRMLS_DC);
-extern void* lpc_xmemcpy(const void* p, size_t n, lpc_malloc_t f TSRMLS_DC);
 
 /* console display functions */
 extern void lpc_error(const char *format TSRMLS_DC, ...);
@@ -122,6 +133,65 @@ extern HashTable* lpc_flip_hash(HashTable *hash);
 # define LPC_ALLOC 
 # define LPC_HOTSPOT 
 #endif
+
+ZEND_BEGIN_MODULE_GLOBALS(lpc)
+    /* configuration parameters */
+    zend_bool enabled;      /* if true, lpc is enabled (defaults to true) */
+    long shm_segments;      /* number of shared memory segments to use */
+    long shm_size;          /* size of each shared memory segment (in MB) */
+    char** filters;         /* array of regex filters that prevent caching */
+    void* compiled_filters; /* compiled regex filters */
+
+    /* module variables */
+    zend_bool initialized;       /* true if module was initialized */
+    lpc_stack_t* cache_stack;    /* the stack of cached executable code */
+    zend_bool cache_by_default;  /* true if files should be cached unless filtered out */
+                                 /* false if files should only be cached if filtered in */
+    long file_update_protection; /* Age in seconds before a file is eligible to be cached - 0 to disable */
+    zend_bool enable_cli;        /* Flag to override turning LPC off for CLI */
+    long max_file_size;          /* Maximum size of file, in bytes that LPC will be allowed to cache */
+    zend_bool fpstat;            /* true if fullpath includes should be stat'ed */
+    zend_bool canonicalize;      /* true if relative paths should be canonicalized in no-stat mode */
+    zend_bool stat_ctime;        /* true if ctime in addition to mtime should be checked */
+    zend_bool report_autofilter; /* true for auto-filter warnings */
+    zend_bool include_once;      /* Override the ZEND_INCLUDE_OR_EVAL opcode handler to avoid pointless fopen()s [still experimental] */
+    lpc_optimize_function_t lpc_optimize_function;   /* optimizer function callback */
+    HashTable copied_zvals;      /* my_copy recursion detection list */
+    zend_bool force_file_update; /* force files to be updated during lpc_compile_file */
+    char canon_path[MAXPATHLEN]; /* canonical path for key data */
+    zend_bool coredump_unmap;    /* Trap signals that coredump and unmap shared memory */
+    lpc_cache_t *current_cache;  /* current cache being modified/read */
+    zend_bool file_md5;          /* record md5 hash of files */
+//    void *lpc_bd_alloc_ptr;      /* bindump alloc() ptr */
+//    void *lpc_bd_alloc_ubptr;    /* bindump alloc() upper bound ptr */
+//    HashTable lpc_bd_alloc_list; /* bindump alloc() ptr list */
+    zend_bool use_request_time;  /* use the SAPI request start time for TTL */
+    zend_bool lazy_functions;        /* enable/disable lazy function loading */
+    HashTable *lazy_function_table;  /* lazy function entry table */
+    zend_bool lazy_classes;          /* enable/disable lazy class loading */
+    HashTable *lazy_class_table;     /* lazy class entry table */
+#ifdef ZEND_ENGINE_2_4
+    long shm_strings_buffer;
+#endif
+    char *serializer_name;        /* the serializer config option */
+    lpc_serializer_t *serializer; /* the actual serializer in use */
+    lpc_cache_t* lpc_cache;       /* the global compiler cache */
+	HashTable pools;              /* Table of created pools */
+	zend_bool force_cache_delete; /* Flag that the file D/B is to be deleted and further loading disabbled */
+    char *clear_cookie;	          /* Name of Cookie which will force a cache clear */
+    char *clear_parameter;        /* Name of Request parameter which will force a cache clear */
+	void* lpc_compiled_filters;   /* compiled filters */
+ZEND_END_MODULE_GLOBALS(lpc)
+
+/* (the following declaration is defined in php_lpc.c) */
+ZEND_EXTERN_MODULE_GLOBALS(lpc)
+
+#ifdef ZTS
+# define LPCG(v) TSRMG(lpc_globals_id, zend_lpc_globals *, v)
+#else
+# define LPCG(v) (lpc_globals.v)
+#endif
+
 
 #endif
 

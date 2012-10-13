@@ -46,22 +46,6 @@
 #   include "ext/standard/php_smart_str.h"
 #endif
 
-void* LPC_ALLOC lpc_xstrdup(const char* s, lpc_malloc_t f TSRMLS_DC)
-{
-    return s != NULL ? lpc_xmemcpy(s, strlen(s)+1, f TSRMLS_CC) : NULL;
-}
-
-void* LPC_ALLOC lpc_xmemcpy(const void* p, size_t n, lpc_malloc_t f TSRMLS_DC)
-{
-    void* q;
-
-    if (p != NULL && (q = f(n TSRMLS_CC)) != NULL) {
-        memcpy(q, p, n);
-        return q;
-    }
-    return NULL;
-}
-
 /* }}} */
 
 /* {{{ console display functions */
@@ -95,7 +79,7 @@ void lpc_debug(const char *format TSRMLS_DC, ...) {}
 /* {{{ string and text manipulation */
 
 char** lpc_tokenize(const char* s, char delim TSRMLS_DC)
-{
+{ENTER(lpc_tokenize)
     char** tokens;      /* array of tokens, NULL terminated */
     int size;           /* size of tokens array */
     int n;              /* index of next token in tokens array */
@@ -143,7 +127,7 @@ char** lpc_tokenize(const char* s, char delim TSRMLS_DC)
 /* {{{ lpc_win32_restat */
 #ifdef PHP_WIN32
 static int lpc_restat(lpc_fileinfo_t *fileinfo TSRMLS_DC)
-{
+{ENTER(lpc_restat)
     HANDLE hFile;
     BY_HANDLE_FILE_INFORMATION hInfo;
 
@@ -204,7 +188,7 @@ static int lpc_restat(lpc_fileinfo_t *fileinfo TSRMLS_DC)
 /* }}} */
 
 int lpc_search_paths(const char* filename, const char* path, lpc_fileinfo_t* fileinfo TSRMLS_DC)
-{
+{ENTER(lpc_search_paths)
     char** paths = NULL;
     char *exec_fname;
     int exec_fname_length;
@@ -329,7 +313,7 @@ typedef struct {
 } while(0)
 
 void* lpc_regex_compile_array(char* patterns[] TSRMLS_DC)
-{
+{ENTER(lpc_regex_compile_array)
     lpc_regex* regs;
     int npat;
     smart_str pmatch = {0,};
@@ -370,7 +354,7 @@ void* lpc_regex_compile_array(char* patterns[] TSRMLS_DC)
 }
 
 void lpc_regex_destroy_array(void* p TSRMLS_DC)
-{
+{ENTER(lpc_regex_destroy_array)
     if (p != NULL) {
         lpc_regex* regs = (lpc_regex*) p;
         lpc_efree(regs TSRMLS_CC);
@@ -385,7 +369,7 @@ void lpc_regex_destroy_array(void* p TSRMLS_DC)
 
 
 int lpc_regex_match_array(void* p, const char* input)
-{
+{ENTER(lpc_regex_match_array)
     lpc_regex* regs;
 
     if (!p)
@@ -400,18 +384,18 @@ int lpc_regex_match_array(void* p, const char* input)
 }
 #else /* no pcre */
 void* lpc_regex_compile_array(char* patterns[] TSRMLS_DC)
-{
+{ENTER(lpc_regex_compile_array)
     if(patterns && patterns[0] != NULL) {
         lpc_warning("pcre missing, disabling filters" TSRMLS_CC);
     }
     return NULL;
 }
 void lpc_regex_destroy_array(void* p)
-{
+{ENTER(lpc_regex_destroy_array)
     /* nothing */
 }
 int lpc_regex_match_array(void* p, const char* input)
-{
+{ENTER(lpc_regex_match_array)
     return 0;
 }
 #endif
@@ -488,7 +472,7 @@ static unsigned int crc32tab[] = {
 };
 
 unsigned int lpc_crc32(const char* buf, int len)
-{
+{ENTER(lpc_crc32)
     int i;
     int k;
     unsigned int crc;
@@ -508,7 +492,7 @@ unsigned int lpc_crc32(const char* buf, int len)
 /* crc32gen: generate the nth (0..255) crc32 table value */
 #if 0
 static unsigned long crc32gen(int n)
-{
+{ENTER(crc32gen)
     int i;
     unsigned long crc;
 
@@ -529,7 +513,8 @@ static unsigned long crc32gen(int n)
 
 
 /* {{{ lpc_flip_hash() */
-HashTable* lpc_flip_hash(HashTable *hash) {
+HashTable* lpc_flip_hash(HashTable *hash)
+{ENTER(lpc_flip_hash)
     zval **entry, *data;
     HashTable *new_hash;
     HashPosition pos;

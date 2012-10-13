@@ -28,8 +28,9 @@
 /* $Id: $ */
 
 
+#include "lpc.h"
 #include "lpc_pool.h"
-#include "lpc_globals.h"
+#include "lpc_debug.h"
 
 #include <assert.h>
 
@@ -50,7 +51,7 @@
 
 /* {{{ _lpc_pool_create */
 lpc_pool* _lpc_pool_create(lpc_pool_type_t type TSRMLS_DC ZEND_FILE_LINE_DC)
-{
+{ENTER(_lpc_pool_create)
     lpc_pool *pool;
 
 	switch(type) {
@@ -80,18 +81,11 @@ lpc_pool* _lpc_pool_create(lpc_pool_type_t type TSRMLS_DC ZEND_FILE_LINE_DC)
     pool->size  = 0;
     pool->count = 0;
 
-	if (type == LPC_SERIALPOOL) {
-		pool->bd_storage   = pool_emalloc(BD_ALLOC_UNIT);
-		pool->bd_allocated = BD_ALLOC_UNIT;
-		pool->element_tail = NULL;
-
-	} else {
-		pool->bd_storage   = NULL;
-		pool->bd_allocated = 0;
-		pool->element_tail = &(pool->element_head);
-	}
-	pool->bd_next_free     = 0;
-	pool->element_head     = NULL;
+	pool->element_head = NULL;
+	pool->element_tail = (type == LPC_SERIALPOOL) ? NULL :  &(pool->element_head);
+	pool->bd_storage   = NULL;
+	pool->bd_allocated = 0;
+	pool->bd_next_free = 0;
 
     zend_hash_next_index_insert(&LPCG(pools), &pool, sizeof(lpc_pool *), NULL);
     return pool;
@@ -99,9 +93,8 @@ lpc_pool* _lpc_pool_create(lpc_pool_type_t type TSRMLS_DC ZEND_FILE_LINE_DC)
 /* }}} */
 
 /* {{{ _lpc_pool_destroy */
-inline static void free_entry (void *p) { efree(p); }
 void _lpc_pool_destroy(lpc_pool *pool TSRMLS_DC ZEND_FILE_LINE_DC)
-{
+{ENTER(_lpc_pool_destroy)
 	if (pool->type == LPC_SERIALPOOL) {
 		efree(pool->bd_storage);
 	} else if (pool->element_head != NULL) {
@@ -110,7 +103,7 @@ void _lpc_pool_destroy(lpc_pool *pool TSRMLS_DC ZEND_FILE_LINE_DC)
 		/* Walk the linked list freeing the element storage */
 		for (e = pool->element_head, i=0 ; e != pool->element_tail; e = e_nxt) {
 			e_nxt = *((void **) e);
-lpc_debug("freeing pool element %d at %x in pool %x" TSRMLS_CC, i++, (uint) e, (uint) pool); 
+lpc_debug("freeing pool element %4d at 0x%lx in pool 0x%lx" TSRMLS_CC, i++, (unsigned long) e, (unsigned long) pool); 
 			efree(e);
 		}
 	}
@@ -123,9 +116,20 @@ lpc_debug("freeing pool element %d at %x in pool %x" TSRMLS_CC, i++, (uint) e, (
 }
 /* }}} */
 
+/* {{{ _lpc_pool_set_size */
+void* _lpc_pool_set_size(lpc_pool* pool, size_t size TSRMLS_DC ZEND_FILE_LINE_DC)
+{ENTER(_lpc_pool_set_size)
+ 	if (pool->type == LPC_SERIALPOOL && pool->bd_storage == NULL) {
+		size_t rounded_size = (size + sizeof(void *) - 1) & (~((size_t) (sizeof(void *)-1)));
+		pool->bd_storage   = pool_emalloc(rounded_size);
+		pool->bd_allocated = rounded_size;
+	}
+}
+/* }}} */
+
 /* {{{ _lpc_pool_alloc */
 void* _lpc_pool_alloc(lpc_pool* pool, size_t size TSRMLS_DC ZEND_FILE_LINE_DC)
-{
+{ENTER(_lpc_pool_alloc)
 	void *element;
 
  	if (pool->type == LPC_SERIALPOOL) {
@@ -133,6 +137,13 @@ void* _lpc_pool_alloc(lpc_pool* pool, size_t size TSRMLS_DC ZEND_FILE_LINE_DC)
 		 * boundary as it would be nice for this code to work on ARM without barfing */
 		size_t rounded_size = (size + sizeof(void *) - 1) & (~((size_t) (sizeof(void *)-1)));
 		rounded_size += sizeof(off_t);
+
+		/* do an initial allocation of BD_ALLOC_UNIT if size hasn't already been set. */
+
+		if (pool->bd_storage == NULL) {
+			pool->bd_storage   = pool_emalloc(BD_ALLOC_UNIT);
+			pool->bd_allocated = BD_ALLOC_UNIT;
+		}
 
 		/* grow the serial storage by another alloc unit size if necessary */
 		if (pool->bd_next_free + rounded_size > pool->bd_allocated) {
@@ -171,7 +182,7 @@ void* _lpc_pool_alloc(lpc_pool* pool, size_t size TSRMLS_DC ZEND_FILE_LINE_DC)
 /* {{{ lpc_pstrdup */
 
 void* _lpc_pool_strdup(const char* s, lpc_pool* pool TSRMLS_DC ZEND_FILE_LINE_DC)
-{
+{ENTER(_lpc_pool_strdup)
     return (s != NULL) ? 
 		_lpc_pool_memcpy(s, (strlen(s) + 1), pool TSRMLS_CC ZEND_FILE_LINE_RELAY_CC) : 
 		NULL;
@@ -180,7 +191,7 @@ void* _lpc_pool_strdup(const char* s, lpc_pool* pool TSRMLS_DC ZEND_FILE_LINE_DC
 
 /* {{{ lpc_pmemcpy */
 void* _lpc_pool_memcpy(const void* p, size_t n, lpc_pool* pool TSRMLS_DC ZEND_FILE_LINE_DC)
-{
+{ENTER(_lpc_pool_memcpy)
     void* q;
 
     if (p != NULL && 

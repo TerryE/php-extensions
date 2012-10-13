@@ -30,9 +30,9 @@
 
 /* $Id: lpc_cache.c 307332 2011-01-10 09:01:23Z pajoye $ */
 
+#include "lpc.h"
 #include "lpc_cache.h"
 #include "lpc_zend.h"
-#include "lpc_globals.h"
 #include "SAPI.h"
 #include "TSRM.h"
 #include "ext/standard/md5.h"
@@ -47,7 +47,7 @@
 
 /* {{{ hash */
 static unsigned int hash(lpc_cache_key_t key)
-{
+{ENTER(hash)
     return (unsigned int)(key.data.file.device + key.data.file.inode);
 }
 /* }}} */
@@ -74,7 +74,7 @@ static int const primes[] = {
 };
 
 static int make_prime(int n)
-{
+{ENTER(make_prime)
     int *k = (int*)primes; 
     while(*k) {
         if((*k) > n) return *k;
@@ -86,7 +86,7 @@ static int make_prime(int n)
 
 /* {{{ make_slot */
 slot_t* make_slot(lpc_cache_key_t key, lpc_cache_entry_t* value, slot_t* next, time_t t TSRMLS_DC)
-{
+{ENTER(make_slot)
     slot_t* p = lpc_pool_alloc(value->pool, sizeof(slot_t));
 
     if (!p) return NULL;
@@ -110,14 +110,14 @@ slot_t* make_slot(lpc_cache_key_t key, lpc_cache_entry_t* value, slot_t* next, t
 
 /* {{{ free_slot */
 static void free_slot(slot_t* slot TSRMLS_DC)
-{
+{ENTER(free_slot)
     lpc_pool_destroy(slot->value->pool);
 }
 /* }}} */
 
 /* {{{ remove_slot */
 static void remove_slot(lpc_cache_t* cache, slot_t** slot TSRMLS_DC)
-{
+{ENTER(remove_slot)
     slot_t* dead = *slot;
     *slot = (*slot)->next;
 
@@ -136,7 +136,7 @@ static void remove_slot(lpc_cache_t* cache, slot_t** slot TSRMLS_DC)
 
 /* {{{ lpc_cache_create */
 lpc_cache_t* lpc_cache_create(TSRMLS_D)
-{
+{ENTER(lpc_cache_create)
 int size_hint;
     lpc_cache_t *cache;
     int num_slots;
@@ -160,7 +160,7 @@ int size_hint;
 
 /* {{{ lpc_cache_destroy */
 void lpc_cache_destroy(lpc_cache_t *cache TSRMLS_DC)
-{
+{ENTER(lpc_cache_destroy)
 	if (cache->addr != NULL) {
 		efree(cache->addr);
 	}
@@ -170,7 +170,7 @@ void lpc_cache_destroy(lpc_cache_t *cache TSRMLS_DC)
 
 /* {{{ lpc_cache_clear */
 void lpc_cache_clear(lpc_cache_t* cache TSRMLS_DC)
-{
+{ENTER(lpc_cache_clear)
     int i;
 
     if(!cache) return;
@@ -190,13 +190,9 @@ void lpc_cache_clear(lpc_cache_t* cache TSRMLS_DC)
 /* }}} */
 
 /* {{{ lpc_cache_insert */
-static inline int _lpc_cache_insert(lpc_cache_t* cache,
-                     lpc_cache_key_t key,
-                     lpc_cache_entry_t* value,
-                     lpc_context_t* ctxt,
-                     time_t t
-                     TSRMLS_DC)
-{
+int lpc_cache_insert(lpc_cache_t* cache, lpc_cache_key_t key, lpc_cache_entry_t* value, lpc_context_t *ctxt, time_t t TSRMLS_DC)
+{ENTER(lpc_cache_insert)
+    int rval;
     slot_t** slot;
 
     if (!value) {
@@ -242,35 +238,9 @@ static inline int _lpc_cache_insert(lpc_cache_t* cache,
 }
 /* }}} */
 
-/* {{{ lpc_cache_insert */
-int lpc_cache_insert(lpc_cache_t* cache, lpc_cache_key_t key, lpc_cache_entry_t* value, lpc_context_t *ctxt, time_t t TSRMLS_DC)
-{
-    int rval;
-    rval = _lpc_cache_insert(cache, key, value, ctxt, t TSRMLS_CC);
-     return rval;
-}
-/* }}} */
-
-/* {{{ lpc_cache_insert */
-int *lpc_cache_insert_mult(lpc_cache_t* cache, lpc_cache_key_t* keys, lpc_cache_entry_t** values, lpc_context_t *ctxt, time_t t, int num_entries TSRMLS_DC)
-{
-    int *rval;
-    int i;
-
-    rval = emalloc(sizeof(int) * num_entries);
-    for (i=0; i < num_entries; i++) {
-        if (values[i]) {
-            ctxt->pool = values[i]->pool;
-            rval[i] = _lpc_cache_insert(cache, keys[i], values[i], ctxt, t TSRMLS_CC);
-        }
-    }
-    return rval;
-}
-/* }}} */
-
 /* {{{ lpc_cache_find_slot */
 static inline slot_t* lpc_cache_find_slot(lpc_cache_t* cache, lpc_cache_key_t key, time_t t TSRMLS_DC)
-{
+{ENTER(lpc_cache_find_slot)
     slot_t** slot;
     volatile slot_t* retval = NULL;
 
@@ -306,7 +276,7 @@ static inline slot_t* lpc_cache_find_slot(lpc_cache_t* cache, lpc_cache_key_t ke
 
 /* {{{ lpc_cache_find */
 lpc_cache_entry_t* lpc_cache_find(lpc_cache_t* cache, lpc_cache_key_t key, time_t t TSRMLS_DC)
-{
+{ENTER(lpc_cache_find)
     slot_t * slot = lpc_cache_find_slot(cache, key, t TSRMLS_CC);
     return (slot) ? slot->value : NULL;
 }
@@ -314,8 +284,8 @@ lpc_cache_entry_t* lpc_cache_find(lpc_cache_t* cache, lpc_cache_key_t key, time_
 
 /* {{{ lpc_cache_release */
 void lpc_cache_release(lpc_cache_t* cache, lpc_cache_entry_t* entry TSRMLS_DC)
-{
-////////////////////////////  Needs code inserting here
+{ENTER(lpc_cache_release)
+	entry->ref_count--;
 }
 /* }}} */
 
@@ -325,7 +295,7 @@ int lpc_cache_make_file_key(lpc_cache_key_t* key,
                        const char* include_path,
                        time_t t
                        TSRMLS_DC)
-{
+{ENTER(lpc_cache_make_file_key)
     struct stat *tmp_buf=NULL;
     struct lpc_fileinfo_t *fileinfo = NULL;
     int len;
@@ -453,7 +423,7 @@ lpc_cache_entry_t* lpc_cache_make_file_entry(const char* filename,
                                         lpc_class_t* classes,
                                         lpc_context_t* ctxt
                                         TSRMLS_DC)
-{
+{ENTER(lpc_cache_make_file_entry)
     lpc_cache_entry_t* entry;
     lpc_pool* pool = ctxt->pool;
 
@@ -482,7 +452,7 @@ lpc_cache_entry_t* lpc_cache_make_file_entry(const char* filename,
 
 /* {{{ */
 static zval* lpc_cache_link_info(lpc_cache_t *cache, slot_t* p TSRMLS_DC)
-{
+{ENTER(lpc_cache_link_info)
     zval *link = NULL;
     char md5str[33];
 
@@ -537,7 +507,7 @@ static zval* lpc_cache_link_info(lpc_cache_t *cache, slot_t* p TSRMLS_DC)
 
 /* {{{ lpc_cache_info */
 zval* lpc_cache_info(lpc_cache_t* cache, zend_bool limited TSRMLS_DC)
-{
+{ENTER(lpc_cache_info)
     zval *info = NULL;
     zval *list = NULL;
     zval *deleted_list = NULL;

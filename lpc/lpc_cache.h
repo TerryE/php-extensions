@@ -162,9 +162,6 @@ extern void lpc_cache_clear(T cache TSRMLS_DC);
 extern int lpc_cache_insert(T cache, lpc_cache_key_t key,
                             lpc_cache_entry_t* value, lpc_context_t* ctxt, time_t t TSRMLS_DC);
 
-extern int *lpc_cache_insert_mult(lpc_cache_t* cache, lpc_cache_key_t* keys,
-                            lpc_cache_entry_t** values, lpc_context_t *ctxt, time_t t, int num_entries TSRMLS_DC);
-
 /*
  * lpc_cache_find searches for a cache entry by filename, and returns a
  * pointer to the entry if found, NULL otherwise.

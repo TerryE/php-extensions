@@ -28,7 +28,6 @@
 /* $Id: lpc_zend.c 307048 2011-01-03 23:53:17Z kalle $ */
 
 #include "lpc_zend.h"
-#include "lpc_globals.h"
 
 /* true global */
 int lpc_reserved_offset;
@@ -117,7 +116,7 @@ static zval *lpc_get_zval_ptr(znode *node, zval **freeval, zend_execute_data *ex
 #endif
 
 static int ZEND_FASTCALL lpc_op_ZEND_INCLUDE_OR_EVAL(ZEND_OPCODE_HANDLER_ARGS)
-{
+{ENTER(lpc_op_ZEND_INCLUDE_OR_EVAL)
     LPC_ZEND_OPLINE
     zval *freeop1 = NULL;
     zval *inc_filename = NULL, tmp_inc_filename;
@@ -241,7 +240,7 @@ void lpc_zend_init(TSRMLS_D)
 }
 
 void lpc_zend_shutdown(TSRMLS_D)
-{
+{ENTER(lpc_zend_shutdown)
     if (!LPCG(include_once)) {
         /* Nothing changed, nothing to restore */
         return;

@@ -37,7 +37,7 @@ struct lpc_stack_t {
 };
 
 lpc_stack_t* lpc_stack_create(int size_hint TSRMLS_DC)
-{
+{ENTER(lpc_stack_create)
     lpc_stack_t* stack = (lpc_stack_t*) lpc_emalloc(sizeof(lpc_stack_t) TSRMLS_CC);
 
     stack->capacity = (size_hint > 0) ? size_hint : 10;
@@ -48,7 +48,7 @@ lpc_stack_t* lpc_stack_create(int size_hint TSRMLS_DC)
 }
 
 void lpc_stack_destroy(lpc_stack_t* stack TSRMLS_DC)
-{
+{ENTER(lpc_stack_destroy)
     if (stack != NULL) {
         lpc_efree(stack->data TSRMLS_CC);
         lpc_efree(stack TSRMLS_CC);
@@ -56,13 +56,13 @@ void lpc_stack_destroy(lpc_stack_t* stack TSRMLS_DC)
 }
 
 void lpc_stack_clear(lpc_stack_t* stack)
-{
+{ENTER(lpc_stack_clear)
     assert(stack != NULL);
     stack->size = 0;
 }
 
 void lpc_stack_push(lpc_stack_t* stack, void* item TSRMLS_DC)
-{
+{ENTER(lpc_stack_push)
     assert(stack != NULL);
     if (stack->size == stack->capacity) {
         stack->capacity *= 2;
@@ -72,25 +72,25 @@ void lpc_stack_push(lpc_stack_t* stack, void* item TSRMLS_DC)
 }
 
 void* lpc_stack_pop(lpc_stack_t* stack)
-{
+{ENTER(lpc_stack_pop)
     assert(stack != NULL && stack->size > 0);
     return stack->data[--stack->size];
 }
 
 void* lpc_stack_top(lpc_stack_t* stack)
-{
+{ENTER(lpc_stack_top)
     assert(stack != NULL && stack->size > 0);
     return stack->data[stack->size-1];
 }
 
 void* lpc_stack_get(lpc_stack_t* stack, int n)
-{
+{ENTER(lpc_stack_get)
     assert(stack != NULL && stack->size > n);
     return stack->data[n];
 }
 
 int lpc_stack_size(lpc_stack_t* stack)
-{
+{ENTER(lpc_stack_size)
     assert(stack != NULL);
     return stack->size;
 }

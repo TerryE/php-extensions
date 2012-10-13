@@ -30,7 +30,6 @@
 #ifndef LPC_POOL_H
 #define LPC_POOL_H
 
-#include "lpc.h"
 #include "zend.h"
 
 /* A pool is a group of dynamically allocated memory objects with a common set of properties:
@@ -64,6 +63,8 @@ typedef enum {
  */
 #define lpc_pool_create(type) ((lpc_pool *) _lpc_pool_create(type TSRMLS_CC ZEND_FILE_LINE_CC))
 #define lpc_pool_destroy(pool)  _lpc_pool_destroy(pool TSRMLS_CC ZEND_FILE_LINE_CC)
+#define lpc_pool_set_size(pool, size) _lpc_pool_set_size(pool, size TSRMLS_CC ZEND_FILE_LINE_DC)
+
 #define lpc_pool_alloc(pool, size)  ((void *) _lpc_pool_alloc(pool, size TSRMLS_CC ZEND_FILE_LINE_CC))
 #define lpc_pstrdup(s,ptrsmls)  ((void *) _lpc_pool_strdup((s),ptrsmls ZEND_FILE_LINE_CC))
 #define lpc_pmemcpy(p,n,ptrsmls) ((void *) _lpc_pool_memcpy(p,n,ptrsmls ZEND_FILE_LINE_CC))

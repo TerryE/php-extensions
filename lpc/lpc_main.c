@@ -30,13 +30,8 @@
 
 /* $Id: lpc_main.c 307259 2011-01-08 12:05:24Z gopalv $ */
 
-#include "lpc_php.h"
-#include "lpc_main.h"
 #include "lpc.h"
-#include "lpc_cache.h"
-#include "lpc_compile.h"
-#include "lpc_globals.h"
-#include "lpc_stack.h"
+#include "lpc_php.h"
 #include "lpc_zend.h"
 #include "zend_API.h"
 #include "zend_alloc.h"
@@ -66,7 +61,7 @@ static lpc_serializer_t lpc_serializers[LPC_MAX_SERIALIZERS] = {{0,}};
 
 /* {{{ get/set old_compile_file (to interact with other extensions that need the compile hook) */
 static zend_compile_t* set_compile_hook(zend_compile_t *ptr)
-{
+{ENTER(set_compile_hook)
     zend_compile_t *retval = old_compile_file;
 
     if (ptr != NULL) old_compile_file = ptr;
@@ -76,7 +71,7 @@ static zend_compile_t* set_compile_hook(zend_compile_t *ptr)
 
 /* {{{ install_function */
 static int install_function(lpc_function_t fn, lpc_context_t* ctxt, int lazy TSRMLS_DC)
-{
+{ENTER(install_function)
     int status;
 
 #if LPC_HAVE_LOOKUP_HOOKS
@@ -110,7 +105,8 @@ static int install_function(lpc_function_t fn, lpc_context_t* ctxt, int lazy TSR
 /* }}} */
 
 /* {{{ lpc_lookup_function_hook */
-int lpc_lookup_function_hook(char *name, int len, ulong hash, zend_function **fe) {
+int lpc_lookup_function_hook(char *name, int len, ulong hash, zend_function **fe)
+{ENTER(lpc_lookup_function_hook)
     lpc_function_t *fn;
     int status = FAILURE;
     lpc_context_t ctxt = {0,};
@@ -135,7 +131,7 @@ int lpc_lookup_function_hook(char *name, int len, ulong hash, zend_function **fe
 
 /* {{{ install_class */
 static int install_class(lpc_class_t cl, lpc_context_t* ctxt, int lazy TSRMLS_DC)
-{
+{ENTER(install_class)
     zend_class_entry* class_entry = cl.class_entry;
     zend_class_entry* parent = NULL;
     int status;
@@ -238,8 +234,8 @@ static int install_class(lpc_class_t cl, lpc_context_t* ctxt, int lazy TSRMLS_DC
 /* }}} */
 
 /* {{{ lpc_lookup_class_hook */
-int lpc_lookup_class_hook(char *name, int len, ulong hash, zend_class_entry ***ce) {
-
+int lpc_lookup_class_hook(char *name, int len, ulong hash, zend_class_entry ***ce)
+{ENTER(lpc_lookup_class_hook)
     lpc_class_t *cl;
     lpc_context_t ctxt = {0,};
     TSRMLS_FETCH();
@@ -270,7 +266,7 @@ int lpc_lookup_class_hook(char *name, int len, ulong hash, zend_class_entry ***c
 
 /* {{{ uninstall_class */
 static int uninstall_class(lpc_class_t cl TSRMLS_DC)
-{
+{ENTER(uninstall_class)
     int status;
 
     status = zend_hash_del(EG(class_table),
@@ -285,7 +281,7 @@ static int uninstall_class(lpc_class_t cl TSRMLS_DC)
 
 /* {{{ copy_function_name (taken from zend_builtin_functions.c to ensure future compatibility with LPC) */
 static int copy_function_name(lpc_function_t *pf TSRMLS_DC, int num_args, va_list args, zend_hash_key *hash_key)
-{
+{ENTER(copy_function_name)
     zval *internal_ar = va_arg(args, zval *),
          *user_ar     = va_arg(args, zval *);
     zend_function *func = pf->function;
@@ -305,7 +301,7 @@ static int copy_function_name(lpc_function_t *pf TSRMLS_DC, int num_args, va_lis
 
 /* {{{ copy_class_or_interface_name (taken from zend_builtin_functions.c to ensure future compatibility with LPC) */
 static int copy_class_or_interface_name(lpc_class_t *cl TSRMLS_DC, int num_args, va_list args, zend_hash_key *hash_key)
-{
+{ENTER(copy_class_or_interface_name)
     zval *array = va_arg(args, zval *);
     zend_uint mask = va_arg(args, zend_uint);
     zend_uint comply = va_arg(args, zend_uint);
@@ -323,7 +319,8 @@ static int copy_class_or_interface_name(lpc_class_t *cl TSRMLS_DC, int num_args,
 /* }}} */
 
 /* {{{ lpc_defined_function_hook */
-int lpc_defined_function_hook(zval *internal, zval *user) {
+int lpc_defined_function_hook(zval *internal, zval *user)
+{ENTER(lpc_defined_function_hook)
     TSRMLS_FETCH();
     zend_hash_apply_with_arguments(LPCG(lazy_function_table) 
 #ifdef ZEND_ENGINE_2_3
@@ -335,7 +332,8 @@ int lpc_defined_function_hook(zval *internal, zval *user) {
 /* }}} */
 
 /* {{{ lpc_declared_class_hook */
-int lpc_declared_class_hook(zval *classes, zend_uint mask, zend_uint comply) {
+int lpc_declared_class_hook(zval *classes, zend_uint mask, zend_uint comply)
+{ENTER(lpc_declared_class_hook)
     TSRMLS_FETCH();
     zend_hash_apply_with_arguments(LPCG(lazy_class_table) 
 #ifdef ZEND_ENGINE_2_3
@@ -350,7 +348,7 @@ int lpc_declared_class_hook(zval *classes, zend_uint mask, zend_uint comply) {
 static zend_op_array* cached_compile(zend_file_handle* h,
                                      int type,
                                      lpc_context_t* ctxt TSRMLS_DC)
-{
+{ENTER(cached_compile)
     lpc_cache_entry_t* cache_entry;
     int i, ii;
 
@@ -418,7 +416,7 @@ zend_bool lpc_compile_cache_entry(lpc_cache_key_t key, zend_file_handle* h, int 
         return FAILURE;
     }
 
-    ctxt.pool = lpc_pool_create(LPC_SHAREDPOOL);
+    ctxt.pool = lpc_pool_create(LPC_SERIALPOOL);  /* was SHARED */
     if (!ctxt.pool) {
         lpc_warning("Unable to allocate memory for pool." TSRMLS_CC);
         return FAILURE;
@@ -489,7 +487,7 @@ freepool:
    Overrides zend_compile_file */
 static zend_op_array* my_compile_file(zend_file_handle* h,
                                                int type TSRMLS_DC)
-{
+{ENTER(my_compile_file)
     lpc_cache_key_t key;
     lpc_cache_entry_t* cache_entry;
     zend_op_array* op_array = NULL;
@@ -643,7 +641,7 @@ static int _lpc_register_serializer(const char* name, lpc_serialize_t serialize,
 }
 
 static lpc_serializer_t* lpc_find_serializer(const char* name TSRMLS_DC)
-{
+{ENTER(lpc_find_serializer)
     int i;
     lpc_serializer_t *serializer;
 
@@ -657,7 +655,7 @@ static lpc_serializer_t* lpc_find_serializer(const char* name TSRMLS_DC)
 }
 
 lpc_serializer_t* lpc_get_serializers(TSRMLS_D)
-{
+{ENTER(lpc_get_serializers)
     return &(lpc_serializers[0]);
 }
 /* }}} */
@@ -705,7 +703,7 @@ int lpc_module_init(int module_number TSRMLS_DC)
 }
 
 int lpc_module_shutdown(TSRMLS_D)
-{
+{ENTER(lpc_module_shutdown)
     if (!LPCG(initialized))
         return 0;
 
@@ -719,7 +717,7 @@ int lpc_module_shutdown(TSRMLS_D)
 
 /* {{{ lpc_deactivate */
 static void lpc_deactivate(TSRMLS_D)
-{
+{ENTER(lpc_deactivate)
     /* The execution stack was unwound, which prevented us from decrementing
      * the reference counts on active cache entries in `my_execute`.
      */
@@ -758,37 +756,7 @@ static void lpc_deactivate(TSRMLS_D)
         lpc_cache_release(LPCG(lpc_cache), cache_entry TSRMLS_CC);
     }
 /////  unwind code from MSHUTDOWN needs to be folded in RSHUTDOWN now that caches and stacks only have a request lifetime
-#if 0
-    /*
-     * In case we got interrupted by a SIGTERM or something else during execution
-     * we may have cache entries left on the stack that we need to check to make
-     * sure that any functions or classes these may have added to the global function
-     * and class tables are removed before we blow away the memory that hold them.
-     * 
-     * This is merely to remove memory leak warnings - as the process is terminated
-     * immediately after shutdown. The following while loop can be removed without
-     * affecting anything else.
-     */
-    while (lpc_stack_size(LPCG(cache_stack)) > 0) {
-        int i;
-        lpc_cache_entry_t* cache_entry = (lpc_cache_entry_t*) lpc_stack_pop(LPCG(cache_stack));
-        if (cache_entry->data.file.functions) {
-            for (i = 0; cache_entry->data.file.functions[i].function != NULL; i++) {
-                zend_hash_del(EG(function_table),
-                    cache_entry->data.file.functions[i].name,
-                    cache_entry->data.file.functions[i].name_len+1);
-            }
-        }
-        if (cache_entry->data.file.classes) {
-            for (i = 0; cache_entry->data.file.classes[i].class_entry != NULL; i++) {
-                zend_hash_del(EG(class_table),
-                    cache_entry->data.file.classes[i].name,
-                    cache_entry->data.file.classes[i].name_len+1);
-            }
-        }
-        lpc_cache_release(LPCG(lpc_cache), cache_entry TSRMLS_CC);
-    }
-#endif
+
     lpc_cache_destroy(LPCG(lpc_cache) TSRMLS_CC);
 
 #ifdef ZEND_ENGINE_2_4
@@ -800,7 +768,7 @@ static void lpc_deactivate(TSRMLS_D)
 /* {{{ request init and shutdown */
 
 int lpc_request_init(TSRMLS_D)
-{
+{ENTER(lpc_request_init)
 	LPCG(filters) = lpc_tokenize(INI_STR("lpc.filters"), ',' TSRMLS_CC);
 	zend_hash_init(&LPCG(pools), 10, NULL, NULL, 0);
 
@@ -831,7 +799,7 @@ int lpc_request_init(TSRMLS_D)
 }
 
 int lpc_request_shutdown(TSRMLS_D)
-{
+{ENTER(lpc_request_shutdown)
 	lpc_pool **pool_ptr;
 #if LPC_HAVE_LOOKUP_HOOKS
     if(LPCG(lazy_class_table)) {
