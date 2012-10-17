@@ -96,7 +96,7 @@ char** lpc_tokenize(const char* s, char delim TSRMLS_DC)
     cur  = 0;
     end  = strlen(s) - 1;
 
-    tokens = (char**) lpc_emalloc(size * sizeof(char*) TSRMLS_CC);
+    tokens = (char**) pemalloc(size * sizeof(char*), PERSISTENT);
     tokens[n] = NULL;
 
     while (cur <= end) {
@@ -107,11 +107,11 @@ char** lpc_tokenize(const char* s, char delim TSRMLS_DC)
         /* resize token array if necessary */
         if (n == size-1) {
             size *= 2;
-            tokens = (char**) lpc_erealloc(tokens, size * sizeof(char*) TSRMLS_CC);
+            tokens = (char**) perealloc(tokens, size * sizeof(char*), PERSISTENT);
         }
 
         /* save the current token */
-        tokens[n] = lpc_emalloc((next-cur)+1 TSRMLS_CC);
+        tokens[n] = pemalloc((next-cur)+1, PERSISTENT);
 		memcpy(tokens[n], s + cur, next-cur);
 		tokens[n][next-cur] = '\0';
         tokens[++n] = NULL;
@@ -269,9 +269,9 @@ int lpc_search_paths(const char* filename, const char* path, lpc_fileinfo_t* fil
     if(paths) {
         /* free the value returned by lpc_tokenize */
         for (i = 0; paths[i]; i++) {
-            lpc_efree(paths[i] TSRMLS_CC);
+            pefree(paths[i], PERSISTENT);
         }
-        lpc_efree(paths TSRMLS_CC);
+        pefree(paths, PERSISTENT);
     }
 
     return found ? lpc_restat(fileinfo TSRMLS_CC) : -1;
@@ -323,7 +323,7 @@ void* lpc_regex_compile_array(char* patterns[] TSRMLS_DC)
     if (!patterns)
         return NULL;
 
-    regs = (lpc_regex*) lpc_emalloc(sizeof(lpc_regex) TSRMLS_CC);
+    regs = (lpc_regex*) pemalloc(sizeof(lpc_regex), PERSISTENT);
 
     smart_str_appendc(&pmatch, '/');
     smart_str_appendc(&nmatch, '/');
@@ -357,7 +357,7 @@ void lpc_regex_destroy_array(void* p TSRMLS_DC)
 {ENTER(lpc_regex_destroy_array)
     if (p != NULL) {
         lpc_regex* regs = (lpc_regex*) p;
-        lpc_efree(regs TSRMLS_CC);
+        pefree(regs, PERSISTENT);
     }
 }
 

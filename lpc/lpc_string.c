@@ -190,7 +190,7 @@ void lpc_interned_strings_init(TSRMLS_D)
 {ENTER(lpc_interned_strings_init)
     int count = LPCG(shm_strings_buffer) / (sizeof(Bucket) + sizeof(Bucket*) * 2);
 
-    lpc_interned_strings_data = (lpc_interned_strings_data_t*) lpc_php_malloc(LPCG(shm_strings_buffer) TSRMLS_CC);
+    lpc_interned_strings_data = (lpc_interned_strings_data_t*) emalloc(LPCG(shm_strings_buffer));
 
     zend_hash_init(&APCSG(interned_strings), count, NULL, NULL, 1);
     APCSG(interned_strings).nTableMask = APCSG(interned_strings).nTableSize - 1;

@@ -32,16 +32,6 @@
 /* true global */
 int lpc_reserved_offset;
 
-void* lpc_php_malloc(size_t n TSRMLS_DC)
-{
-    return emalloc(n);
-}
-
-void lpc_php_free(void* p TSRMLS_DC)
-{
-    efree(p);
-}
-
 #ifdef LPC_OPCODE_OVERRIDE
 
 static opcode_handler_t *lpc_original_opcode_handlers;

@@ -71,15 +71,28 @@ void dump(zend_op_array *op_array TSRMLS_DC)
 /* }}} */
 
 /* {{{ lpc_debug_enter 
-		HEALTH WARNING this code is not thread safe as it's only intended for coverage collection during 
-		testing.  This uses a simple linear scan hash algo since we can initialize and use a standard PHP
-		HashTable before GINIT. At ~50% table occupancy, the average compares per lookup is still ~1.1 
-		so its actually a lot faster and uses less memory than a HashTable */
+		HEALTH WARNING this code is NOT thread safe as it's only intended for coverage collection during 
+		development.  To keep the code simple, this uses a simple hash + linear scan algo since we can't 
+		initialize and use a standard PHP HashTable before GINIT. At ~25% table occupancy, there are ~1.14
+		compares per lookup (avg), so it's faster and uses less memory than a HashTable for this use.  
+
+		Also the get_stack_depth function is unashamedly x86 -- it's not here to stay; only to help me do 
+		dynamic analysis of the APC code base to be refactored. 
+*/
 
 #ifdef APC_DEBUG
 
 #define FUNC_MAX  0x200
 #define FUNC_MASK 0x1ff
+
+static void *get_bp(void) { __asm__ __volatile__("mov %rbp, %rax"); }
+
+static int get_stack_depth(void) {
+    void *bp = (void *)get_bp();
+    int stack_depth = 0;
+    while((bp = *(void **)bp) != NULL) { stack_depth++; }
+    return stack_depth;
+}
 
 int lpc_debug_enter(char *s)
 {
@@ -114,28 +127,28 @@ int lpc_debug_enter(char *s)
 		"lpc_module_shutdown", "lpc_deactivate", "lpc_request_init", "lpc_request_shutdown",
 	"==lpc_pool.c==", "_lpc_pool_create", "_lpc_pool_destroy", "_lpc_pool_set_size", 
 		"_lpc_pool_alloc", "_lpc_pool_strdup", "_lpc_pool_memcpy", 
-	"==lpc_stack.c==", "lpc_stack_create", "lpc_stack_destroy", "lpc_stack_clear", "lpc_stack_push", "lpc_stack_pop",
-		"lpc_stack_top", "lpc_stack_get", "lpc_stack_size", 
 	"==lpc_string.c==", "lpc_dummy_interned_strings_snapshot_for_php", "lpc_dummy_interned_strings_restore_for_php",
 		"lpc_copy_internal_strings", "lpc_interned_strings_init", "lpc_interned_strings_shutdown", 
-	"==lpc_zend.c==", "lpc_php_malloc", "lpc_php_free", "lpc_op_ZEND_INCLUDE_OR_EVAL", "lpc_zend_init", 
-		"lpc_zend_shutdown", 
+	"==lpc_zend.c==", "lpc_op_ZEND_INCLUDE_OR_EVAL", "lpc_zend_init", "lpc_zend_shutdown", 
 	"==php_lpc.c==", "lpc_atol", "PHP_MINFO_FUNCTION", "PHP_GINIT_FUNCTION", "PHP_GSHUTDOWN_FUNCTION", 
 		"PHP_MINIT_FUNCTION", "PHP_MSHUTDOWN_FUNCTION", "PHP_RINIT_FUNCTION", "PHP_RSHUTDOWN_FUNCTION" };
+	int stack_depth = get_stack_depth();
+	const char fill[] = "                                                                                                    ";
 	uint i,ndx,found;
 	TSRMLS_FETCH();
 
-#define find(str,ndx,found) \
+#define find(str,n,found) \
 	do {found = 2;\
 		ulong hash = zend_inline_hash_func(str, strlen(str)); \
-		for (ndx = 0; ndx < FUNC_MAX; ndx++, n_func_probe++) { \
-			uint hash_ndx = ( hash + ndx ) & FUNC_MASK; \
-			if(func_table[hash_ndx].func_name == NULL) \
-				{ found = 0; ndx=hash_ndx; break; } \
-			if (strcmp(str, func_table[hash_ndx].func_name) == 0 ) \
-				{ found = 1; ndx=hash_ndx; break; } \
+		for (n = 0; n < FUNC_MAX; n++) { \
+			uint hash_n = ( hash + n ) & FUNC_MASK; \
+			n_func_probe++; \
+			if(func_table[hash_n].func_name == NULL) \
+				{ found = 0; n=hash_n; break; } \
+			if (strcmp(str, func_table[hash_n].func_name) == 0 ) \
+				{ found = 1; n=hash_n; break; } \
 		} \
-		assert(ndx != 2);\
+		assert(found != 2);\
 	} while (0)
 	
 	if (n_func_probe == 0) {
@@ -148,19 +161,21 @@ int lpc_debug_enter(char *s)
 		lpc_debug("Funtion Table initialised with %i elements in %i probes" TSRMLS_CC,  
 		          sizeof(module)/sizeof(char *), n_func_probe);
 	}
-	if (strcmp(s, "DUMP")!=0) { /* it is a real entry counter */
-		lpc_debug("Entering %s" TSRMLS_CC, s);
+	if (strcmp(s, "DUMP")!=0) { /* it is an entry counter */
+		lpc_debug("Entering %s %s" TSRMLS_CC,
+		(stack_depth >= sizeof(fill)) ? "" : fill + (sizeof(fill)-stack_depth), s);
 		find(s,ndx,found);
 		assert(found); /* 'cos the key should exist */
 		func_table[ndx].func_cnt++;
-	} else { /* it is a summary table */
+	} else {                    /* it is a summary table request*/
 		for (i = 0; i<(sizeof(module)/sizeof(char *)); i++) {
 			find(module[i],ndx,found);
 			assert(found); /* 'cos the key should exist */
-			lpc_debug("%6i  %s" TSRMLS_CC,  func_table[ndx].func_cnt, module[i]);
+//			lpc_debug("%6i  %s" TSRMLS_CC,  func_table[ndx].func_cnt, module[i]);
 		}
 	}
 	return 0;
 }
+
 #endif /* APC_DEBUG */
 /* }}} */

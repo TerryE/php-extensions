@@ -75,13 +75,8 @@
 #define Z_SET_ISREF_TO_PP(ppz, isref) Z_SET_ISREF_TO_P(*(ppz), isref)
 #endif
 
-
-extern void* lpc_php_malloc(size_t n TSRMLS_DC);
-extern void lpc_php_free(void* p TSRMLS_DC);
-
 extern void lpc_zend_init(TSRMLS_D);
 extern void lpc_zend_shutdown(TSRMLS_D);
-
 
 /* offset for lpc info in op_array->reserved */
 extern int lpc_reserved_offset;

@@ -62,7 +62,6 @@ if test "$PHP_LPC" != "no"; then
                lpc_debug.c \
                lpc_main.c \
                lpc_zend.c \
-               lpc_stack.c \
                lpc_pool.c \
                lpc_string.c "
 

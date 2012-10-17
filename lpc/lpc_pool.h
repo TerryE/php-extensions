@@ -63,7 +63,7 @@ typedef enum {
  */
 #define lpc_pool_create(type) ((lpc_pool *) _lpc_pool_create(type TSRMLS_CC ZEND_FILE_LINE_CC))
 #define lpc_pool_destroy(pool)  _lpc_pool_destroy(pool TSRMLS_CC ZEND_FILE_LINE_CC)
-#define lpc_pool_set_size(pool, size) _lpc_pool_set_size(pool, size TSRMLS_CC ZEND_FILE_LINE_DC)
+#define lpc_pool_set_size(pool, size) _lpc_pool_set_size(pool, size TSRMLS_CC ZEND_FILE_LINE_CC)
 
 #define lpc_pool_alloc(pool, size)  ((void *) _lpc_pool_alloc(pool, size TSRMLS_CC ZEND_FILE_LINE_CC))
 #define lpc_pstrdup(s,ptrsmls)  ((void *) _lpc_pool_strdup((s),ptrsmls ZEND_FILE_LINE_CC))
@@ -84,6 +84,7 @@ typedef struct _lpc_pool {
 	void           *bd_storage;         /* only used for SERIAL implementation */
 	off_t           bd_next_free;       /* only used for SERIAL implementation */
 	size_t          bd_allocated;       /* only used for SERIAL implementation */
+	HashTable      *bd_fixups;          /* only used for SERIAL implementation */
 } lpc_pool;
 
 extern lpc_pool* _lpc_pool_create(lpc_pool_type_t type TSRMLS_DC ZEND_FILE_LINE_DC);
@@ -91,5 +92,6 @@ extern void _lpc_pool_destroy(lpc_pool* pool TSRMLS_DC ZEND_FILE_LINE_DC);
 extern void* _lpc_pool_alloc(lpc_pool* pool, size_t size TSRMLS_DC ZEND_FILE_LINE_DC);
 extern void* _lpc_pool_strdup(const char* s, lpc_pool* pool TSRMLS_DC ZEND_FILE_LINE_DC);
 extern void* _lpc_pool_memcpy(const void* p, size_t n, lpc_pool* pool TSRMLS_DC ZEND_FILE_LINE_DC);
+extern void *_lpc_pool_check_addr(void *ptr, lpc_pool* pool TSRMLS_DC ZEND_FILE_LINE_DC);
 
 #endif /* LPC_POOL_H */

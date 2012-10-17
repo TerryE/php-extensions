@@ -26,4 +26,7 @@
    All other licensing and usage conditions are those of the PHP Group.
 */
 
-void dump(zend_op_array * TSRMLS_DC);
+void dump(zend_op_array *array TSRMLS_DC);
+
+int lpc_debug_enter(char *s);
+

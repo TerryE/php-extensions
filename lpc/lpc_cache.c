@@ -317,7 +317,7 @@ int lpc_cache_make_file_key(lpc_cache_key_t* key,
             goto success;
         } else if(LPCG(canonicalize)) {
 
-            fileinfo = lpc_php_malloc(sizeof(lpc_fileinfo_t) TSRMLS_CC);
+            fileinfo = emalloc(sizeof(lpc_fileinfo_t));
 
             if (lpc_search_paths(filename, include_path, fileinfo TSRMLS_CC) != 0) {
                 lpc_warning("lpc failed to locate %s - bailing" TSRMLS_CC, filename);
@@ -338,7 +338,7 @@ int lpc_cache_make_file_key(lpc_cache_key_t* key,
         /* fall through to stat mode */
     }
 
-    fileinfo = lpc_php_malloc(sizeof(lpc_fileinfo_t) TSRMLS_CC);
+    fileinfo = emalloc(sizeof(lpc_fileinfo_t));
 
     assert(fileinfo != NULL);
 
@@ -401,7 +401,7 @@ int lpc_cache_make_file_key(lpc_cache_key_t* key,
 success: 
 
     if(fileinfo != NULL) {
-        lpc_php_free(fileinfo TSRMLS_CC);
+        efree(fileinfo);
     }
 
     return 1;
@@ -409,7 +409,7 @@ success:
 cleanup:
     
     if(fileinfo != NULL) {
-        lpc_php_free(fileinfo TSRMLS_CC);
+        efree(fileinfo);
     }
 
     return 0;

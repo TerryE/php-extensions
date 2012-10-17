@@ -71,19 +71,10 @@ extern int lpc_debug_enter(char *s);
 #include "main/php_streams.h"
 
 #include "lpc_cache.h"
-#include "lpc_stack.h"
 #include "lpc_php.h"
 #include "lpc_main.h"
 
-/* typedefs for extensible memory allocators */
-typedef void* (*lpc_malloc_t)(size_t TSRMLS_DC);
-typedef void  (*lpc_free_t)  (void * TSRMLS_DC);
-
-/* wrappers for memory allocation routines */
-static inline void* lpc_emalloc(size_t n TSRMLS_DC)           { return pemalloc (n, 1); }
-static inline void* lpc_erealloc(void* p, size_t n TSRMLS_DC) { return perealloc (p, n, 1); }
-static inline void  lpc_efree(void* p TSRMLS_DC)              { return pefree (p, 1); }
-static inline char* lpc_estrdup(const char* s TSRMLS_DC)      { return pestrdup (s, 1); }
+#define PERSISTENT 1
 
 /* console display functions */
 extern void lpc_error(const char *format TSRMLS_DC, ...);
@@ -137,14 +128,11 @@ extern HashTable* lpc_flip_hash(HashTable *hash);
 ZEND_BEGIN_MODULE_GLOBALS(lpc)
     /* configuration parameters */
     zend_bool enabled;      /* if true, lpc is enabled (defaults to true) */
-    long shm_segments;      /* number of shared memory segments to use */
-    long shm_size;          /* size of each shared memory segment (in MB) */
     char** filters;         /* array of regex filters that prevent caching */
     void* compiled_filters; /* compiled regex filters */
 
     /* module variables */
     zend_bool initialized;       /* true if module was initialized */
-    lpc_stack_t* cache_stack;    /* the stack of cached executable code */
     zend_bool cache_by_default;  /* true if files should be cached unless filtered out */
                                  /* false if files should only be cached if filtered in */
     long file_update_protection; /* Age in seconds before a file is eligible to be cached - 0 to disable */
@@ -162,9 +150,6 @@ ZEND_BEGIN_MODULE_GLOBALS(lpc)
     zend_bool coredump_unmap;    /* Trap signals that coredump and unmap shared memory */
     lpc_cache_t *current_cache;  /* current cache being modified/read */
     zend_bool file_md5;          /* record md5 hash of files */
-//    void *lpc_bd_alloc_ptr;      /* bindump alloc() ptr */
-//    void *lpc_bd_alloc_ubptr;    /* bindump alloc() upper bound ptr */
-//    HashTable lpc_bd_alloc_list; /* bindump alloc() ptr list */
     zend_bool use_request_time;  /* use the SAPI request start time for TTL */
     zend_bool lazy_functions;        /* enable/disable lazy function loading */
     HashTable *lazy_function_table;  /* lazy function entry table */

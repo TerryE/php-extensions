@@ -44,10 +44,6 @@
 #include "ext/standard/php_var.h"
 #include "ext/standard/md5.h"
 
-#define hash_reset(h) zend_hash_internal_pointer_reset(h)
-#define hash_get(h,e) zend_hash_get_current_data(h, (void **) &e)
-#define hash_next(h) zend_hash_move_forward(h)
-
 #define LPC_MAX_SERIALIZERS 16
 
 /* {{{ module variables */
@@ -167,7 +163,7 @@ static int install_class(lpc_class_t cl, lpc_context_t* ctxt, int lazy TSRMLS_DC
     /*
      * XXX: We need to free this somewhere...
      */
-    allocated_ce = lpc_php_malloc(sizeof(zend_class_entry*) TSRMLS_CC);
+    allocated_ce = emalloc(sizeof(zend_class_entry*));
 
     if(!allocated_ce) {
         return FAILURE;
@@ -345,14 +341,11 @@ int lpc_declared_class_hook(zval *classes, zend_uint mask, zend_uint comply)
 /* }}} */
 
 /* {{{ cached_compile */
-static zend_op_array* cached_compile(zend_file_handle* h,
-                                     int type,
+static zend_op_array* cached_compile(lpc_cache_entry_t* cache_entry,
                                      lpc_context_t* ctxt TSRMLS_DC)
 {ENTER(cached_compile)
-    lpc_cache_entry_t* cache_entry;
     int i, ii;
 
-    cache_entry = (lpc_cache_entry_t*) lpc_stack_top(LPCG(cache_stack));
     assert(cache_entry != NULL);
 
     if (cache_entry->data.file.classes) {
@@ -373,7 +366,6 @@ static zend_op_array* cached_compile(zend_file_handle* h,
 
     lpc_do_halt_compiler_register(cache_entry->data.file.filename, cache_entry->data.file.halt_offset TSRMLS_CC);
 
-
     return lpc_copy_op_array_for_execution(NULL, cache_entry->data.file.op_array, ctxt TSRMLS_CC);
 
 default_compile:
@@ -383,8 +375,6 @@ default_compile:
             uninstall_class(cache_entry->data.file.classes[ii] TSRMLS_CC);
         }
     }
-
-    lpc_stack_pop(LPCG(cache_stack)); /* pop out cache_entry */
 
     lpc_cache_release(LPCG(lpc_cache), cache_entry TSRMLS_CC);
 
@@ -396,7 +386,8 @@ default_compile:
 
 /* {{{ lpc_compile_cache_entry  */
 zend_bool lpc_compile_cache_entry(lpc_cache_key_t key, zend_file_handle* h, int type, time_t t, 
-                                  zend_op_array** op_array, lpc_cache_entry_t** cache_entry TSRMLS_DC) {
+                                  zend_op_array** op_array, lpc_cache_entry_t** cache_entry TSRMLS_DC) 
+{ENTER(lpc_compile_cache_entry)
     int num_functions, num_classes;
     lpc_function_t* alloc_functions;
     zend_op_array* alloc_op_array;
@@ -551,8 +542,7 @@ static zend_op_array* my_compile_file(zend_file_handle* h,
                             strlen(cache_entry->data.file.filename)+1,
                             (void *)&dummy, sizeof(int), NULL);
 
-        lpc_stack_push(LPCG(cache_stack), cache_entry TSRMLS_CC);
-        op_array = cached_compile(h, type, &ctxt TSRMLS_CC);
+        op_array = cached_compile(cache_entry, &ctxt TSRMLS_CC);
 
         if(op_array) {
 
@@ -718,43 +708,10 @@ int lpc_module_shutdown(TSRMLS_D)
 /* {{{ lpc_deactivate */
 static void lpc_deactivate(TSRMLS_D)
 {ENTER(lpc_deactivate)
-    /* The execution stack was unwound, which prevented us from decrementing
-     * the reference counts on active cache entries in `my_execute`.
+    /* The execution stack was unwound, but since any in-memory caching is local to the process
+     * unlike APC, there is not need to worry about reference counts on active cache entries in
+     * `my_execute` -- normal memory cleanup will take care of this.
      */
-    while (lpc_stack_size(LPCG(cache_stack)) > 0) {
-        int i;
-        zend_class_entry* zce = NULL;
-        void ** centry = (void*)(&zce);
-        zend_class_entry** pzce = NULL;
-
-        lpc_cache_entry_t* cache_entry =
-            (lpc_cache_entry_t*) lpc_stack_pop(LPCG(cache_stack));
-
-        if (cache_entry->data.file.classes) {
-            for (i = 0; cache_entry->data.file.classes[i].class_entry != NULL; i++) {
-                centry = (void**)&pzce; /* a triple indirection to get zend_class_entry*** */
-                if(zend_hash_find(EG(class_table), 
-                    cache_entry->data.file.classes[i].name,
-                    cache_entry->data.file.classes[i].name_len+1,
-                    (void**)centry) == FAILURE)
-                {
-                    /* double inclusion of conditional classes ends up failing 
-                     * this lookup the second time around.
-                     */
-                    continue;
-                }
-
-                zce = *pzce;
-
-                zend_hash_del(EG(class_table),
-                    cache_entry->data.file.classes[i].name,
-                    cache_entry->data.file.classes[i].name_len+1);
-
-                lpc_free_class_entry_after_execution(zce TSRMLS_CC);
-            }
-        }
-        lpc_cache_release(LPCG(lpc_cache), cache_entry TSRMLS_CC);
-    }
 /////  unwind code from MSHUTDOWN needs to be folded in RSHUTDOWN now that caches and stacks only have a request lifetime
 
     lpc_cache_destroy(LPCG(lpc_cache) TSRMLS_CC);
@@ -772,7 +729,6 @@ int lpc_request_init(TSRMLS_D)
 	LPCG(filters) = lpc_tokenize(INI_STR("lpc.filters"), ',' TSRMLS_CC);
 	zend_hash_init(&LPCG(pools), 10, NULL, NULL, 0);
 
-    lpc_stack_clear(LPCG(cache_stack));
     if (!LPCG(compiled_filters) && LPCG(filters)) {
         /* compile regex filters here to avoid race condition between MINIT of PCRE and LPC.
          * This should be moved to lpc_cache_create() if this race condition between modules is resolved */
@@ -800,7 +756,9 @@ int lpc_request_init(TSRMLS_D)
 
 int lpc_request_shutdown(TSRMLS_D)
 {ENTER(lpc_request_shutdown)
-	lpc_pool **pool_ptr;
+	lpc_pool *pool_ptr;  int s;
+	HashTable *pools_ht = &LPCG(pools);
+	char *dummy;
 #if LPC_HAVE_LOOKUP_HOOKS
     if(LPCG(lazy_class_table)) {
         zend_hash_destroy(LPCG(lazy_class_table));
@@ -813,11 +771,14 @@ int lpc_request_shutdown(TSRMLS_D)
 
     lpc_deactivate(TSRMLS_C);
 
-	/* loop over pools to destroy each pool */
-	for (hash_reset(&LPCG(pools)); hash_get(&LPCG(pools), pool_ptr) == SUCCESS; hash_next(&LPCG(pools))) {
-		lpc_pool_destroy(*pool_ptr);
+	/* Loop over pools to destroy each pool. Note that lpc_pool_destroy removes the entry so 
+     * the loop repeatly resets the internal point at fetches the first element until empty */
+	zend_hash_internal_pointer_reset(pools_ht);
+	while(zend_hash_get_current_key(pools_ht, &dummy, (ulong *)&pool_ptr, 0) == HASH_KEY_IS_LONG) {
+		lpc_pool_destroy(pool_ptr);
+		zend_hash_internal_pointer_reset(pools_ht);
 	}
-	zend_hash_destroy(&LPCG(pools));
+	zend_hash_destroy(pools_ht);
 
     return 0;
 }

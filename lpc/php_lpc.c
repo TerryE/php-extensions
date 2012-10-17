@@ -164,7 +164,6 @@ static PHP_GSHUTDOWN_FUNCTION(lpc)
 #if 0
     char** filters;              /* array of regex filters that prevent caching */
     void* compiled_filters;      /* compiled regex filters */
-    lpc_stack_t* cache_stack;    /* the stack of cached executable code */
     lpc_cache_t *current_cache;  /* current cache being modified/read */
     void *lpc_bd_alloc_ptr;      /* bindump alloc() ptr */
     void *lpc_bd_alloc_ubptr;    /* bindump alloc() upper bound ptr */
@@ -181,16 +180,10 @@ static PHP_GSHUTDOWN_FUNCTION(lpc)
     if (lpc_globals->filters != NULL) {
         int i;
         for (i=0; lpc_globals->filters[i] != NULL; i++) {
-            lpc_efree(lpc_globals->filters[i] TSRMLS_CC);
+            pefree(lpc_globals->filters[i], PERSISTENT);
         }
-        lpc_efree(lpc_globals->filters TSRMLS_CC);
+        pefree(lpc_globals->filters, PERSISTENT);
     }
-
-    /* the stack should be empty */
-    assert(lpc_stack_size(lpc_globals->cache_stack) == 0);
-
-    /* lpc cleanup */
-    lpc_stack_destroy(lpc_globals->cache_stack TSRMLS_CC);
 
     /* the rest of the globals are cleaned up in lpc_module_shutdown() */
 	if (1) { ENTER(DUMP) }
@@ -234,7 +227,6 @@ static PHP_MSHUTDOWN_FUNCTION(lpc)
 static PHP_RINIT_FUNCTION(lpc)
 {
     if(LPCG(enabled)) {
-		LPCG(cache_stack)     = lpc_stack_create(0 TSRMLS_CC);
 		LPCG(lpc_cache)       = lpc_cache_create(TSRMLS_C);
 		LPCG(max_file_size)   = lpc_atol(INI_STR("lpc.max_file_size"),0);
 		LPCG(fpstat)          = INI_INT("lpc.stat_percentage");
@@ -288,11 +280,6 @@ PHP_FUNCTION(lpc_clear_cache)
     RETURN_TRUE;
 }
 /* }}} */    
-
-void *lpc_erealloc_wrapper(void *ptr, size_t size) 
-{
-    return _erealloc(ptr, size, 0 ZEND_FILE_LINE_CC ZEND_FILE_LINE_EMPTY_CC);
-}
 
 /* {{{ proto mixed lpc_compile_file(mixed filenames [, bool atomic])
  */

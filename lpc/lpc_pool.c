@@ -53,6 +53,7 @@
 lpc_pool* _lpc_pool_create(lpc_pool_type_t type TSRMLS_DC ZEND_FILE_LINE_DC)
 {ENTER(_lpc_pool_create)
     lpc_pool *pool;
+	void *dummy = (void *) 1;
 
 	switch(type) {
  
@@ -86,16 +87,26 @@ lpc_pool* _lpc_pool_create(lpc_pool_type_t type TSRMLS_DC ZEND_FILE_LINE_DC)
 	pool->bd_storage   = NULL;
 	pool->bd_allocated = 0;
 	pool->bd_next_free = 0;
+	if (type == LPC_SERIALPOOL) {
+		/* create a hash table to collect relocation addresses */
+		pool->bd_fixups = emalloc(sizeof(HashTable));
+		zend_hash_init(pool->bd_fixups, 512, NULL, NULL, 0);
+	}
+	
+	/* The pools hash table has entries whose keys are the addresss of the existing pools */ 
+	zend_hash_index_update(&LPCG(pools), (ulong) pool, &dummy, sizeof(void *), NULL);
 
-    zend_hash_next_index_insert(&LPCG(pools), &pool, sizeof(lpc_pool *), NULL);
     return pool;
 }
 /* }}} */
+
+static void _lpc_pool_fixup_report(lpc_pool *pool TSRMLS_DC);
 
 /* {{{ _lpc_pool_destroy */
 void _lpc_pool_destroy(lpc_pool *pool TSRMLS_DC ZEND_FILE_LINE_DC)
 {ENTER(_lpc_pool_destroy)
 	if (pool->type == LPC_SERIALPOOL) {
+		_lpc_pool_fixup_report(pool TSRMLS_CC);
 		efree(pool->bd_storage);
 	} else if (pool->element_head != NULL) {
 		void *e, *e_nxt;
@@ -111,7 +122,7 @@ lpc_debug("freeing pool element %4d at 0x%lx in pool 0x%lx" TSRMLS_CC, i++, (uns
 #ifdef APC_DEBUG
 	efree(pool->orig_filename);
 #endif
-
+	zend_hash_index_del(&LPCG(pools), (ulong) pool);
     efree(pool);
 }
 /* }}} */
@@ -203,7 +214,116 @@ void* _lpc_pool_memcpy(const void* p, size_t n, lpc_pool* pool TSRMLS_DC ZEND_FI
 }
 /* }}} */
 
-#define pool_emalloc(size) _emalloc((size) ZEND_FILE_LINE_RELAY_CC ZEND_FILE_LINE_EMPTY_CC)
+typedef void *pointer;
+#define POINTER_MASK (sizeof(pointer)-1)
+/* {{{ _lpc_pool_tag_ptr */
+void *_lpc_pool_tag_ptr(void *ptr, lpc_pool* pool TSRMLS_DC ZEND_FILE_LINE_DC)
+{
+	/* Note that this code assumes that all pointers are correctly storage-aligned */
+	off_t bd_max = pool->bd_allocated / sizeof(pointer);
+	off_t ptr_offset = ((pointer *)ptr - (pointer *)pool->bd_storage);
+
+	if (pool->type != LPC_SERIALPOOL) {
+		return pool;
+	}
+	if (ptr == NULL) {
+		lpc_debug("check: Null relocation ptr call at %s:%u" TSRMLS_CC, 
+			       ptr ZEND_FILE_LINE_RELAY_CC);
+		return pool;
+
+	assert(((ulong)ptr & POINTER_MASK) == 0);
+	}
+	/* The Lvalue address should lie inside the pool and the address not already been requested */
+	if (ptr_offset > 0 && ptr_offset < pool->bd_allocated) {
+
+		if (!zend_hash_index_exists(pool->bd_fixups, (ulong) ptr_offset)) {
+
+			/* HOWEVER the location pointed to can be on any alignment, so this is a byte offset */
+			off_t addr_offset = *(char **)ptr - (char *)pool->bd_storage;
+			if (addr_offset > 0 && addr_offset < pool->bd_allocated) {
+
+				/* The pointer is internal to the pool and therefore one to be relocated */
+				void *dummy = (void *) 1;  /* std dummy value -- only want the key */
+				zend_hash_index_update(pool->bd_fixups, (ulong) ptr_offset, &dummy, sizeof(void *), NULL);
+
+				lpc_debug("check: 0x%08lx (0x%08lx + 0x%08lx) Inserting relocation addr to 0x%08lx call at %s:%u"
+					 TSRMLS_CC, ptr, pool->bd_storage, ptr_offset,  *(void **)ptr ZEND_FILE_LINE_RELAY_CC);
+
+			} else if (*(void **)ptr != NULL){
+				lpc_debug("check: 0x%08lx Addr to external 0x%08lx call at %s:%u"
+					 TSRMLS_CC, ptr, *(void **)ptr ZEND_FILE_LINE_RELAY_CC);
+			}
+
+		} else {
+			lpc_debug("check: 0x%08lx Duplicate relocation addr call at %s:%u" TSRMLS_CC, 
+			           ptr ZEND_FILE_LINE_RELAY_CC);
+		}
+
+	} else {
+		lpc_debug("check: 0x%08lx Relocation addr call outside pool at %s:%u" TSRMLS_CC, 
+		           ptr ZEND_FILE_LINE_RELAY_CC);
+	}
+	return pool;
+}
+
+/* }}} */
+
+static int key_compare(const void *a, const void *b TSRMLS_DC) /* {{{ */
+{
+	long diff = ((Bucket*)a)->h - ((Bucket*)b)->h;
+	if (diff > 0) return 1;
+	if (diff < 0) return -1;
+	return 0;
+}
+ 
+
+static void _lpc_pool_fixup_report(lpc_pool *pool TSRMLS_DC)
+{
+	off_t reloc_off;
+	off_t bd_max = pool->bd_allocated / sizeof(pointer);
+	pointer *p = (pointer *) pool->bd_storage;
+	void *dummy = (void *)1;
+	int i, j = 0;
+
+	/* sort the fixups table into ascending offset order */
+	zend_hash_sort(pool->bd_fixups, zend_qsort, key_compare, 0 TSRMLS_CC);
+
+    lpc_debug("=== Check Report ====" TSRMLS_CC);
+	/* loop over reported pointers */
+	for (zend_hash_internal_pointer_reset(pool->bd_fixups); 
+		 zend_hash_get_current_key(pool->bd_fixups, (char **) &dummy, (ulong *)&reloc_off, 0) == HASH_KEY_IS_LONG;
+		 zend_hash_move_forward(pool->bd_fixups)) {
+
+		char **ptr = (char **) ((void **)p + reloc_off);
+		off_t addr_off = *ptr - (char *)(pool->bd_storage);
+
+		lpc_debug("check:  0x%08lx addr = 0x%08lx %1c" TSRMLS_CC, 
+		          ptr, *ptr, 
+		          (addr_off < 0 || addr_off > pool->bd_next_free) ? 'E' : ' ');
+	}
+
+    lpc_debug("=== Missed Report ====" TSRMLS_CC);
+
+	/* Now flag up any pointers that have been missed */
+
+	for (i = 0; i < bd_max; i++) {
+
+		char **addr = (char **) (p[reloc_off]);
+		off_t addr_off = *addr - (char *)(pool->bd_storage);
+
+		if (addr_off > 0 && (addr_off < pool->bd_next_free) &&
+		    !zend_hash_index_exists(pool->bd_fixups, (ulong) reloc_off)) {
+
+			lpc_debug("missed: 0x%08lx addr = 0x%08lx" TSRMLS_CC, 
+				      addr, *addr);
+			j++;
+		}
+	}
+	lpc_debug("=== Missed Totals ==== %u from %u" TSRMLS_CC, j, i);
+	zend_hash_destroy(pool->bd_fixups);
+	efree(pool->bd_fixups);
+}
+
 /*
  * Local variables:
  * tab-width: 4
