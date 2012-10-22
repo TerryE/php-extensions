@@ -74,17 +74,20 @@ ZEND_END_ARG_INFO()
 ZEND_BEGIN_ARG_INFO_EX(arginfo_cachedb_exists, 0, 0, 1)
 	ZEND_ARG_INFO(0, key)
 	ZEND_ARG_INFO(0, handle)
+	ZEND_ARG_INFO(1, metadata)
 ZEND_END_ARG_INFO()
 
 ZEND_BEGIN_ARG_INFO_EX(arginfo_cachedb_fetch, 0, 0, 1)
 	ZEND_ARG_INFO(0, key)
 	ZEND_ARG_INFO(0, handle)
+	ZEND_ARG_INFO(1, metadata)
 ZEND_END_ARG_INFO()
 
 ZEND_BEGIN_ARG_INFO_EX(arginfo_cachedb_add, 0, 0, 2)
 	ZEND_ARG_INFO(0, key)
 	ZEND_ARG_INFO(0, value)
 	ZEND_ARG_INFO(0, handle)
+	ZEND_ARG_INFO(0, metadata)
 ZEND_END_ARG_INFO()
 
 ZEND_BEGIN_ARG_INFO_EX(arginfo_cachedb_info, 0, 0, 0)
@@ -214,12 +217,12 @@ PHP_MINFO_FUNCTION(cachedb)
 PHP_FUNCTION(cachedb_open)
 {
 	char       *file;   /* The file to open */
-	char       *mode;   /* The mode to open the stream with */
+	char       *mode = NULL;   /* The mode to open the stream with */
 	int         file_length, mode_length, i;
 	cachedb_t **pdb;
 
 	if (zend_parse_parameters(ZEND_NUM_ARGS() TSRMLS_CC, "ss", &file, &file_length, &mode, &mode_length) == FAILURE || 
-        mode_length != 1) {
+        mode_length == 0 || mode_length > 2) {
 		return; 
 	}
 
@@ -233,7 +236,7 @@ PHP_FUNCTION(cachedb_open)
 			* c: Create/Truncate
 			* however the open function validates this.
 			*/
-			if (cachedb_open(pdb, file, file_length, mode[0])==SUCCESS) {
+			if (cachedb_open(pdb, file, file_length, mode)==SUCCESS) {
 				RETURN_LONG(i);
 			} else {
 				RETURN_FALSE;
@@ -244,39 +247,42 @@ PHP_FUNCTION(cachedb_open)
 }
 /* }}} */
 
-/* {{{ proto boolean cachedb_exists(string key[, int handle])
+/* {{{ proto boolean cachedb_exists(string key[[, int handle], array metadata])
    Check if a key exists in the cache */
 PHP_FUNCTION(cachedb_exists)
 {
-	char          *key;        /* The key to be checked */
-	int            key_length;
-	long           handle=0;   /* The handle to be used (default 0) */
-	cachedb_t     *db;
+	char        *key;        /* The key to be checked */
+	int          key_length;
+	zval        *metadata=NULL;   /* Optional to be returned */
+	long         handle=0;   /* The handle to be used (default 0) */
+	cachedb_t   *db;
 
-	if (zend_parse_parameters(ZEND_NUM_ARGS() TSRMLS_CC, "s|l", &key, &key_length, &handle) == FAILURE) {
+	if (zend_parse_parameters(ZEND_NUM_ARGS() TSRMLS_CC, "s|lz/", &key, &key_length, &handle, &metadata) == FAILURE) {
 		return;
 	}
 
 	CHECK_HANDLE(db,handle);
-	RETURN_BOOL(cachedb_find(db, key, key_length)==SUCCESS);
+	RETURN_BOOL(cachedb_find(db, key, key_length, metadata)==SUCCESS);
 }
 /* }}} */
 
-/* {{{ proto string cachedb_fetch(string key[, int handle])
+/* {{{ proto string cachedb_fetch(string key[[, int handle], array metadata] )
    Reads the value for a given key and returns FALSE on key missing */
 PHP_FUNCTION(cachedb_fetch)
 {
-	char          *key=NULL;        /* The key of record to be fetched */
-	int            key_length=0;
-	long           handle=0;        /* The handle to be used (default 0) */
-	cachedb_t     *db;
+	char        *key=NULL;        /* The key of record to be fetched */
+	int          key_length=0;
+	zval        *metadata=NULL;        /* Optional to be returned */
 
-	if (zend_parse_parameters(ZEND_NUM_ARGS() TSRMLS_CC, "s|l", &key, &key_length, &handle) == FAILURE) {
+	long         handle=0;        /* The handle to be used (default 0) */
+	cachedb_t   *db;
+
+	if (zend_parse_parameters(ZEND_NUM_ARGS() TSRMLS_CC, "s|lz/", &key, &key_length, &handle, &metadata) == FAILURE) {
 		return;
 	}
 
 	CHECK_HANDLE(db,handle);
-	if (cachedb_find(db, key, key_length)==FAILURE) {
+	if (cachedb_find(db, key, key_length, metadata)==FAILURE) {
 		RETURN_FALSE;
 	}
 
@@ -286,26 +292,27 @@ PHP_FUNCTION(cachedb_fetch)
 }
 /* }}} */
 
-/* {{{ proto boolean cachedb_add(string key, string value[, int handle])
+/* {{{ proto boolean cachedb_add(string key, string value[[, int handle], array metadata])
    Add a key with the given value returns FALSE on failure e.g. key already exists */
 PHP_FUNCTION(cachedb_add)
 {
-	char            *key;        /* The key of record to be added */
+	char            *key;           /* The key of record to be added */
 	int              key_length;
-	zval            *value;      /* The value to be set */
+	zval            *value;         /* The value to be set */
 	int              value_length;
-	long             handle=0;   /* The handle to be used (default 0) */
+	zval            *metadata=NULL; /* Optional to be added */
+	long             handle=0;      /* The handle to be used (default 0) */
 	cachedb_t       *db;
 	cachedb_rec_t    entry;
 	int              status;
 
-	if (zend_parse_parameters(ZEND_NUM_ARGS() TSRMLS_CC, "sz|l", &key, &key_length, &value, &handle) == FAILURE) {
+	if (zend_parse_parameters(ZEND_NUM_ARGS() TSRMLS_CC, "sz|la", &key, &key_length, &value, &handle, &metadata) == FAILURE) {
 		return;
 	}
 
 	CHECK_HANDLE(db,handle);
 
-	status = (cachedb_add(db, key, key_length, value)==SUCCESS);
+	status = (cachedb_add(db, key, key_length, value, metadata)==SUCCESS);
 
 	RETURN_BOOL(status);
 }

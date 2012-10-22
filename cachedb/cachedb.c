@@ -100,6 +100,10 @@ static const char _cachedb_eom_err[]   = "Invalid record read in cachedb file";
 static const char _cachedb_mode_err[]  = "Invalid mode %c during open of cachedb file %s";
 static const char _cachedb_add_err[]   = "Internal error during open of cachedb file %s";
 static const char _cachedb_close_err[] = "Internal error during close of cachedb file %s";
+static const char _cachedb_write_err[] = "Internal error write to cachedb file";
+
+#undef TRUE
+#define TRUE 1
 
 #define PEFREE(n,p) if(n) {pefree(n,p); n=NULL; }
 #define EFREE(n) if(n) {efree(n); n=NULL;}
@@ -129,8 +133,8 @@ static const char _cachedb_close_err[] = "Internal error during close of cachedb
 #define filelength sb.sb.st_size 
 
 /* internal cachedb functions */
-static int cachedb_read_compressed_var(php_stream *fp, zval *value, size_t zlen, size_t len TSRMLS_DC);
-static int cachedb_write_compressed_var(php_stream *fp, zval *value, size_t *zlen, size_t *len TSRMLS_DC);
+static int cachedb_read_var(php_stream *fp, int is_binary, zval *value, size_t zlen, size_t len TSRMLS_DC);
+static int cachedb_write_var(php_stream *fp, int is_binary, zval *value, size_t *zlen, size_t *len TSRMLS_DC);
 static int cachedb_load_index(cachedb_t* db TSRMLS_DC);
 static void cachedb_db_dtor(cachedb_t** pdb TSRMLS_DC);
 
@@ -152,14 +156,15 @@ static void cachedb_db_dtor(cachedb_t** pdb TSRMLS_DC);
  * The record index is also read into a HashTable from the base file on opening.
  */
 
-PHPAPI int _cachedb_open(cachedb_t** pdb, char *file, size_t file_length, char mode TSRMLS_DC)
+PHPAPI int _cachedb_open(cachedb_t** pdb, char *file, size_t file_length, char *mode TSRMLS_DC)
 {
 	cachedb_t      *db     = NULL;
 	cachedb_file_t *base   = NULL;
 	char           *opened = NULL;
+	int				mode_length = strlen(mode);
 	char            error_type  = ' ';
 
-	if (!pdb || !file || !file_length) {
+	if (!pdb || !file || !file_length || mode_length == 0 || mode_length > 2) {
 		return FAILURE;
 	}
 
@@ -177,7 +182,7 @@ PHPAPI int _cachedb_open(cachedb_t** pdb, char *file, size_t file_length, char m
 	db->tmp_file.dir        = estrdup(base->dir);
 	db->tmp_file.dir_length = base->dir_length;
 
-	switch(mode) {
+	switch(mode[0]) {
 		case 'r':
 			base->fp = php_stream_open_wrapper(
 				base->name, "rb", 
@@ -198,12 +203,14 @@ PHPAPI int _cachedb_open(cachedb_t** pdb, char *file, size_t file_length, char m
 			db->mode = 'c';
 			break;
 		default:
-			php_error_docref(NULL TSRMLS_CC, E_ERROR, _cachedb_mode_err, mode, db->base_file.name);
+			php_error_docref(NULL TSRMLS_CC, E_ERROR, _cachedb_mode_err, db->mode, db->base_file.name);
 			cachedb_db_dtor(&db TSRMLS_CC);
 			return FAILURE;
 	}
 
 	EFREE(opened);
+
+	db->is_binary == (mode_length == 2 && mode[1] == 'b');
 
 	/* Load the DB file stats or set a dummy create statrec in the case of a create */
 	if (db->base_file.fp) {
@@ -259,7 +266,7 @@ PHPAPI int _cachedb_close(cachedb_t* db, char force_mode TSRMLS_DC)
 		MAKE_STD_ZVAL(list);
 		array_init_size(list, zend_hash_num_elements(db->index_list));
 		zend_hash_copy(Z_ARRVAL_P(list), db->index_list, (copy_ctor_func_t) zval_add_ref, (void *)&tmp, sizeof(zval*));
-		CHECKA(cachedb_write_compressed_var(new, list, &zlen, &len TSRMLS_CC)==SUCCESS);
+		CHECKA(cachedb_write_var(new, 0, list, &zlen, &len TSRMLS_CC)==SUCCESS);
 		zval_ptr_dtor(&list);
 
 		/* Overwrite header with correct contents */
@@ -334,10 +341,10 @@ error:
 
 /* {{{ proto boolean _cachedb_find(struct db)
    Set the record position at the specified key, returning a boolean to indicate if the key exists */
-PHPAPI int _cachedb_find(cachedb_t* db, char *key, size_t key_length TSRMLS_DC)
+PHPAPI int _cachedb_find(cachedb_t* db, char *key, size_t key_length, zval *metadata TSRMLS_DC)
 {
 	zval          **entry = NULL;
-	zval          **ndx, **start, **zlen, **len;
+	zval          **ndx, **start, **zlen, **len, **meta=NULL;
 	cachedb_rec_t *rec = &(db->last_find);
 	char           error_type  = ' ';
 	
@@ -361,6 +368,15 @@ PHPAPI int _cachedb_find(cachedb_t* db, char *key, size_t key_length TSRMLS_DC)
 		rec->zlen       = Z_LVAL_PP(zlen);
 		rec->len        = Z_LVAL_PP(len);
 
+		/* return any metadata if it exists and the metadata argument has been supplied */
+		if (metadata && hash_index_find(entry_list, 3, meta) == SUCCESS) {
+			zval *tmp_zval;
+			zval_dtor(metadata);
+			array_init(metadata);
+			zend_hash_copy(HASH_OF(metadata), HASH_OF(*meta), 
+			               (copy_ctor_func_t) zval_add_ref, 
+  			               (void *) &tmp_zval, sizeof(zval *));
+		}
 		return SUCCESS;
 
 	} else {
@@ -394,7 +410,7 @@ PHPAPI int _cachedb_fetch(cachedb_t* db, zval *value TSRMLS_DC)
 		php_stream_seek(file->fp, rec->start, SEEK_SET);
 	}
 
-	if ( cachedb_read_compressed_var(file->fp, value, zlen, rec->len TSRMLS_CC) == SUCCESS) {
+	if ( cachedb_read_var(file->fp, db->is_binary, value, zlen, rec->len TSRMLS_CC) == SUCCESS) {
 		file->next_pos = rec->start + zlen;
 		return SUCCESS;
 	} else {
@@ -406,7 +422,7 @@ PHPAPI int _cachedb_fetch(cachedb_t* db, zval *value TSRMLS_DC)
 
 /* {{{ proto boolean _cachedb_add(struct db, string key, int key_length, vzal value)
    Add a pending record to the cachedb */
-PHPAPI int _cachedb_add(cachedb_t* db, char *key, size_t key_length, zval *value TSRMLS_DC)
+PHPAPI int _cachedb_add(cachedb_t* db, char *key, size_t key_length, zval *value, zval *metadata TSRMLS_DC)
 {
 	void           *dummy;
 	zval           *tmp;
@@ -418,6 +434,8 @@ PHPAPI int _cachedb_add(cachedb_t* db, char *key, size_t key_length, zval *value
 		return FAILURE; /* Cannot add to a R/O DB or if the key already exists! */
 	}
 
+	CHECKA(!db->is_binary || Z_TYPE_P(value) == IS_STRING);
+ 
 	if (tf->fp == 0) {
 		char           *opened = NULL;
 
@@ -437,21 +455,25 @@ PHPAPI int _cachedb_add(cachedb_t* db, char *key, size_t key_length, zval *value
 		php_stream_seek(tf->fp, 0, SEEK_END);
 		CHECKA(php_stream_tell(tf->fp) == tf->filelength);
 	}
-	CHECKA(cachedb_write_compressed_var(tf->fp, value, &zlen, &len TSRMLS_CC)==SUCCESS);
+	CHECKA(cachedb_write_var(tf->fp, db->is_binary, value, &zlen, &len TSRMLS_CC)==SUCCESS);
 	tf->filelength += zlen;
 	tf->next_pos    = tf->filelength;
 
 	/* Update index_list and index_hash */
 	ndx = zend_hash_num_elements(db->index_list);
 	MAKE_STD_ZVAL(tmp);
-	array_init_size(tmp, 3);
+	array_init_size(tmp, (metadata ? 4 : 3));
 	add_next_index_stringl(tmp, key, key_length, 1);
 	add_next_index_long(tmp, zlen);
 	add_next_index_long(tmp, len);
+	if (metadata) {
+		add_next_index_zval(tmp, metadata);
+		Z_ADDREF_P(metadata);
+	}
 	hash_add_next_index_zval(db->index_list, tmp);
 
 	MAKE_STD_ZVAL(tmp);
-	array_init_size(tmp,2);
+	array_init_size(tmp, 2);
 	add_next_index_long(tmp, ndx);
 	add_next_index_long(tmp, db->base_file.filelength + (tf->next_pos -zlen) );
 	hash_add(db->index_hash, key, tmp);
@@ -513,7 +535,7 @@ static int cachedb_load_index(cachedb_t* db TSRMLS_DC)
 		CHECKA(php_stream_read(db->base_file.fp, (char *) &header, sizeof(header)) == sizeof(header) &&
 		       memcmp(header.fingerprint, CACHEDB_HEADER_FINGERPRINT, sizeof(CACHEDB_HEADER_FINGERPRINT)-1)==0);
 		MAKE_STD_ZVAL(index);
-		CHECKA(cachedb_read_compressed_var(db->base_file.fp, index, 
+		CHECKA(cachedb_read_var(db->base_file.fp, 0, index, 
 		                                   header.zlen, header.len TSRMLS_CC) == SUCCESS &&
 		       Z_TYPE_P(index) == IS_ARRAY);
 
@@ -535,10 +557,12 @@ static int cachedb_load_index(cachedb_t* db TSRMLS_DC)
 			HashTable* entry_hash = Z_ARRVAL_PP(entry);
 			zval **zkey, **zlen, *tmp;
 			char *dummy, *key;
-			uint  dummy_length, key_length;
+			uint  dummy_length, key_length, entry_length;
 			ulong ndx;
 
-			CHECKA(Z_TYPE_PP(entry) == IS_ARRAY && hash_count(entry_hash) == 3);
+			CHECKA(Z_TYPE_PP(entry) == IS_ARRAY); 
+			entry_length = hash_count(entry_hash);
+			CHECKA(entry_length == 3 || entry_length == 4);
 
 			/* Retrieve the next value and its index. Pick out the file path */
             CHECKA(hash_key(index_list, dummy, ndx) == HASH_KEY_IS_LONG);
@@ -581,36 +605,43 @@ error:
 }
 /* }}} */
 
-/* {{{ proto boolean cachedb_read_compressed_var(php_stream fp, zval &value)
+/* {{{ proto boolean cachedb_read_var(php_stream fp, bool is_binary, zval &value)
    Fetch the current record */
-static int cachedb_read_compressed_var(php_stream *fp, zval *value, size_t zlen, size_t len TSRMLS_DC)
+static int cachedb_read_var(php_stream *fp, int is_binary, zval *value, size_t zlen, size_t len TSRMLS_DC)
 {
-	char                  *zbuf       = NULL;
 	char                  *buf        = NULL;
-	size_t                 buf_length = len;
-	php_unserialize_data_t var_hash;
 	const unsigned char   *p;
-	int                    status;
 	char                   error_type  = ' ';
 
+	if (is_binary) {
+		MAKE_STD_ZVAL(value);
+		CHECKA(len == php_stream_copy_to_mem(fp, &buf, len, 0));
+		ZVAL_STRINGL(value, buf, len, 0);
 
-	/* copy relevant stream to zbuf and update the relevant next pos */
-	CHECKA(zlen == php_stream_copy_to_mem(fp, &zbuf, zlen, 0));
+	} else {
+		char                  *zbuf       = NULL;
+		php_unserialize_data_t var_hash;
+		size_t                 buf_length = len;
+		int                    status;
 
-	/* uncompress the buffer and free the zbuf */
-	buf = emalloc(buf_length+1);
-	buf[buf_length]=(char) 0;      /* zero terminate buf to simply debugging */
-	CHECKA(uncompress(buf, &buf_length, zbuf, zlen)==Z_OK && buf_length==len);
-	PEFREE(zbuf,0);
+		/* copy relevant stream to zbuf and update the relevant next pos */
+		CHECKA(zlen == php_stream_copy_to_mem(fp, &zbuf, zlen, 0));
 
-	/* Unserialize the buffer into the returned zval value. 
-       Note that this zval has been preallocated and initialised by the caller */ 
-	p = (const unsigned char*) buf;
-	PHP_VAR_UNSERIALIZE_INIT(var_hash);
- 	status = php_var_unserialize(&value, &p, p + buf_length, &var_hash TSRMLS_CC);
-	EFREE(buf);
-	PHP_VAR_UNSERIALIZE_DESTROY(var_hash);
-	CHECKA(status);
+		/* uncompress the buffer and free the zbuf */
+		buf = emalloc(buf_length+1);
+		buf[buf_length]=(char) 0;      /* zero terminate buf to simply debugging */
+		CHECKA(uncompress(buf, &buf_length, zbuf, zlen)==Z_OK && buf_length==len);
+		PEFREE(zbuf,0);
+
+		/* Unserialize the buffer into the returned zval value. 
+		   Note that this zval has been preallocated and initialised by the caller */ 
+		p = (const unsigned char*) buf;
+		PHP_VAR_UNSERIALIZE_INIT(var_hash);
+	 	status = php_var_unserialize(&value, &p, p + buf_length, &var_hash TSRMLS_CC);
+		EFREE(buf);
+		PHP_VAR_UNSERIALIZE_DESTROY(var_hash);
+		CHECKA(status);
+	}
 	return SUCCESS;
 
 error:
@@ -619,41 +650,54 @@ error:
 }
 /* }}} */
 
-/* {{{ proto boolean cachedb_write_compressed_var(php_stream fp, zval &value)
+/* {{{ proto boolean cachedb_write_var(php_stream fp, zval &value)
    Append the current record to the specified file */
-static int cachedb_write_compressed_var(php_stream *fp, zval *value, size_t *zlen, size_t *len TSRMLS_DC)
+static int cachedb_write_var(php_stream *fp, int is_binary, zval *value, size_t *zlen, size_t *len TSRMLS_DC)
 {
-	zval                *var       = value;
-	php_serialize_data_t var_hash;
-	smart_str            buf       = {NULL, 0, 0};
-	char                *zbuf      = NULL;
-	size_t               buf_length, zbuf_length;
+	size_t               buf_length;
 	char                 error_type  = ' ';
 
-	/* Serialize zval list into buf then destroy list*/
-	PHP_VAR_SERIALIZE_INIT(var_hash);
-	php_var_serialize(&buf, &var, &var_hash TSRMLS_CC);
-	PHP_VAR_SERIALIZE_DESTROY(var_hash);	
-	buf_length = buf.len;
+	if (is_binary) {
+		const char *buf;
+		CHECKA(Z_TYPE_P(value) == IS_STRING);
 
-	/* Allocate zbuf len based on worst case for compression, then compress and free original buffer */
-	zbuf_length = compressBound(buf_length) + 1;
-	zbuf = (char *) emalloc(zbuf_length);
-	if(compress(zbuf, &zbuf_length, buf.c, buf_length) == Z_OK) {
+		buf = (const char *) Z_STRVAL_P(value);
+		buf_length = Z_STRLEN_P(value);
 
+		CHECKA(php_stream_write(fp, buf, buf_length) == buf_length);
+
+		*zlen = buf_length;
+
+	} else { /* is serializable */
+		size_t               zbuf_length;
+		php_serialize_data_t var_hash;
+		char                *zbuf      = NULL;
+		zval                *var       = value;
+		smart_str            buf       = {NULL, 0, 0};
+
+		/* Serialize zval list into buf then destroy list*/
+		PHP_VAR_SERIALIZE_INIT(var_hash);
+		php_var_serialize(&buf, &var, &var_hash TSRMLS_CC);
+		PHP_VAR_SERIALIZE_DESTROY(var_hash);	
+		buf_length = buf.len;
+
+		/* Allocate zbuf len based on worst case for compression, then compress and free original buffer */
+		zbuf_length = compressBound(buf_length) + 1;
+		zbuf = (char *) emalloc(zbuf_length);
+		CHECKA(compress(zbuf, &zbuf_length, buf.c, buf_length) == Z_OK);
 		smart_str_free(&buf);
 
-		if( php_stream_write(fp, (const char *) zbuf, zbuf_length) == zbuf_length) {
-			efree(zbuf);
-			*zlen = zbuf_length;
-			*len  = buf_length;
-			return SUCCESS;
-		}
+		/* Now write out the buffer to file */
+		CHECKA(php_stream_write(fp, (const char *) zbuf, zbuf_length) == zbuf_length);
+		efree(zbuf);
+		*zlen = zbuf_length;
 	}
-	
-	EFREE(zbuf);
-	*zlen = 0;
-	*len  = 0;
+
+	*len  = buf_length;
+	return SUCCESS;
+
+error:
+	php_error_docref(NULL TSRMLS_CC, E_ERROR, _cachedb_write_err);
 	return FAILURE;
 }
 /* }}} */

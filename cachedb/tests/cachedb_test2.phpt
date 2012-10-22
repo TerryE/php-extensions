@@ -8,37 +8,33 @@ CacheDB create test
 	$dbname = dirname(__FILE__) .'/test.db';
 
 	/* Create 1st DB */
-	(($db = cachedb_open($dbname, 'c'))!==FALSE) || die("CacheDB: cannot create Db\n");
+	(($db = cachedb_open($dbname, 'cb'))!==FALSE) || die("CacheDB: cannot create Db\n");
 	cachedb_add("key1", "Content String 1");
 	cachedb_add("key2", "Content String 2");
-	cachedb_add("key3", array("Content String 3a", "Content String 3b"));
-	cachedb_add("key4", array("string"=>"Another Content String"));
-	cachedb_add("key5", NULL);
 	cachedb_close($db) || die("CacheDB: Error on DB close #1\n");
 
 	/* Basic Access checks */
-	(($db = cachedb_open($dbname, 'r'))!==FALSE) || die("CacheDB: Error reopening database\n");
+	(($db = cachedb_open($dbname, 'rb'))!==FALSE) || die("CacheDB: Error reopening database\n");
 	$info = cachedb_info( $db);
-	(count($info[0]) ==5) || die("CacheDB: 1st DB record count != 5\n");
+	(count($info[0]) == 2) || die("CacheDB: 1st DB record count != 5\n");
     cachedb_exists("key2") || die("CacheDB: key2 missing\n");
 	cachedb_exists("key7") && die("CacheDB: key7 found\n");
-	cachedb_add("key7", 123) && die("CacheDB: cannot add to RO db\n");
-	is_null(cachedb_fetch("key5")) || die("CacheDB: cannot fetch NULL value\n");
+	cachedb_add("key7", "123") && die("CacheDB: cannot add to RO db\n");
 	cachedb_close($db) || die("CacheDB: Error on DB close #2\n");
 
 	(@cachedb_fetch(4) === FALSE) || die("CacheDB: Using invalid FP should return FALSE\n");
 
 	/* R/W Access checks */
-	(($db = cachedb_open($dbname, 'w'))!==FALSE) || die("CacheDB: Error reopening database R/W\n");
-	cachedb_add("k8", array("String","XXX",11,23,4),$db, array('name'=>'fred', 'version' => 32, )) ||
-		die("CacheDB: add #1 existing db failed\n");
+	(($db = cachedb_open($dbname, 'wb'))!==FALSE) || die("CacheDB: Error reopening database R/W\n");
+	cachedb_add("kmeta", "Another String", $db, array('name'=>'fred', 'version' => 32, )) ||
+		die("CacheDB: Adding key with metadata failed\n");
 	cachedb_exists("key2") || die("CacheDB: exists key2 failed\n");
-	cachedb_exists("k8") || die("CacheDB: exists k8 failed\n");
-	cachedb_exists("k8", $db, $meta) && print( var_export($meta, true)."\n" );
-	serialize(cachedb_fetch("k8")) == 'a:5:{i:0;s:6:"String";i:1;s:3:"XXX";i:2;i:11;i:3;i:23;i:4;i:4;}' || 
-		die("CacheDB: fetch k8 failed");
-	($k4 = cachedb_fetch("key4")) !== FALSE || die("CacheDB: fetch key4 failed");
-	(is_array($k4) && ($k4["string"]=="Another Content String")) || die("CacheDB: key4 value incorrect");
+	cachedb_exists("kmeta") || die("CacheDB: exists kmeta failed\n");
+	cachedb_exists("kmeta", $db, $meta) &&
+    	serialize($meta) == 'a:2:{s:4:"name";s:4:"fred";s:7:"version";i:32;}' ||
+		die("CacheDB: fetch kmeta with metadata failed");
+	($k2 = cachedb_fetch("key2")) !== FALSE || die("CacheDB: fetch key2 failed");
+	is_string($k2) && $k2=="Content String 2" || die("CacheDB: key2 value incorrect");
 	cachedb_close($db) || die("CacheDB: Error on DB close #3\n");
 
 	/* Update collision check */
@@ -65,20 +61,9 @@ CacheDB create test
 --CLEAN--
 <?php @unlink( $dirname(__FILE__) .'/test.db'); ?>
 --EXPECT--
-array (
-  'name' => 'fred',
-  'version' => 32,
-)
-array (
-  'name' => 'fred',
-  'version' => 32,
-)
-   NDX    ZLEN    LEN OFFSET KEY                  METADATA
-     0     32     24    171 key1                 
-     1     32     24    203 key2                 
-     2     51     64    235 key3                 
-     3     52     49    286 key4                 
-     4     10      2    338 key5                 
-     5     56     63    348 k8                   a:2:{s:4:"name";s:4:"fred";s:7:"version";i:32;}
-     6     18     10    404 keyY                 
+NDX    ZLEN    LEN OFFSET KEY                  METADATA
+     0     32     24    145 key1                 
+     1     32     24    177 key2                 
+     2     30     22    209 kmeta                a:2:{s:4:"name";s:4:"fred";s:7:"version";i:32;}
+     3     18     10    239 keyY                 
 ===DONE===
