@@ -42,7 +42,6 @@
 #include "SAPI.h"
 #include "php_scandir.h"
 #include "ext/standard/php_var.h"
-#include "ext/standard/md5.h"
 
 #define LPC_MAX_SERIALIZERS 16
 
@@ -348,44 +347,41 @@ static zend_op_array* cached_compile(lpc_cache_entry_t* cache_entry,
 
     assert(cache_entry != NULL);
 
-    if (cache_entry->data.file.classes) {
+    if (cache_entry->classes) {
         int lazy_classes = LPCG(lazy_classes);
-        for (i = 0; cache_entry->data.file.classes[i].class_entry != NULL; i++) {
-            if(install_class(cache_entry->data.file.classes[i], ctxt, lazy_classes TSRMLS_CC) == FAILURE) {
+        for (i = 0; cache_entry->classes[i].class_entry != NULL; i++) {
+            if(install_class(cache_entry->classes[i], ctxt, lazy_classes TSRMLS_CC) == FAILURE) {
                 goto default_compile;
             }
         }
     }
 
-    if (cache_entry->data.file.functions) {
+    if (cache_entry->functions) {
         int lazy_functions = LPCG(lazy_functions);
-        for (i = 0; cache_entry->data.file.functions[i].function != NULL; i++) {
-            install_function(cache_entry->data.file.functions[i], ctxt, lazy_functions TSRMLS_CC);
+        for (i = 0; cache_entry->functions[i].function != NULL; i++) {
+            install_function(cache_entry->functions[i], ctxt, lazy_functions TSRMLS_CC);
         }
     }
 
-    lpc_do_halt_compiler_register(cache_entry->data.file.filename, cache_entry->data.file.halt_offset TSRMLS_CC);
+    lpc_do_halt_compiler_register(cache_entry->filename, cache_entry->halt_offset TSRMLS_CC);
 
-    return lpc_copy_op_array_for_execution(NULL, cache_entry->data.file.op_array, ctxt TSRMLS_CC);
+    return lpc_copy_op_array_for_execution(NULL, cache_entry->op_array, ctxt TSRMLS_CC);
 
 default_compile:
 
-    if(cache_entry->data.file.classes) {
+    if(cache_entry->classes) {
         for(ii = 0; ii < i ; ii++) {
-            uninstall_class(cache_entry->data.file.classes[ii] TSRMLS_CC);
+            uninstall_class(cache_entry->classes[ii] TSRMLS_CC);
         }
     }
 
-    lpc_cache_release(LPCG(lpc_cache), cache_entry TSRMLS_CC);
-
-    /* cannot free up cache data yet, it maybe in use */
-
+	lpc_cache_release(cache_entry TSRMLS_CC);
     return NULL;
 }
 /* }}} */
 
 /* {{{ lpc_compile_cache_entry  */
-zend_bool lpc_compile_cache_entry(lpc_cache_key_t key, zend_file_handle* h, int type, time_t t, 
+zend_bool lpc_compile_cache_entry(lpc_cache_key_t *key, zend_file_handle* h, int type,
                                   zend_op_array** op_array, lpc_cache_entry_t** cache_entry TSRMLS_DC) 
 {ENTER(lpc_compile_cache_entry)
     int num_functions, num_classes;
@@ -414,34 +410,6 @@ zend_bool lpc_compile_cache_entry(lpc_cache_key_t key, zend_file_handle* h, int 
     }
     ctxt.copy = LPC_COPY_IN_OPCODE;
 
-    if(LPCG(file_md5)) {
-        int n;
-        unsigned char buf[1024];
-        PHP_MD5_CTX context;
-        php_stream *stream;
-        char *filename;
-
-        if(h->opened_path) {
-            filename = h->opened_path;
-        } else {
-            filename = h->filename;
-        }
-        stream = php_stream_open_wrapper(filename, "rb", REPORT_ERRORS | ENFORCE_SAFE_MODE, NULL);
-        if(stream) {
-            PHP_MD5Init(&context);
-            while((n = php_stream_read(stream, (char*)buf, sizeof(buf))) > 0) {
-                PHP_MD5Update(&context, buf, n);
-            }
-            PHP_MD5Final(key.md5, &context);
-            php_stream_close(stream);
-            if(n<0) {
-                lpc_warning("Error while reading '%s' for md5 generation." TSRMLS_CC, filename);
-            }
-        } else {
-            lpc_warning("Unable to open '%s' for md5 generation." TSRMLS_CC, filename);
-        }
-    }
-
     if(!(alloc_op_array = lpc_copy_op_array(NULL, *op_array, &ctxt TSRMLS_CC))) {
         goto freepool;
     }
@@ -454,12 +422,13 @@ zend_bool lpc_compile_cache_entry(lpc_cache_key_t key, zend_file_handle* h, int 
     }
 
     path = h->opened_path;
-    if(!path && key.type == LPC_CACHE_KEY_FPFILE) path = (char*)key.data.fpfile.fullpath;
+////////////// TODO: validate this filenaming 
+	if(!path && key->type == LPC_CACHE_KEY_FPFILE) path = (char*)key->fp->orig_path;
     if(!path) path=h->filename;
 
     lpc_debug("2. h->opened_path=[%s]  h->filename=[%s]" TSRMLS_CC, h->opened_path?h->opened_path:"null",h->filename);
 
-    if(!(*cache_entry = lpc_cache_make_file_entry(path, alloc_op_array, alloc_functions, alloc_classes, &ctxt TSRMLS_CC))) {
+    if(!(*cache_entry = lpc_cache_make_entry(path, alloc_op_array, alloc_functions, alloc_classes, &ctxt TSRMLS_CC))) {
         goto freepool;
     }
 
@@ -475,96 +444,82 @@ freepool:
 /* }}} */
 
 /* {{{ my_compile_file
-   Overrides zend_compile_file */
+	LPC substitutes my_compile_file callback for the standard zend_compile_file.  It essentially
+    takes one of three execution paths:
+
+    *  If a valid copy of the file is already cached in the opcode cache then cached_compile() is
+       called to install this in the runtime environment
+
+
+    *  If it is a valid file for caching, then zend_compile_file() is called to compile the file
+       into the runtime environment, and is then deep copied into a serial pool for insertion 
+       into the opcode cache.
+
+    *  If caching is disabled, either generally or for this file then execution is passed 
+       directly to zend_compile_file().
+*/
 static zend_op_array* my_compile_file(zend_file_handle* h,
                                                int type TSRMLS_DC)
 {ENTER(my_compile_file)
-    lpc_cache_key_t key;
-    lpc_cache_entry_t* cache_entry;
-    zend_op_array* op_array = NULL;
-    time_t t;
-    lpc_context_t ctxt = {0,};
-    int bailout=0;
-	const char* filename = NULL;
+    lpc_cache_key_t   *key;
+    lpc_cache_entry_t *cache_entry;
+    zend_op_array     *op_array = NULL;
+    time_t             t = LPCG(sapi_request_time);
+    lpc_context_t      ctxt = {0,};
+    int                bailout = 0;
+	const char        *filename = NULL;
 
-    if (!LPCG(enabled)) {
+    filename = (h->opened_path) ? h->opened_path : h->filename;
+
+	/* chain onto the old (zend) compile file function if the file isn't cacheable */
+    if (!LPCG(enabled) ||
+	    !lpc_valid_file_match(filename TSRMLS_CC) ||
+        !(key = lpc_cache_make_file_key(h->filename TSRMLS_CC))) { 
         return old_compile_file(h, type TSRMLS_CC);
     }
-
-    if(h->opened_path) {
-        filename = h->opened_path;
-    } else {
-        filename = h->filename;
-    }
-
+#if 0
     /* check our regular expression filters */
-    if (LPCG(filters) && LPCG(compiled_filters) && filename) {
-        int ret = lpc_regex_match_array(LPCG(compiled_filters), filename);
+    if (APCG(filters) && APCG(compiled_filters) && filename) {
+        int ret = apc_regex_match_array(APCG(compiled_filters), filename);
 
-        if(ret == LPC_NEGATIVE_MATCH || (ret != LPC_POSITIVE_MATCH && !LPCG(cache_by_default))) {
+        if(ret == APC_NEGATIVE_MATCH || (ret != APC_POSITIVE_MATCH && !APCG(cache_by_default))) {
             return old_compile_file(h, type TSRMLS_CC);
         }
-    } else if(!LPCG(cache_by_default)) {
+    } else if(!APCG(cache_by_default)) {
         return old_compile_file(h, type TSRMLS_CC);
     }
-    LPCG(current_cache) = LPCG(lpc_cache);
-
-
-    t = lpc_time();
-
+#endif
     lpc_debug("1. h->opened_path=[%s]  h->filename=[%s]" TSRMLS_CC, h->opened_path?h->opened_path:"null",h->filename);
 
-    /* try to create a cache key; if we fail, give up on caching */
-    if (!lpc_cache_make_file_key(&key, h->filename, PG(include_path), t TSRMLS_CC)) {
-        return old_compile_file(h, type TSRMLS_CC);
-    }
-
-    if(!LPCG(force_file_update)) {
-        /* search for the file in the cache */
-        cache_entry = lpc_cache_find(LPCG(lpc_cache), key, t TSRMLS_CC);
-        ctxt.force_update = 0;
-    } else {
-        cache_entry = NULL;
-        ctxt.force_update = 1;
-    }
-
-    if (cache_entry != NULL) {
+    /* If a valid cache entry exists then load the previously compiled module */
+    if ((cache_entry = lpc_cache_retrieve(key TSRMLS_CC)) != NULL) {
         int dummy = 1;
         
         ctxt.pool = lpc_pool_create(LPC_LOCALPOOL);
-        if (!ctxt.pool) {
-            lpc_warning("Unable to allocate memory for pool." TSRMLS_CC);
-            return old_compile_file(h, type TSRMLS_CC);
-        }
         ctxt.copy = LPC_COPY_OUT_OPCODE;
         
-        zend_hash_add(&EG(included_files), cache_entry->data.file.filename, 
-                            strlen(cache_entry->data.file.filename)+1,
+        zend_hash_add(&EG(included_files), cache_entry->filename, 
+                            strlen(cache_entry->filename)+1,
                             (void *)&dummy, sizeof(int), NULL);
 
-        op_array = cached_compile(cache_entry, &ctxt TSRMLS_CC);
-
-        if(op_array) {
-
-            /* this is an unpool, which has no cleanup - this only free's the pool header */
+        if ((op_array = cached_compile(cache_entry, &ctxt TSRMLS_CC)) != NULL) {
+ 
+/////////// TODO: review pool cleanup policy for compiled content
             lpc_pool_destroy(ctxt.pool);
             
-            /* We might leak fds without this hack */
+/////////// TODO: Validate this "We might leak fds without this hack".  Why should this file stay open ????
             if (h->type != ZEND_HANDLE_FILENAME) {
                 zend_llist_add_element(&CG(open_files), h); 
             }
             return op_array;
-        }
-        if(LPCG(report_autofilter)) {
-            lpc_warning("Autofiltering %s" TSRMLS_CC, 
-                            (h->opened_path ? h->opened_path : h->filename));
-            lpc_warning("Recompiling %s" TSRMLS_CC, cache_entry->data.file.filename);
-        }
-        /* TODO: check what happens with EG(included_files) */
+        } else {
+/////////// TODO: Decide on correct action if cached compile fails, but drop-through isn't the correct response
+		}
     }
 
+	/* Compile the file and add to the cache */
     /* Make sure the mtime reflects the files last known mtime, and we respect max_file_size in the case of fpstat==0 */
-    if(key.type == LPC_CACHE_KEY_FPFILE) {
+    if(key->type == LPC_CACHE_KEY_FPFILE) {
         lpc_fileinfo_t fileinfo;
         struct stat *tmp_buf = NULL;
         if(!strcmp(SG(request_info).path_translated, h->filename)) {
@@ -582,23 +537,22 @@ static zend_op_array* my_compile_file(zend_file_handle* h,
             lpc_debug("File is too big %s (%ld) - bailing" TSRMLS_CC, h->filename, fileinfo.st_buf.sb.st_size);
             return old_compile_file(h, type TSRMLS_CC);
         }
-        key.mtime = fileinfo.st_buf.sb.st_mtime;
+        key->mtime = fileinfo.st_buf.sb.st_mtime;
     }
-
+/////////// TODO: Decide on whether using sigsetjmp is a meaningful complication if we don't need transactional integrity
     zend_try {
-        if (lpc_compile_cache_entry(key, h, type, t, &op_array, &cache_entry TSRMLS_CC) == SUCCESS) {
+
+        if (lpc_compile_cache_entry(key, h, type, &op_array, &cache_entry TSRMLS_CC) == SUCCESS) {
             ctxt.pool = cache_entry->pool;
             ctxt.copy = LPC_COPY_IN_OPCODE;
-            if (lpc_cache_insert(LPCG(lpc_cache), key, cache_entry, &ctxt, t TSRMLS_CC) != 1) {
+            if (lpc_cache_insert(key, cache_entry, &ctxt TSRMLS_CC) != 1) {
                 lpc_pool_destroy(ctxt.pool);
                 ctxt.pool = NULL;
             }
-        }
+	        }
     } zend_catch {
         bailout=1; /* in the event of a bailout, ensure we don't create a dead-lock */
     } zend_end_try();
-
-    LPCG(current_cache) = NULL;
 
     if (bailout) zend_bailout();
 
@@ -630,6 +584,7 @@ static int _lpc_register_serializer(const char* name, lpc_serialize_t serialize,
     return 0;
 }
 
+/////////// TODO: My nose tells me that these aren't being used in LPC and can be stripped ou
 static lpc_serializer_t* lpc_find_serializer(const char* name TSRMLS_DC)
 {ENTER(lpc_find_serializer)
     int i;
@@ -694,13 +649,10 @@ int lpc_module_init(int module_number TSRMLS_DC)
 
 int lpc_module_shutdown(TSRMLS_D)
 {ENTER(lpc_module_shutdown)
-    if (!LPCG(initialized))
-        return 0;
-
-    /* restore compilation */
-    zend_compile_file = old_compile_file;
-
-    LPCG(initialized) = 0;
+    if (LPCG(initialized)) {
+		zend_compile_file = old_compile_file;
+		LPCG(initialized) = 0;
+	}
     return 0;
 }
 /* }}} */
@@ -712,9 +664,9 @@ static void lpc_deactivate(TSRMLS_D)
      * unlike APC, there is not need to worry about reference counts on active cache entries in
      * `my_execute` -- normal memory cleanup will take care of this.
      */
-/////  unwind code from MSHUTDOWN needs to be folded in RSHUTDOWN now that caches and stacks only have a request lifetime
+/////////////// TODO:  unwind code from MSHUTDOWN needs to be folded in RSHUTDOWN now that caches and stacks only have a request lifetime
 
-    lpc_cache_destroy(LPCG(lpc_cache) TSRMLS_CC);
+    lpc_cache_destroy(TSRMLS_C);
 
 #ifdef ZEND_ENGINE_2_4
     lpc_interned_strings_shutdown(TSRMLS_C);
@@ -723,17 +675,9 @@ static void lpc_deactivate(TSRMLS_D)
 /* }}} */
 
 /* {{{ request init and shutdown */
-
 int lpc_request_init(TSRMLS_D)
 {ENTER(lpc_request_init)
-	LPCG(filters) = lpc_tokenize(INI_STR("lpc.filters"), ',' TSRMLS_CC);
 	zend_hash_init(&LPCG(pools), 10, NULL, NULL, 0);
-
-    if (!LPCG(compiled_filters) && LPCG(filters)) {
-        /* compile regex filters here to avoid race condition between MINIT of PCRE and LPC.
-         * This should be moved to lpc_cache_create() if this race condition between modules is resolved */
-        LPCG(compiled_filters) = lpc_regex_compile_array(LPCG(filters) TSRMLS_CC);
-    }
 
     if (!LPCG(serializer) && LPCG(serializer_name)) {
         /* Avoid race conditions between MINIT of lpc and serializer exts like igbinary */
@@ -756,7 +700,7 @@ int lpc_request_init(TSRMLS_D)
 
 int lpc_request_shutdown(TSRMLS_D)
 {ENTER(lpc_request_shutdown)
-	lpc_pool *pool_ptr;  int s;
+	lpc_pool *pool;  int s;
 	HashTable *pools_ht = &LPCG(pools);
 	char *dummy;
 #if LPC_HAVE_LOOKUP_HOOKS
@@ -774,15 +718,21 @@ int lpc_request_shutdown(TSRMLS_D)
 	/* Loop over pools to destroy each pool. Note that lpc_pool_destroy removes the entry so 
      * the loop repeatly resets the internal point at fetches the first element until empty */
 	zend_hash_internal_pointer_reset(pools_ht);
-	while(zend_hash_get_current_key(pools_ht, &dummy, (ulong *)&pool_ptr, 0) == HASH_KEY_IS_LONG) {
-		lpc_pool_destroy(pool_ptr);
-		zend_hash_internal_pointer_reset(pools_ht);
+	while(zend_hash_get_current_key(pools_ht, &dummy, (ulong *)&pool, 0) == HASH_KEY_IS_LONG) {
+/////////////////////////////////  Temp Patch for testing ///////////////////////
+		if (pool->type == LPC_SERIALPOOL) {
+			char *pool_buffer;
+/////////// TODO: this doesn't belong here !!!! it belongs in lpc_cache_make_entry() 
+			int i = lpc_pool_unload(pool, (void **)&pool_buffer, NULL);
+			efree(pool_buffer);
+		} else {
+			lpc_pool_destroy(pool);
+		}
 	}
 	zend_hash_destroy(pools_ht);
 
     return 0;
 }
-
 /* }}} */
 
 

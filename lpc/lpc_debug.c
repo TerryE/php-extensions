@@ -126,7 +126,7 @@ int lpc_debug_enter(char *s)
 		"my_compile_file", "_lpc_register_serializer", "lpc_find_serializer", "lpc_get_serializers", "lpc_module_init",
 		"lpc_module_shutdown", "lpc_deactivate", "lpc_request_init", "lpc_request_shutdown",
 	"==lpc_pool.c==", "_lpc_pool_create", "_lpc_pool_destroy", "_lpc_pool_set_size", 
-		"_lpc_pool_alloc", "_lpc_pool_strdup", "_lpc_pool_memcpy", 
+		"_lpc_pool_alloc", "_lpc_pool_strdup", "_lpc_pool_memcpy", "_lpc_pool_unload", "_lpc_pool_load",  
 	"==lpc_string.c==", "lpc_dummy_interned_strings_snapshot_for_php", "lpc_dummy_interned_strings_restore_for_php",
 		"lpc_copy_internal_strings", "lpc_interned_strings_init", "lpc_interned_strings_shutdown", 
 	"==lpc_zend.c==", "lpc_op_ZEND_INCLUDE_OR_EVAL", "lpc_zend_init", "lpc_zend_shutdown", 

@@ -97,21 +97,9 @@ typedef struct lpc_fileinfo_t
 extern int lpc_search_paths(const char* filename, const char* path, lpc_fileinfo_t* fileinfo TSRMLS_DC);
 
 /* regular expression wrapper functions */
-extern void* lpc_regex_compile_array(char* patterns[] TSRMLS_DC);
+extern void* lpc_regex_compile_array(char* pattern_list TSRMLS_DC);
 extern void lpc_regex_destroy_array(void* p TSRMLS_DC);
 extern int lpc_regex_match_array(void* p, const char* input);
-
-/* lpc_crc32: returns the CRC-32 checksum of the first len bytes in buf */
-extern unsigned int lpc_crc32(const char* buf, int len);
-
-/* lpc_flip_hash flips keys and values for faster searching */
-extern HashTable* lpc_flip_hash(HashTable *hash); 
-
-#define LPC_NEGATIVE_MATCH 1
-#define LPC_POSITIVE_MATCH 2
-
-#define lpc_time() \
-    (LPCG(use_request_time) ? (time_t) sapi_get_request_time(TSRMLS_C) : time(0));
 
 #if defined(__GNUC__)
 # define LPC_UNUSED __attribute__((unused))
@@ -125,12 +113,15 @@ extern HashTable* lpc_flip_hash(HashTable *hash);
 # define LPC_HOTSPOT 
 #endif
 
+/* Only implement regexp filters for PHP versions >= 5.2.2 otherwise it acts as a Noop */
+#if HAVE_PCRE || (HAVE_BUNDLED_PCRE && (PHP_MAJOR_VERSION > 5) || (PHP_MAJOR_VERSION == 5 && PHP_MINOR_VERSION > 2) ||   (PHP_MAJOR_VERSION == 5 && PHP_MINOR_VERSION == 2 && PHP_RELEASE_VERSION >= 2 ))
+#  define  PHP_REXEP_OK
+#endif
 ZEND_BEGIN_MODULE_GLOBALS(lpc)
     /* configuration parameters */
     zend_bool enabled;      /* if true, lpc is enabled (defaults to true) */
-    char** filters;         /* array of regex filters that prevent caching */
-    void* compiled_filters; /* compiled regex filters */
-
+    char*     filter;            /* regex filter that prevents caching */
+ 
     /* module variables */
     zend_bool initialized;       /* true if module was initialized */
     zend_bool cache_by_default;  /* true if files should be cached unless filtered out */
@@ -148,9 +139,7 @@ ZEND_BEGIN_MODULE_GLOBALS(lpc)
     zend_bool force_file_update; /* force files to be updated during lpc_compile_file */
     char canon_path[MAXPATHLEN]; /* canonical path for key data */
     zend_bool coredump_unmap;    /* Trap signals that coredump and unmap shared memory */
-    lpc_cache_t *current_cache;  /* current cache being modified/read */
-    zend_bool file_md5;          /* record md5 hash of files */
-    zend_bool use_request_time;  /* use the SAPI request start time for TTL */
+    time_t sapi_request_time;    /* the SAPI request start time is used for any timestamp validation */
     zend_bool lazy_functions;        /* enable/disable lazy function loading */
     HashTable *lazy_function_table;  /* lazy function entry table */
     zend_bool lazy_classes;          /* enable/disable lazy class loading */

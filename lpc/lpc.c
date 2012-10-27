@@ -36,14 +36,10 @@
 #include "lpc_cache.h"
 #include "php.h"
 
-#if HAVE_PCRE || HAVE_BUNDLED_PCRE
-/*  Deal with problem present until php-5.2.2 where php_pcre.h was not installed correctly */
-#   if !HAVE_BUNDLED_PCRE && PHP_MAJOR_VERSION == 5 && (PHP_MINOR_VERSION < 2 || (PHP_MINOR_VERSION == 2 && PHP_RELEASE_VERSION < 2))
-#       include "lpc_php_pcre.h"
-#   else
-#       include "ext/pcre/php_pcre.h"
-#   endif
-#   include "ext/standard/php_smart_str.h"
+/* Only implement regexp filters for PHP versions >= 5.2.2 otherwise it acts as a Noop */
+#ifdef PHP_REXEP_OK
+#  include "ext/pcre/php_pcre.h"
+#  include "ext/standard/php_smart_str.h"
 #endif
 
 /* }}} */
@@ -68,94 +64,10 @@
 LPC_PRINT_FUNCTION(error, E_ERROR)
 LPC_PRINT_FUNCTION(warning, E_WARNING)
 LPC_PRINT_FUNCTION(notice, E_NOTICE)
-
 #ifdef __DEBUG_LPC__
 LPC_PRINT_FUNCTION(debug, E_NOTICE)
 #else
 void lpc_debug(const char *format TSRMLS_DC, ...) {}
-#endif
-/* }}} */
-
-/* {{{ string and text manipulation */
-
-char** lpc_tokenize(const char* s, char delim TSRMLS_DC)
-{ENTER(lpc_tokenize)
-    char** tokens;      /* array of tokens, NULL terminated */
-    int size;           /* size of tokens array */
-    int n;              /* index of next token in tokens array */
-    int cur;            /* current position in input string */
-    int end;            /* final legal position in input string */
-    int next;           /* position of next delimiter in input */
-
-    if (!s) {
-        return NULL;
-    }
-
-    size = 2;
-    n    = 0;
-    cur  = 0;
-    end  = strlen(s) - 1;
-
-    tokens = (char**) pemalloc(size * sizeof(char*), PERSISTENT);
-    tokens[n] = NULL;
-
-    while (cur <= end) {
-        /* search for the next delimiter */
-        char* p = strchr(s + cur, delim);
-        next = p ? p-s : end+1;
-
-        /* resize token array if necessary */
-        if (n == size-1) {
-            size *= 2;
-            tokens = (char**) perealloc(tokens, size * sizeof(char*), PERSISTENT);
-        }
-
-        /* save the current token */
-        tokens[n] = pemalloc((next-cur)+1, PERSISTENT);
-		memcpy(tokens[n], s + cur, next-cur);
-		tokens[n][next-cur] = '\0';
-        tokens[++n] = NULL;
-        cur = next + 1;
-    }
-
-    return tokens;
-}
-
-/* }}} */
-
-
-/* {{{ lpc_win32_restat */
-#ifdef PHP_WIN32
-static int lpc_restat(lpc_fileinfo_t *fileinfo TSRMLS_DC)
-{ENTER(lpc_restat)
-    HANDLE hFile;
-    BY_HANDLE_FILE_INFORMATION hInfo;
-
-    hFile = CreateFile(fileinfo->fullpath, GENERIC_WRITE, FILE_SHARE_WRITE|FILE_SHARE_READ, NULL, OPEN_ALWAYS, FILE_FLAG_BACKUP_SEMANTICS, NULL);
-
-    if (!hFile) {
-        lpc_debug("Cannot create a file HANDLE for %s" TSRMLS_CC, fileinfo->fullpath);
-        return -1;
-    }
-
-    if (!GetFileInformationByHandle(hFile, &hInfo)) {
-        lpc_debug("Cannot get file information from handle" TSRMLS_CC);
-        CloseHandle(hFile);
-        return -1;
-    }
-
-    CloseHandle(hFile);
-
-    fileinfo->st_buf.sb.st_dev = hInfo.dwVolumeSerialNumber;
-    fileinfo->st_buf.sb.st_ino = (((lpc_ino_t)(hInfo.nFileIndexHigh) << 32) | (lpc_ino_t) hInfo.nFileIndexLow);
-
-    return 0;
-}
-#else
-static int lpc_restat(lpc_fileinfo_t *fileinfo TSRMLS_DC)
-{
-	return 0;
-}
 #endif
 /* }}} */
 
@@ -177,228 +89,47 @@ static int lpc_restat(lpc_fileinfo_t *fileinfo TSRMLS_DC)
                 (filename[1] == '.' && \
                     IS_SLASH(filename[2])))))
     
-/* {{{ stupid stringifcation */
-#if DEFAULT_SLASH == '/'
-    #define DEFAULT_SLASH_STRING "/"
-#elif DEFAULT_SLASH == '\\'
-    #define DEFAULT_SLASH_STRING "\\"
-#else
-    #error "Unknown value for DEFAULT_SLASH"
-#endif
-/* }}} */
 
-int lpc_search_paths(const char* filename, const char* path, lpc_fileinfo_t* fileinfo TSRMLS_DC)
-{ENTER(lpc_search_paths)
-    char** paths = NULL;
-    char *exec_fname;
-    int exec_fname_length;
-    int found = 0;
-    int i;
-    php_stream_wrapper *wrapper = NULL;
-    char *path_for_open = NULL;
+/* {{{ lpc_valid_file_match (string filename)
+   LPC has cut REGEX support back to a minimum subset:
+   *  REGEXs are only supported for PHP versions >= 5.2.2 and ignored otherwise
+   *  The PHP regexp engine goes to great lengths to cache REGEX compiles so don't redo this!
+   *  This is now thread aware and so can directly access the LPC global vector 
+   *  Only a single expression is used because normal REGEX syntax (alternative selections 
+      and negative assertion) can be used do all of the previous APC REGEX functions.
+*/
 
-    assert(filename && fileinfo);
+int lpc_valid_file_match(const char *filename TSRMLS_DC)
+{ENTER(lpc_valid_file_match)
+#ifdef PHP_REXEP_OK
 
+	char *filt = LPCG(filter);
+	pcre *re;
 
-    wrapper = php_stream_locate_url_wrapper(filename, &path_for_open, 0 TSRMLS_CC);
+	/* handle the simple "always match and always fail conditions. */ 
+	if (filt[0] == '\0' || filt[2] == '\0') { 
+		return 1;	/* always return TRUE if the filter is an empty string */
+	} else if (filt[3] == '\0' && filt[1]=='*') {
+		return 0;   /* always return FALSE if the filter is "<delim>*<delim>" */
+	}
 
-    if(!wrapper || !wrapper->wops || !wrapper->wops->url_stat) {
-        return -1;
-    }
+	CHECK(re = pcre_get_compiled_regex(filt, NULL, NULL TSRMLS_CC));
 
-    if(wrapper != &php_plain_files_wrapper) {
-        if(LPC_URL_STAT(wrapper, path_for_open, &fileinfo->st_buf) == 0) {
-            fileinfo->fullpath = COPY_IF_CHANGED(path_for_open);
-            return lpc_restat(fileinfo TSRMLS_CC);
-        }
-        return -1; /* cannot stat */
-    }
+	return (pcre_exec(re, NULL, (filename), strlen(filename), 0, 0, NULL, 0) >= 0) ? 1 : 0;
+		
+#else /* PHP_REXEP_OK */
 
-    if (IS_ABSOLUTE_PATH(path_for_open, strlen(path_for_open)) && 
-            LPC_URL_STAT(wrapper, path_for_open, &fileinfo->st_buf) == 0) {
-        fileinfo->fullpath = COPY_IF_CHANGED(path_for_open);
-        return lpc_restat(fileinfo TSRMLS_CC);
-    }
+	return 1;  /* if PHP version < 5.2.2 then ignore filtering and always return TRUE */
 
-    if (!IS_RELATIVE_PATH(path_for_open, strlen(path_for_open))) {
-        paths = lpc_tokenize(path, DEFAULT_DIR_SEPARATOR TSRMLS_CC);
-        if (!paths)
-            return -1;
+#endif /* PHP_REXEP_OK */
 
-        /* for each directory in paths, look for filename inside */
-        for (i = 0; paths[i]; i++) {
-            snprintf(fileinfo->path_buf, sizeof(fileinfo->path_buf), "%s%c%s", paths[i], DEFAULT_SLASH, path_for_open);
-            if (LPC_URL_STAT(wrapper, fileinfo->path_buf, &fileinfo->st_buf) == 0) {
-                fileinfo->fullpath = (char*) fileinfo->path_buf;
-                found = 1;
-                break;
-            }
-        }
-    } else {
-        /* read cwd and try to fake up fullpath */
-        fileinfo->path_buf[0] = '\0';
-        if(VCWD_GETCWD(fileinfo->path_buf, sizeof(fileinfo->path_buf))) { 
-            strlcat(fileinfo->path_buf, DEFAULT_SLASH_STRING, sizeof(fileinfo->path_buf));
-            strlcat(fileinfo->path_buf, path_for_open, sizeof(fileinfo->path_buf));
-            if (LPC_URL_STAT(wrapper, fileinfo->path_buf, &fileinfo->st_buf) == 0) {
-                fileinfo->fullpath = (char*) fileinfo->path_buf;
-                return lpc_restat(fileinfo TSRMLS_CC);
-            }
-        }
-    }
-
-    /* check in path of the calling scripts' current working directory */
-    /* modified from main/streams/plain_wrapper.c */
-    if(!found && zend_is_executing(TSRMLS_C)) {
-        exec_fname = zend_get_executed_filename(TSRMLS_C);
-        exec_fname_length = strlen(exec_fname);
-        while((--exec_fname_length >= 0) && !IS_SLASH(exec_fname[exec_fname_length]));
-        if((exec_fname && exec_fname[0] != '[') && exec_fname_length > 0) {
-            /* not: [no active file] or no path */
-            memcpy(fileinfo->path_buf, exec_fname, exec_fname_length);
-            fileinfo->path_buf[exec_fname_length] = DEFAULT_SLASH;
-            strlcpy(fileinfo->path_buf +exec_fname_length +1, path_for_open,sizeof(fileinfo->path_buf)-exec_fname_length-1);
-            /* lpc_warning("filename: %s, exec_fname: %s, fileinfo->path_buf: %s" TSRMLS_CC, path_for_open, exec_fname, fileinfo->path_buf); */
-            if (LPC_URL_STAT(wrapper, fileinfo->path_buf, &fileinfo->st_buf) == 0) {
-                fileinfo->fullpath = (char*) fileinfo->path_buf;
-                found = 1;
-            }
-        }
-    }
-
-    if(paths) {
-        /* free the value returned by lpc_tokenize */
-        for (i = 0; paths[i]; i++) {
-            pefree(paths[i], PERSISTENT);
-        }
-        pefree(paths, PERSISTENT);
-    }
-
-    return found ? lpc_restat(fileinfo TSRMLS_CC) : -1;
-}
-
-/* }}} */
-
-/* {{{ regular expression wrapper functions */
-
-#if (HAVE_PCRE || HAVE_BUNDLED_PCRE)
-typedef struct {
-    pcre *preg;
-    pcre *nreg;
-} lpc_regex;
-
-#define LPC_ADD_PATTERN(match, pat) do {\
-    if(match.len > 1) {\
-        smart_str_appendc(&match, '|');\
-    }\
-    smart_str_appendc(&match, '(');\
-    while(*pat) {\
-        if(*pat == '/') smart_str_appendc(&match, '\\');\
-        \
-        smart_str_appendc(&match, *(pat++));\
-    }\
-    smart_str_appendc(&match, ')');\
-} while(0)
-
-#define LPC_COMPILE_PATTERN(re, match) do {\
-    if(match.len > 2) { /* more than just "//" */\
-        if (((re) = pcre_get_compiled_regex(match.c, NULL, NULL TSRMLS_CC)) == NULL) {\
-            lpc_warning("lpc_regex_compile_array: invalid expression '%s'" TSRMLS_CC, match.c); \
-            smart_str_free(&match);\
-            return NULL;\
-        }\
-    } else { \
-        (re) = NULL;\
-    }\
-} while(0)
-
-void* lpc_regex_compile_array(char* patterns[] TSRMLS_DC)
-{ENTER(lpc_regex_compile_array)
-    lpc_regex* regs;
-    int npat;
-    smart_str pmatch = {0,};
-    smart_str nmatch = {0,};
-    char* pattern;
-
-    if (!patterns)
-        return NULL;
-
-    regs = (lpc_regex*) pemalloc(sizeof(lpc_regex), PERSISTENT);
-
-    smart_str_appendc(&pmatch, '/');
-    smart_str_appendc(&nmatch, '/');
-
-    for (npat = 0; patterns[npat] != NULL; npat++) {
-        pattern = patterns[npat];
-        if(pattern[0] == '+') {
-            pattern += sizeof(char);
-            LPC_ADD_PATTERN(pmatch, pattern);
-        } else {
-            if(pattern[0] == '-') pattern += sizeof(char);
-            LPC_ADD_PATTERN(nmatch, pattern);
-        }
-    }
-    smart_str_appendc(&pmatch, '/');
-    smart_str_appendc(&nmatch, '/');
-
-    smart_str_0(&nmatch);
-    smart_str_0(&pmatch);
-
-    LPC_COMPILE_PATTERN(regs->preg, pmatch);
-    LPC_COMPILE_PATTERN(regs->nreg, nmatch);
-
-    smart_str_free(&pmatch);
-    smart_str_free(&nmatch);
-
-    return (void*) regs;
-}
-
-void lpc_regex_destroy_array(void* p TSRMLS_DC)
-{ENTER(lpc_regex_destroy_array)
-    if (p != NULL) {
-        lpc_regex* regs = (lpc_regex*) p;
-        pefree(regs, PERSISTENT);
-    }
-}
-
-#define LPC_MATCH_PATTERN(re, input, output) do {\
-    if (re && pcre_exec(re, NULL, (input), strlen(input), 0, 0, NULL, 0) >= 0) {\
-        return (output);\
-    }\
-} while(0)
-
-
-int lpc_regex_match_array(void* p, const char* input)
-{ENTER(lpc_regex_match_array)
-    lpc_regex* regs;
-
-    if (!p)
-        return 0;
-
-    regs = (lpc_regex*) p;
-
-    LPC_MATCH_PATTERN(regs->preg, input, LPC_POSITIVE_MATCH);
-    LPC_MATCH_PATTERN(regs->nreg, input, LPC_NEGATIVE_MATCH);
-
+error:
+	lpc_warning("Invalid lpc.filter, '%s'" TSRMLS_CC, filt);
+	efree(LPCG(filter));
+	LPCG(filter)="";  /* set the filter to an empty string: no point in repeating error */ 
     return 0;
+	
 }
-#else /* no pcre */
-void* lpc_regex_compile_array(char* patterns[] TSRMLS_DC)
-{ENTER(lpc_regex_compile_array)
-    if(patterns && patterns[0] != NULL) {
-        lpc_warning("pcre missing, disabling filters" TSRMLS_CC);
-    }
-    return NULL;
-}
-void lpc_regex_destroy_array(void* p)
-{ENTER(lpc_regex_destroy_array)
-    /* nothing */
-}
-int lpc_regex_match_array(void* p, const char* input)
-{ENTER(lpc_regex_match_array)
-    return 0;
-}
-#endif
 /* }}} */
 
 /* {{{ crc32 implementation */

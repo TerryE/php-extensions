@@ -27,6 +27,7 @@
 
 /* $Id: $ */
 
+#define LPC_DEBUG
 
 #include "lpc.h"
 #include "lpc_pool.h"
@@ -47,7 +48,15 @@
 /* emalloc but relay the calling location reference */
 #define pool_emalloc(size) _emalloc((size) ZEND_FILE_LINE_RELAY_CC ZEND_FILE_LINE_EMPTY_CC)
 
-#define BD_ALLOC_UNIT 16384*sizeof(void *)
+#define BD_ALLOC_UNIT 131072*sizeof(void *)
+
+typedef struct _lpc_shared_trailer {
+	uint	count;
+    size_t  size;
+	size_t  allocated;
+	off_t   reloc_vec;
+	off_t   entry_off;
+} lpc_shared_trailer;
 
 /* {{{ _lpc_pool_create */
 lpc_pool* _lpc_pool_create(lpc_pool_type_t type TSRMLS_DC ZEND_FILE_LINE_DC)
@@ -100,13 +109,10 @@ lpc_pool* _lpc_pool_create(lpc_pool_type_t type TSRMLS_DC ZEND_FILE_LINE_DC)
 }
 /* }}} */
 
-static void _lpc_pool_fixup_report(lpc_pool *pool TSRMLS_DC);
-
 /* {{{ _lpc_pool_destroy */
 void _lpc_pool_destroy(lpc_pool *pool TSRMLS_DC ZEND_FILE_LINE_DC)
 {ENTER(_lpc_pool_destroy)
 	if (pool->type == LPC_SERIALPOOL) {
-		_lpc_pool_fixup_report(pool TSRMLS_CC);
 		efree(pool->bd_storage);
 	} else if (pool->element_head != NULL) {
 		void *e, *e_nxt;
@@ -146,7 +152,7 @@ void* _lpc_pool_alloc(lpc_pool* pool, size_t size TSRMLS_DC ZEND_FILE_LINE_DC)
  	if (pool->type == LPC_SERIALPOOL) {
 		/* Unlike APC, LPC explicitly rounds up any sizes to the next sizeof(void *)
 		 * boundary as it would be nice for this code to work on ARM without barfing */
-		size_t rounded_size = (size + sizeof(void *) - 1) & (~((size_t) (sizeof(void *)-1)));
+		size_t rounded_size = (size + (sizeof(void *)-1)) & (~((size_t) (sizeof(void *)-1)));
 		rounded_size += sizeof(off_t);
 
 		/* do an initial allocation of BD_ALLOC_UNIT if size hasn't already been set. */
@@ -161,12 +167,17 @@ void* _lpc_pool_alloc(lpc_pool* pool, size_t size TSRMLS_DC ZEND_FILE_LINE_DC)
 			pool->bd_allocated += BD_ALLOC_UNIT;
 			pool->bd_storage    = erealloc(pool->bd_storage, pool->bd_allocated);
 		}
+//////////// TODO: Drop the element offset-linked list.  It isn't used anywhere.
+//////////// TODO: Move to a brick based allocation scheme and use a non-aligned brick for strings
 
 		element = (unsigned char *) pool->bd_storage + (off_t) pool->bd_next_free;
-		pool->bd_next_free += rounded_size;
-		*((size_t *) element) = pool->bd_next_free;   /* PIC offset of next element */
-		element = ((size_t *) element)+1;             /* bump past offset to element itself */
+		pool->bd_next_free   += sizeof(size_t) + rounded_size;
+		*((size_t *) element) = pool->bd_next_free;   /* PIC offset of next element */		
+		element = (size_t*)element + 1;               /* bump past offset to element itself */
 
+#ifdef LPC_DEBUG
+		lpc_debug("alloc: 0x%08lx allocated 0x%04lx bytes" TSRMLS_CC, element, size);
+#endif
 	} else {  /* LPC_LOCALPOOL or LPC_SHAREDPOOL */
 
 		element = pool_emalloc(sizeof(void *) + size);
@@ -175,11 +186,6 @@ void* _lpc_pool_alloc(lpc_pool* pool, size_t size TSRMLS_DC ZEND_FILE_LINE_DC)
 		element = ((void **) element)+1;             /* bump past link to element itself */
 
 	}
-
-#if LPC_BINDUMP_DEBUG & 0
-			lpc_notice("lpc_bd_alloc: rval: 0x%x  offset: 0x%x  pool_size: 0x%x  size: %d" TSRMLS_CC, 
-			            (ulong) element, pool->bd_next_free, pool->bd_pool_size, size);
-#endif
 
     pool->size += size;
     pool->count++;
@@ -216,7 +222,8 @@ void* _lpc_pool_memcpy(const void* p, size_t n, lpc_pool* pool TSRMLS_DC ZEND_FI
 
 typedef void *pointer;
 #define POINTER_MASK (sizeof(pointer)-1)
-/* {{{ _lpc_pool_tag_ptr */
+/* {{{ _lpc_pool_tag_ptr 
+       Used to tag any internal pointers within a serial pool to enable its relocation */
 void *_lpc_pool_tag_ptr(void *ptr, lpc_pool* pool TSRMLS_DC ZEND_FILE_LINE_DC)
 {
 	/* Note that this code assumes that all pointers are correctly storage-aligned */
@@ -265,63 +272,155 @@ void *_lpc_pool_tag_ptr(void *ptr, lpc_pool* pool TSRMLS_DC ZEND_FILE_LINE_DC)
 	}
 	return pool;
 }
-
 /* }}} */
 
-static int key_compare(const void *a, const void *b TSRMLS_DC) /* {{{ */
+/* {{{ offset_compare
+       Simple sort callback to enable sorting of an a vector of offsets into offset order  */
+static int offset_compare(const void *a, const void *b)
 {
-	long diff = ((Bucket*)a)->h - ((Bucket*)b)->h;
-	if (diff > 0) return 1;
-	if (diff < 0) return -1;
-	return 0;
+	long diff = *(off_t *)a - *(off_t *)b;
+	return (diff > 0) ? 1 : ((diff < 0) ? -1 : 0);
 }
- 
+/* }}} */
 
-static void _lpc_pool_fixup_report(lpc_pool *pool TSRMLS_DC)
-{
-	off_t reloc_off;
-	off_t bd_max = pool->bd_allocated / sizeof(pointer);
-	pointer *p = (pointer *) pool->bd_storage;
-	void *dummy = (void *)1;
-	int i, j = 0;
+/* {{{ proto int _lpc_pool_unload record pool, record &pool_buffer
+       Unload and destroy a serial pool */ 
+int _lpc_pool_unload(lpc_pool* pool, void **pool_buffer, void *entry TSRMLS_DC ZEND_FILE_LINE_DC)
+{ENTER(_lpc_pool_unload)
+	int            pool_buffer_len, reloc_vec_len, i, cnt; 
+	off_t         *reloc_vec, reloc_off, ro, *q, *rv;
+	HashTable     *fix_ht = pool->bd_fixups;
+	void         **pool_mem = (void **) pool->bd_storage; /* that is treat the storage an array of pointers */
+	unsigned char *reloc_bvec, *p;
+	
+	lpc_shared_trailer *trailer;
+	
+	void *dummy = (void *) 1;
 
-	/* sort the fixups table into ascending offset order */
-	zend_hash_sort(pool->bd_fixups, zend_qsort, key_compare, 0 TSRMLS_CC);
-
-    lpc_debug("=== Check Report ====" TSRMLS_CC);
-	/* loop over reported pointers */
-	for (zend_hash_internal_pointer_reset(pool->bd_fixups); 
-		 zend_hash_get_current_key(pool->bd_fixups, (char **) &dummy, (ulong *)&reloc_off, 0) == HASH_KEY_IS_LONG;
-		 zend_hash_move_forward(pool->bd_fixups)) {
-
-		char **ptr = (char **) ((void **)p + reloc_off);
-		off_t addr_off = *ptr - (char *)(pool->bd_storage);
-
-		lpc_debug("check:  0x%08lx addr = 0x%08lx %1c" TSRMLS_CC, 
-		          ptr, *ptr, 
-		          (addr_off < 0 || addr_off > pool->bd_next_free) ? 'E' : ' ');
+	off_t entry_offset = *(char **)entry - (char *)pool->bd_storage;
+	
+	if (pool->type != LPC_SERIALPOOL ||
+	    entry_offset > 0 && entry_offset < pool->bd_allocated ) {
+		return FAILURE;
 	}
 
-    lpc_debug("=== Missed Report ====" TSRMLS_CC);
+	/* The fixups HashTable of offsets is now complete and the processing takes a few passes including resorting
+	 * into offset order, so it's easier just to convert it into a contiguous vector and destroy the HT.
+	 * Also a note on offsets.  All pointers are size_t aligned so offsets of the form (void **) - (void **) are
+	 * valid and are the byte delta divided by sizeof(size_t) */
+	reloc_vec_len = zend_hash_num_elements(fix_ht);
+	rv = reloc_vec = emalloc(reloc_vec_len*sizeof(off_t));
+	for (zend_hash_internal_pointer_reset(fix_ht); 
+		 zend_hash_get_current_key(fix_ht, (char **) &dummy, (ulong *)&reloc_off, 0) == HASH_KEY_IS_LONG; 
+		 zend_hash_move_forward(fix_ht)) {
+		*rv++ = reloc_off;
+	}
+	zend_hash_destroy(fix_ht);
+	efree(fix_ht);
 
-	/* Now flag up any pointers that have been missed */
+	/* sort the vector into ascending offset order */
+    qsort(reloc_vec, (size_t) reloc_vec_len, sizeof(off_t), offset_compare);
 
-	for (i = 0; i < bd_max; i++) {
+	/* Debug list all pointer in the pool memory to be fixed up */
+#ifdef LPC_DEBUG
+	for (i = 0; i < reloc_vec_len; i++) {
+		lpc_debug("fixup: 0x%08lx points to 0x%08lx" TSRMLS_CC, pool_mem + reloc_vec[i], pool_mem[reloc_vec[i]]);
+	}
+#endif
 
-		char **addr = (char **) (p[reloc_off]);
-		off_t addr_off = *addr - (char *)(pool->bd_storage);
+	/* Now run along the relocation vector converting all pointers into internal pool locations in the pool into
+     * the corresponding offset from the start of the pool by subtracting the pool memory addr.  This is now PIC */ 
+	for (i = 0; i < reloc_vec_len; i++) {
+		q   = (void *)(pool_mem + reloc_vec[i]);
+		*q -= (off_t) pool_mem;
+	}
 
-		if (addr_off > 0 && (addr_off < pool->bd_next_free) &&
-		    !zend_hash_index_exists(pool->bd_fixups, (ulong) reloc_off)) {
+	/* Convert relocation vector into delta offsets, d(i) = p(i-1) - p(i), in the range 1..reloc_vec_len-1
+	 * and the easiest way to do this in place is to work backwards from the end. Note d(1) = p(1) - 0 */
+	for (i = reloc_vec_len-1; i > 1; i--) {
+		reloc_vec[i] -= reloc_vec[i-1];
+	}
 
-			lpc_debug("missed: 0x%08lx addr = 0x%08lx" TSRMLS_CC, 
-				      addr, *addr);
-			j++;
+	/* The final relocation vector stored in the pool will be delta encoded one per byte.  In real PHP
+	 * opcode arrays, pointers are a LOT denser than every 127 longs (1016 bytes), but the coding needs to 
+	 * cope with pathelogical cases, so a simple high-bit multi-byte escape is used; hence delta offsets
+	 * up to 131,064 bytes are encoded in 2 bytes, etc..  So this pass to works out the COUNT of any
+	 * extra encoding bytes needed to enable a vector of the correct size to be in the pool.  The +1 is 
+     * for the '\0' terminator. */
+	for (i = 0, cnt = reloc_vec_len + 1; i < reloc_vec_len; i++) {
+		for (ro=reloc_vec[i]; ro>=0x80; ro >>= 7, cnt++) { }
+	}
+	
+	/* Now allocate the byte relocation vector and the fixed length trailer.  The pool is now complete */ 
+	reloc_bvec = (unsigned char *) lpc_pool_alloc(pool, cnt);
+	trailer    = (lpc_shared_trailer *) lpc_pool_alloc(pool, sizeof(lpc_shared_trailer));
+
+	/* Loop over relocation vector again, now generating the relocation byte vector */
+	for (i = 0, p = reloc_bvec; i < reloc_vec_len; i++) {
+		if (reloc_vec[i]<128) { /* the typical case */
+			*p++ = (unsigned char) (reloc_vec[i]);
+		} else {                /* handle pathelogical cases */
+			ro = reloc_vec[i];
+			do { /* This could be optimzed, but keep it simple as it rarely happens */
+				*p++ = 0x80 | ((unsigned char)(ro & 0x7f));
+				ro >>= 7;
+			} while (ro > 0);
 		}
 	}
-	lpc_debug("=== Missed Totals ==== %u from %u" TSRMLS_CC, j, i);
-	zend_hash_destroy(pool->bd_fixups);
-	efree(pool->bd_fixups);
+	*p = '\0'; /* add an end marker so the reverse process knows when to terminate */
+
+	/* fill in the trailer content.  Note that the the reloc_vec location has to be stored as an offset
+	 * because must be relocatable and it can't be relocated using itself.  Also only the memory used,
+     * that is up to bd_next_free will be allocated */
+	trailer->reloc_vec = (off_t) ((void **)reloc_bvec - (void **)pool_mem);
+	trailer->count     = pool->count;
+	trailer->size      = pool->size;
+	trailer->allocated = pool->bd_next_free;
+	trailer->entry_off = entry_offset;
+
+	/* We're now done with the reloc_vec, so destroy it */
+	efree(reloc_vec);
+
+#ifdef LPC_DEBUG
+	/* As a safety measure scan the pool for any "untagged" internal aligned pointers that have missed 
+     * the PIC adjustment.  These scan will miss any unaligned pointers which x86 tolerates at a 
+	 * performance hit, but since PHP is multi-architecture (e.g ARM barfs on unaligned pointers), all
+     * opcode array pointer are correctly aligned.  */
+	if (1) {
+		off_t ptr_max = trailer->allocated / sizeof(pointer);
+		int i, j;
+
+		lpc_debug("=== Missed Report ====" TSRMLS_CC);
+		for (i = 0, j = 0, q = (off_t *)pool_mem; i < ptr_max; i++, q++) {
+			off_t offset = *q - (off_t)pool_mem;
+			if (offset > 0 && (offset < trailer->allocated)) {
+				lpc_debug("missed: 0x%08lx points to 0x%08lx" TSRMLS_CC, q, *q);
+				j++;
+			}
+		}
+		lpc_debug("=== Missed Totals ==== %u from %u" TSRMLS_CC, j, i);
+	}
+#endif /* LPC_DEBUG */
+
+	/* Allocate an output serial buffer and copy the sized contents. then destroy the pool */
+
+	pool_buffer_len = trailer->allocated;
+	*pool_buffer    = (void *) emalloc(pool_buffer_len);
+	memcpy(*pool_buffer, pool_mem, pool_buffer_len);
+
+	lpc_pool_destroy(pool);
+
+	/* The serialised PIC version is passed back to the calling program */
+
+	return pool_buffer_len;
+}
+
+void *_lpc_pool_load(void* pool_buffer, size_t pool_buffer_length TSRMLS_DC ZEND_FILE_LINE_DC)
+{ENTER(_lpc_pool_load)
+	lpc_pool* pool;
+	void *entry;
+	/////////////////////// TODO: this content
+	return entry;
 }
 
 /*

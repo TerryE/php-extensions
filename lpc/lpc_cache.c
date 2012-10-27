@@ -32,534 +32,344 @@
 
 #include "lpc.h"
 #include "lpc_cache.h"
+#include "ext/cachedb/cachedb.h"
 #include "lpc_zend.h"
 #include "SAPI.h"
 #include "TSRM.h"
-#include "ext/standard/md5.h"
+#include "fopen_wrappers.h"
+#include <zlib.h>
 
-/* TODO: rehash when load factor exceeds threshold */
 
-#define CHECK(p) { if ((p) == NULL) return NULL; }
-
-/* {{{ key_equals */
-#define key_equals(a, b) (a.inode==b.inode && a.device==b.device)
-/* }}} */
-
-/* {{{ hash */
-static unsigned int hash(lpc_cache_key_t key)
-{ENTER(hash)
-    return (unsigned int)(key.data.file.device + key.data.file.inode);
-}
-/* }}} */
-
-/* {{{ string_nhash_8 */
-#define string_nhash_8(s,len) (unsigned int)(zend_inline_hash_func(s, len))
-/* }}} */
-
-/* {{{ make_prime */
-static int const primes[] = {
-  257, /*   256 */
-  521, /*   512 */
- 1031, /*  1024 */
- 2053, /*  2048 */
- 3079, /*  3072 */
- 4099, /*  4096 */
- 5147, /*  5120 */
- 6151, /*  6144 */
- 7177, /*  7168 */
- 8209, /*  8192 */
- 9221, /*  9216 */
-10243, /* 10240 */
-0      /* sentinel */
+/* {{{ struct definition: lpc_cache_t */
+struct _lpc_cache_t {
+	cachedb_t     *db;
+	HashTable     *index;
+	time_t         mtime;
+	off_t          filesize;
+	dev_t          dev_id;
+	ino_t          inode;
 };
-
-static int make_prime(int n)
-{ENTER(make_prime)
-    int *k = (int*)primes; 
-    while(*k) {
-        if((*k) > n) return *k;
-        k++;
-    }
-    return *(k-1);
-}
 /* }}} */
 
-/* {{{ make_slot */
-slot_t* make_slot(lpc_cache_key_t key, lpc_cache_entry_t* value, slot_t* next, time_t t TSRMLS_DC)
-{ENTER(make_slot)
-    slot_t* p = lpc_pool_alloc(value->pool, sizeof(slot_t));
 
-    if (!p) return NULL;
-
-	if(key.type == LPC_CACHE_KEY_FPFILE) {
-        char *fullpath = (char*) lpc_pstrdup(key.data.fpfile.fullpath, value->pool TSRMLS_CC);
-        if (!fullpath) {
-            return NULL;
-        }
-        key.data.fpfile.fullpath = fullpath;
-    }
-    p->key = key;
-    p->value = value;
-    p->next = next;
-    p->creation_time = t;
-    p->access_time = t;
-    p->deletion_time = 0;
-    return p;
-}
-/* }}} */
-
-/* {{{ free_slot */
-static void free_slot(slot_t* slot TSRMLS_DC)
-{ENTER(free_slot)
-    lpc_pool_destroy(slot->value->pool);
-}
-/* }}} */
-
-/* {{{ remove_slot */
-static void remove_slot(lpc_cache_t* cache, slot_t** slot TSRMLS_DC)
-{ENTER(remove_slot)
-    slot_t* dead = *slot;
-    *slot = (*slot)->next;
-
-    cache->header->mem_size -= dead->value->mem_size;
-    cache->header->num_entries--;
-    if (dead->value->ref_count <= 0) {
-        free_slot(dead TSRMLS_CC);
-    }
-    else {
-        dead->next = cache->header->deleted_list;
-        dead->deletion_time = time(0);
-        cache->header->deleted_list = dead;
-    }
-}
-/* }}} */
+#define CHECK(p) if(!(p)) goto error;
 
 /* {{{ lpc_cache_create */
-lpc_cache_t* lpc_cache_create(TSRMLS_D)
+zend_bool lpc_cache_create(TSRMLS_D)
 {ENTER(lpc_cache_create)
-int size_hint;
-    lpc_cache_t *cache;
-    int num_slots;
+    lpc_cache_t  *cache        = (lpc_cache_t*) ecalloc(1, sizeof(lpc_cache_t));
+	struct stat  *sb           = sapi_get_stat(TSRMLS_C);
+	char         *request_path = SG(request_info).path_translated;
+	char         *request_dir  = estrdup(request_path);
+	size_t        dir_length   = zend_dirname(request_dir, strlen(request_path));
+	char         *basename;
+	size_t        basename_length;
+	char         *cachepath;
+	zval         *zinfo, **zlist, **zhash; 
+	zval         **le, **le_len, **le_metadata;
+	zval         **he,  **he_0;
+	HashTable    *hhash, *hlist;
+	char         *dummy;
 
-    num_slots = make_prime(size_hint > 0 ? size_hint : 2000);
-
-    cache = (lpc_cache_t*) emalloc(sizeof(lpc_cache_t));
-
-    cache->addr = ecalloc(1, sizeof(cache_header_t) + num_slots*sizeof(slot_t*));
-
-    cache->header = (cache_header_t*) cache->addr;
-    cache->header->deleted_list = NULL;
-    cache->header->start_time = time(NULL);
+	/* Determine the cache name from the dirname and basename of the Request path */
+	php_basename(request_path, strlen(request_path), NULL, 0, &basename, &basename_length TSRMLS_CC);
+	cachepath    = emalloc(dir_length + sizeof("./") + basename_length + sizeof(".cache") + sizeof(char));
+	sprint(cachepath, "%s%c.%s.cache", request_dir, DEFAULT_SLASH, basename);
  
-    cache->slots = (slot_t**) (((char*) cache->addr) + sizeof(cache_header_t));
-    cache->num_slots = num_slots;
+	/* Open the CacheDB using the cache name */
+	CHECK(cachedb_open(&cache->db, cachepath, strlen(cachepath), "wb") == SUCCESS);
+	efree(request_dir);
+	efree(cachepath);
 
-    return cache;
+	/* Obtain the directory info from the CacheDB */
+	MAKE_STD_ZVAL(zinfo);
+	CHECK(cachedb_info(zinfo,cache->db)==SUCCESS);
+
+	/* Point hlist and hhash to the two arrays in the info return */
+	zend_hash_internal_pointer_reset(Z_ARRVAL_P(zinfo));
+	zend_hash_get_current_data(Z_ARRVAL_P(zinfo), (void **)&zlist);
+	hlist = Z_ARRVAL_PP(zlist);
+	zend_hash_move_forward(Z_ARRVAL_P(zinfo));
+	zend_hash_get_current_data(Z_ARRVAL_P(zinfo), (void **)&zhash);
+	SEPARATE_ZVAL(zhash);
+	hhash = Z_ARRVAL_PP(zhash);
+
+	/* Loop over the two arrays together setting up list_entry and hash_entry where 
+	 * hlist = array( array(filename, zlen, len, metadata), ... ) and
+	 * hhash = array( filename=>array(i,db_offset), ... ) replacing the values of hhash 
+	 * by array_merge (array(len), metadata) */
+
+/////////// walk through this in gdb 
+	
+	for(zend_hash_internal_pointer_reset(hlist), zend_hash_internal_pointer_reset(hlist);
+		zend_hash_get_current_data(hlist, (void **)&le) == SUCCESS;
+		zend_hash_move_forward(hlist), zend_hash_move_forward(hhash) ) {
+
+		/* Pick up the len and metadata from the list entry */
+		zend_hash_internal_pointer_end(Z_ARRVAL_PP(le));
+		zend_hash_get_current_data(Z_ARRVAL_PP(le), (void **)&le_metadata);
+		zend_hash_move_backward(Z_ARRVAL_PP(le));
+		zend_hash_get_current_data(Z_ARRVAL_PP(le), (void **)&le_len);
+
+		/* set he[0]=len, unset(he[1]) and merge in the metadata */
+		zend_hash_get_current_data(hhash, (void **)&he);
+		zend_hash_internal_pointer_reset(Z_ARRVAL_PP(he));
+		zend_hash_get_current_data(Z_ARRVAL_PP(he), (void **)&he_0);
+		ZVAL_LONG(*he_0, Z_LVAL_PP(le_len));
+		zend_hash_index_del(Z_ARRVAL_PP(he), 1);
+		php_array_merge(Z_ARRVAL_PP(he), Z_ARRVAL_PP(le_metadata), 0 TSRMLS_CC);
+	}
+
+	/* Now split off the hhash by setting xhash to null and delete zinfo */ 
+	ZVAL_NULL(*zhash);
+	zval_dtor(zinfo);
+
+	LPCG(lpc_cache) = cache;
+	cache->index    = hhash;
+
+	sb              = sapi_get_stat(TSRMLS_C);
+	cache->mtime    = sb->st_mtime;
+	cache->filesize = sb->st_size;
+	cache->dev_id   = sb->st_dev;
+	cache->inode    = sb->st_ino;
+
+    return SUCCESS;
+
+error:
+
+	return FAILURE;
 }
+
 /* }}} */
 
 /* {{{ lpc_cache_destroy */
-void lpc_cache_destroy(lpc_cache_t *cache TSRMLS_DC)
+void lpc_cache_destroy(TSRMLS_D)
 {ENTER(lpc_cache_destroy)
-	if (cache->addr != NULL) {
-		efree(cache->addr);
-	}
-    efree(cache);
+	lpc_cache_t  *cache = LPCG(lpc_cache);
+	zend_hash_destroy(cache->index);
+	efree(cache->index);
+	efree(cache);
 }
 /* }}} */
 
 /* {{{ lpc_cache_clear */
-void lpc_cache_clear(lpc_cache_t* cache TSRMLS_DC)
+void lpc_cache_clear(TSRMLS_D)
 {ENTER(lpc_cache_clear)
-    int i;
-
-    if(!cache) return;
-
-    cache->header->start_time = time(NULL);
- 
-    for (i = 0; i < cache->num_slots; i++) {
-        slot_t* p = cache->slots[i];
-        while (p) {
-            remove_slot(cache, &p TSRMLS_CC);
-        }
-        cache->slots[i] = NULL;
-    }
-
-    memset(&cache->header->lastkey, 0, sizeof(lpc_keyid_t));
+	lpc_cache_t  *cache = LPCG(lpc_cache);
+/////////////////////////// TBD
 }
+
 /* }}} */
 
 /* {{{ lpc_cache_insert */
-int lpc_cache_insert(lpc_cache_t* cache, lpc_cache_key_t key, lpc_cache_entry_t* value, lpc_context_t *ctxt, time_t t TSRMLS_DC)
+int lpc_cache_insert(lpc_cache_key_t *key, 
+					 lpc_cache_entry_t* cache_entry, 
+				     lpc_context_t *ctxt TSRMLS_DC)
+////////////// sort out entry vs value ....
 {ENTER(lpc_cache_insert)
-    int rval;
-    slot_t** slot;
+    int           pool_length;
+	void         *pool_buffer;
+	lpc_cache_t  *cache = LPCG(lpc_cache);
+	char         *zbuf;
+	size_t        zbuf_length;
+	zval buffer, metadata, *index_entry;
 
-    if (!value) {
+    if (!key || !cache_entry || !ctxt || ctxt->pool->type != LPC_SERIALPOOL) {
         return 0;
     }
 
-    lpc_debug("Inserting [%s]" TSRMLS_CC, value->data.file.filename);
+	pool_length = lpc_pool_unload(ctxt->pool, &pool_buffer, cache_entry);
 
-    if(key.type == LPC_CACHE_KEY_FILE) slot = &cache->slots[hash(key) % cache->num_slots];
-    else slot = &cache->slots[string_nhash_8(key.data.fpfile.fullpath, key.data.fpfile.fullpath_len) % cache->num_slots];
+	/* Allocate zbuf len based on worst case for compression, then compress and free original buffer */
+	zbuf_length = compressBound(pool_length) + 1;
+	zbuf = (char *) emalloc(zbuf_length);
+	CHECK(compress(zbuf, &zbuf_length, pool_buffer, pool_length) == Z_OK);
+	efree(pool_buffer);
+	INIT_ZVAL(buffer); ZVAL_STRINGL(&buffer, zbuf, zbuf_length, 0);
 
-    while(*slot) {
-      if(key.type == (*slot)->key.type) {
-        if(key.type == LPC_CACHE_KEY_FILE) {
-            if(key_equals((*slot)->key.data.file, key.data.file)) {
-                /* If existing slot for the same device+inode is different, remove it and insert the new version */
-                if (ctxt->force_update || (*slot)->key.mtime != key.mtime) {
-                    remove_slot(cache, slot TSRMLS_CC);
-                    break;
-                }
-                return 0;
-            }
-        } else {   /* LPC_CACHE_KEY_FPFILE */
-            if(!memcmp((*slot)->key.data.fpfile.fullpath, key.data.fpfile.fullpath, key.data.fpfile.fullpath_len+1)) {
-                /* Hrm.. it's already here, remove it and insert new one */
-                remove_slot(cache, slot TSRMLS_CC);
-                break;
-            }
-        }
-      }
-      slot = &(*slot)->next;
-    }
+	/* Build the metadata zval for the pool buffer and add the pool buffer to the CacheDB */
+	INIT_ZVAL(metadata);
+	array_init_size(&metadata, 3);
+	add_next_index_long(&metadata, key->mtime);
+	add_next_index_long(&metadata, key->filesize);
+	add_next_index_long(&metadata, pool_length);
 
-    if ((*slot = make_slot(key, value, *slot, t TSRMLS_CC)) == NULL) {
-        return -1;
-    }
+	CHECK(cachedb_add(cache->db, (char *) key->filename, key->filename_length, &buffer, &metadata)==SUCCESS);
+	zval_dtor(&buffer);
 
-    value->mem_size = ctxt->pool->size;
-    cache->header->mem_size += ctxt->pool->size;
-    cache->header->num_entries++;
+	/* Update the cache index with the new entry */
+	MAKE_STD_ZVAL(index_entry);
+	array_init_size(index_entry, 4);
+	add_next_index_long(index_entry, zbuf_length);
+	php_array_merge(Z_ARRVAL_P(index_entry), Z_ARRVAL(metadata), 0 TSRMLS_CC);
+	zval_dtor(&metadata);
+
+//////// Check indirection level in gdb
+	zend_hash_add(cache->index, key->filename, key->filename_length, &index_entry, sizeof(zval *), NULL);
 
     return 1;
-}
-/* }}} */
 
-/* {{{ lpc_cache_find_slot */
-static inline slot_t* lpc_cache_find_slot(lpc_cache_t* cache, lpc_cache_key_t key, time_t t TSRMLS_DC)
-{ENTER(lpc_cache_find_slot)
-    slot_t** slot;
-    volatile slot_t* retval = NULL;
+error:
 
-    if(key.type == LPC_CACHE_KEY_FILE) slot = &cache->slots[hash(key) % cache->num_slots];
-    else slot = &cache->slots[string_nhash_8(key.data.fpfile.fullpath, key.data.fpfile.fullpath_len) % cache->num_slots];
-
-    while (*slot) {
-      if(key.type == (*slot)->key.type) {
-        if(key.type == LPC_CACHE_KEY_FILE) {
-            if(key_equals((*slot)->key.data.file, key.data.file)) {
-                if((*slot)->key.mtime != key.mtime) {
-                    remove_slot(cache, slot TSRMLS_CC);
-                    return NULL;
-                }
-                (*slot)->access_time = t;
-                retval = *slot;
-                 return (slot_t*)retval;
-            }
-        } else {  /* LPC_CACHE_KEY_FPFILE */
-            if(!memcmp((*slot)->key.data.fpfile.fullpath, key.data.fpfile.fullpath, key.data.fpfile.fullpath_len+1)) {
-                /* TTL Check ? */
-                (*slot)->access_time = t;
-                retval = *slot;
-                return (slot_t*)retval;
-            }
-        }
-      }
-      slot = &(*slot)->next;
-    }
-     return NULL;
+	return 0;
 }
 /* }}} */
 
 /* {{{ lpc_cache_find */
-lpc_cache_entry_t* lpc_cache_find(lpc_cache_t* cache, lpc_cache_key_t key, time_t t TSRMLS_DC)
+lpc_cache_entry_t* lpc_cache_find(lpc_cache_key_t *key TSRMLS_DC)
 {ENTER(lpc_cache_find)
-    slot_t * slot = lpc_cache_find_slot(cache, key, t TSRMLS_CC);
-    return (slot) ? slot->value : NULL;
-}
-/* }}} */
+ 	lpc_cache_t *cache = LPCG(lpc_cache);
 
-/* {{{ lpc_cache_release */
-void lpc_cache_release(lpc_cache_t* cache, lpc_cache_entry_t* entry TSRMLS_DC)
-{ENTER(lpc_cache_release)
-	entry->ref_count--;
+    const char   *filename;
+    int           filename_length;
+    time_t        mtime;                 /* the mtime of this cached entry */
+	size_t        filesize;
+    unsigned char type;
+	zval        **index_entry, **length, *db_rec;
+	char         *buf;
+	size_t        buf_length;
+	lpc_cache_entry_t *entry;
+
+	if (zend_hash_find(cache->index, key->filename, key->filename_length+1,
+	                   (void **) &index_entry) == FAILURE) {
+		return NULL;
+	}
+	CHECK(zend_hash_index_find(Z_ARRVAL_PP(index_entry), 3, (void **) &length) == SUCCESS);
+
+	CHECK(cachedb_find(cache->db, (char *) key->filename, key->filename_length, 0) == SUCCESS);
+	buf        = emalloc(Z_LVAL_PP(length)+1);
+	buf_length = Z_LVAL_PP(length);
+	buf[Z_LVAL_PP(length)] = '\0';      /* zero terminate buf to simply debugging */
+
+	MAKE_STD_ZVAL(db_rec);
+	CHECK(cachedb_fetch(cache->db, db_rec) == SUCCESS);
+	CHECK(uncompress(buf, &buf_length, Z_STRVAL_P(db_rec), Z_STRLEN_P(db_rec)) == Z_OK &&
+		  buf_length==Z_LVAL_PP(length));
+	zval_dtor(db_rec); efree(db_rec);
+	entry = lpc_pool_load(buf, buf_length);
+
+    return entry;
+
+error:
+/////// need a php_error_docref() here;
+/////// clean up ?
+
+	return NULL;
 }
 /* }}} */
 
 /* {{{ lpc_cache_make_file_key */
-int lpc_cache_make_file_key(lpc_cache_key_t* key,
-                       const char* filename,
-                       const char* include_path,
-                       time_t t
-                       TSRMLS_DC)
+lpc_cache_key_t* lpc_cache_make_file_key(char *filename TSRMLS_DC)
 {ENTER(lpc_cache_make_file_key)
-    struct stat *tmp_buf=NULL;
-    struct lpc_fileinfo_t *fileinfo = NULL;
+	const char            *include_path = (const char*) PG(include_path);
+    lpc_cache_key_t       *key          = ecalloc(1, sizeof(lpc_cache_key_t));
+	php_stream            *fp           = NULL;
+	struct stat           *sb;
+	char                  *opened       = NULL;
     int len;
 
-    assert(key != NULL);
-
-    if (!filename || !SG(request_info).path_translated) {
-        lpc_debug("No filename and no path_translated - bailing" TSRMLS_CC);
-        goto cleanup;
-    }
-
+    CHECK(filename && SG(request_info).path_translated);
+ 
     len = strlen(filename);
-    if(LPCG(fpstat)==0) {
-        if(IS_ABSOLUTE_PATH(filename,len)) {
-            key->data.fpfile.fullpath = filename;
-            key->data.fpfile.fullpath_len = len;
-            key->mtime = t;
-            key->type = LPC_CACHE_KEY_FPFILE;
-            goto success;
-        } else if(LPCG(canonicalize)) {
 
-            fileinfo = emalloc(sizeof(lpc_fileinfo_t));
+	/* Unlike APC, LPC uses a percentage for fpstat, so if 0 < fpstat < 100, a random number 
+     * is generated to decide whether stat validation is bypassed.  The randomness doesn't 
+     * need to be strong, so rand() plus the request time is good enough.  
+	 *	
+	 * Also as the cash is request script-specific and invalidated on change of this location,
+	 * relative filenames are permitted as cacheable. */
+    if (strcmp(SG(request_info).path_translated, filename)==0) {
+		/* this is the request_scriptname being compiled -- always validate the timestamp etc. */
+		key->type            = LPC_REQUEST_SCRIPT;
+		sb                   = sapi_get_stat(TSRMLS_C);
+		key->mtime           = sb->st_mtime;
+		key->filesize        = sb->st_size;
+		key->dev_id          = sb->st_dev;
+		key->inode           = sb->st_ino;
+		key->filename_length = strlen(filename);
 
-            if (lpc_search_paths(filename, include_path, fileinfo TSRMLS_CC) != 0) {
-                lpc_warning("lpc failed to locate %s - bailing" TSRMLS_CC, filename);
-                goto cleanup;
-            }
+	} else if (LPCG(fpstat)==0 || (((time_t) rand() + LPCG(sapi_request_time)) % 100) < LPCG(fpstat)) {
 
-            if(!VCWD_REALPATH(fileinfo->fullpath, LPCG(canon_path))) {
-                lpc_warning("realpath failed to canonicalize %s - bailing" TSRMLS_CC, filename);
-                goto cleanup;
-            }
+		/* Bypass file stat functionality and use the cache entry based on the filename */
+        key->filename        = estrdup(filename);
+        key->filename_length = strlen(filename);
+		key->type            = LPC_NOSTAT;
 
-            key->data.fpfile.fullpath = LPCG(canon_path);
-            key->data.fpfile.fullpath_len = strlen(LPCG(canon_path));
-            key->mtime = t;
-            key->type = LPC_CACHE_KEY_FPFILE;
-            goto success;
-        }
-        /* fall through to stat mode */
-    }
-
-    fileinfo = emalloc(sizeof(lpc_fileinfo_t));
-
-    assert(fileinfo != NULL);
-
-    if(!strcmp(SG(request_info).path_translated, filename)) {
-        tmp_buf = sapi_get_stat(TSRMLS_C);  /* Apache has already done this stat() for us */
-    }
-
-    if(tmp_buf) {
-        fileinfo->st_buf.sb = *tmp_buf;
     } else {
-        if (lpc_search_paths(filename, include_path, fileinfo TSRMLS_CC) != 0) {
-            lpc_debug("Stat failed %s - bailing (%s) (%d)" TSRMLS_CC, filename,SG(request_info).path_translated);
-            goto cleanup;
-        }
+
+		/* Open the file without then with the include path to work out if it is being used
+		 * If the file can't be opened, then the simplest thing to do is to pass back a nil 
+         * response so the caller fails back to the standard zend compile module and let it 
+         * deal with the error.  */
+
+		fp = php_stream_open_wrapper(filename, "r", IGNORE_URL|STREAM_MUST_SEEK|IGNORE_PATH, &opened);
+		key->type		  = (fp) ? LPC_PATH_IGNORED	: LPC_PATH_USED;
+
+		CHECK(fp || (fp = php_stream_open_wrapper(filename, "r", IGNORE_URL|STREAM_MUST_SEEK, &opened)));
+		CHECK(php_stream_stat(fp, (php_stream_statbuf *)sb));
+
+		key->type            = LPC_FSTAT;
+        key->filename        = estrdup(filename);
+        key->filename_length = strlen(filename);
+		key->fp              = fp;
+		key->mtime           = sb->st_mtime;
+		key->filesize        = sb->st_size;
+		key->dev_id          = sb->st_dev;
+		key->inode           = sb->st_ino;
+		efree(sb);
+
+		/* Ditto fail back to the standard zend compile module if the age of the file is less than
+         * a fixed (e.g. 2sec) old.  Let the next request cache it :-)  */
+		CHECK(LPCG(sapi_request_time) - key->mtime < LPCG(file_update_protection));
+
+		/* Note that some CMS like to munge the mtime, but in this case tough shit: don't use LPC. */
     }
+    return key;
 
-    if(LPCG(max_file_size) < fileinfo->st_buf.sb.st_size) {
-        lpc_debug("File is too big %s (%d - %ld) - bailing" TSRMLS_CC, filename,t,fileinfo->st_buf.sb.st_size);
-        goto cleanup;
-    }
+error:
 
-    /*
-     * This is a bit of a hack.
-     *
-     * Here I am checking to see if the file is at least 2 seconds old.  
-     * The idea is that if the file is currently being written to then its
-     * mtime is going to match or at most be 1 second off of the current
-     * request time and we want to avoid caching files that have not been
-     * completely written.  Of course, people should be using atomic 
-     * mechanisms to push files onto live web servers, but adding this
-     * tiny safety is easier than educating the world.  This is now
-     * configurable, but the default is still 2 seconds.
-     */
-    if(LPCG(file_update_protection) && (t - fileinfo->st_buf.sb.st_mtime < LPCG(file_update_protection)) && !LPCG(force_file_update)) {
-        lpc_debug("File is too new %s (%d - %d) - bailing" TSRMLS_CC,filename,t,fileinfo->st_buf.sb.st_mtime);
-        goto cleanup;
-    }
-
-    key->data.file.device = fileinfo->st_buf.sb.st_dev;
-    key->data.file.inode  = fileinfo->st_buf.sb.st_ino;
-
-    /*
-     * If working with content management systems that like to munge the mtime, 
-     * it might be appropriate to key off of the ctime to be immune to systems
-     * that try to backdate a template.  If the mtime is set to something older
-     * than the previous mtime of a template we will obviously never see this
-     * "older" template.  At some point the Smarty templating system did this.
-     * I generally disagree with using the ctime here because you lose the 
-     * ability to warm up new content by saving it to a temporary file, hitting
-     * it once to cache it and then renaming it into its permanent location so
-     * set the lpc.stat_ctime=true to enable this check.
-     */
-    if(LPCG(stat_ctime)) {
-        key->mtime  = (fileinfo->st_buf.sb.st_ctime > fileinfo->st_buf.sb.st_mtime) ? fileinfo->st_buf.sb.st_ctime : fileinfo->st_buf.sb.st_mtime; 
-    } else {
-        key->mtime = fileinfo->st_buf.sb.st_mtime;
-    }
-    key->type = LPC_CACHE_KEY_FILE;
-
-success: 
-
-    if(fileinfo != NULL) {
-        efree(fileinfo);
-    }
-
-    return 1;
-
-cleanup:
-    
-    if(fileinfo != NULL) {
-        efree(fileinfo);
-    }
-
-    return 0;
+/////////////// TODO: Add error notice here    
+    if(fp) { php_stream_close(fp); }
+    if(key) { efree(key); key = NULL; }
+    if(opened) {pefree(opened,1); }
+    return NULL;
 }
 /* }}} */
 
 /* {{{ lpc_cache_make_file_entry */
 lpc_cache_entry_t* lpc_cache_make_file_entry(const char* filename,
-                                        zend_op_array* op_array,
-                                        lpc_function_t* functions,
-                                        lpc_class_t* classes,
-                                        lpc_context_t* ctxt
-                                        TSRMLS_DC)
+											 zend_op_array* op_array,
+											 lpc_function_t* functions,
+											 lpc_class_t* classes,
+											 lpc_context_t* ctxt  TSRMLS_DC)
 {ENTER(lpc_cache_make_file_entry)
     lpc_cache_entry_t* entry;
     lpc_pool* pool = ctxt->pool;
 
     entry = (lpc_cache_entry_t*) lpc_pool_alloc(pool, sizeof(lpc_cache_entry_t));
-    if (!entry) return NULL;
 
-    entry->data.file.filename  = lpc_pstrdup(filename, pool TSRMLS_CC);
-    if(!entry->data.file.filename) {
-        lpc_debug("lpc_cache_make_file_entry: entry->data.file.filename is NULL - bailing" TSRMLS_CC);
-        return NULL;
-    }
-    lpc_debug("lpc_cache_make_file_entry: entry->data.file.filename is [%s]" TSRMLS_CC,entry->data.file.filename);
-    entry->data.file.op_array  = op_array;
-    entry->data.file.functions = functions;
-    entry->data.file.classes   = classes;
+#   define TAG_SETPTR(p,exp) p = exp; lpc_pool_tag_ptr(p, pool);
+    TAG_SETPTR(entry->filename, lpc_pstrdup(filename, pool TSRMLS_CC));
+    lpc_debug("lpc_cache_make_file_entry: entry->data.file.filename is [%s]" TSRMLS_CC,entry->filename);
+    TAG_SETPTR(entry->op_array, op_array);
+    TAG_SETPTR(entry->functions, functions);
+    TAG_SETPTR(entry->classes, classes);
 
-    entry->data.file.halt_offset = lpc_file_halt_offset(filename TSRMLS_CC);
+    entry->halt_offset = lpc_file_halt_offset(filename TSRMLS_CC);
 
     entry->type = LPC_CACHE_ENTRY_FILE;
-    entry->ref_count = 0;
     entry->mem_size = 0;
     entry->pool = pool;
     return entry;
 }
 /* }}} */
 
-/* {{{ */
-static zval* lpc_cache_link_info(lpc_cache_t *cache, slot_t* p TSRMLS_DC)
-{ENTER(lpc_cache_link_info)
-    zval *link = NULL;
-    char md5str[33];
-
-    ALLOC_INIT_ZVAL(link);
-
-    if(!link) {
-        return NULL;
-    }
-
-    array_init(link);
-
-    if(p->value->type == LPC_CACHE_ENTRY_FILE) {
-        add_assoc_string(link, "type", "file", 1);
-        if(p->key.type == LPC_CACHE_KEY_FILE) {
-
-            #ifdef PHP_WIN32
-            {
-            char buf[20];
-            sprintf(buf, "%I64d",  p->key.data.file.device);
-            add_assoc_string(link, "device", buf, 1);
-
-            sprintf(buf, "%I64d",  p->key.data.file.inode);
-            add_assoc_string(link, "inode", buf, 1);
-            }
-            #else
-            add_assoc_long(link, "device", p->key.data.file.device);
-            add_assoc_long(link, "inode", p->key.data.file.inode);
-            #endif
-
-            add_assoc_string(link, "filename", p->value->data.file.filename, 1);
-        } else { /* This is a no-stat fullpath file entry */
-            add_assoc_long(link, "device", 0);
-            add_assoc_long(link, "inode", 0);
-            add_assoc_string(link, "filename", (char*)p->key.data.fpfile.fullpath, 1);
-        }
-        if (LPCG(file_md5)) {
-               make_digest(md5str, p->key.md5);
-               add_assoc_string(link, "md5", md5str, 1);
-        } 
-    }
-
-    add_assoc_long(link, "mtime", p->key.mtime);
-    add_assoc_long(link, "creation_time", p->creation_time);
-    add_assoc_long(link, "deletion_time", p->deletion_time);
-    add_assoc_long(link, "access_time", p->access_time);
-    add_assoc_long(link, "ref_count", p->value->ref_count);
-    add_assoc_long(link, "mem_size", p->value->mem_size);
-
-    return link;
-}
-/* }}} */
-
 /* {{{ lpc_cache_info */
-zval* lpc_cache_info(lpc_cache_t* cache, zend_bool limited TSRMLS_DC)
+zval* lpc_cache_info(zend_bool limited TSRMLS_DC)
 {ENTER(lpc_cache_info)
+	lpc_cache_t *cache = LPCG(lpc_cache);
     zval *info = NULL;
-    zval *list = NULL;
-    zval *deleted_list = NULL;
-    zval *slots = NULL;
-    slot_t* p;
-    int i, j;
-
     if(!cache) return NULL;
-
-    ALLOC_INIT_ZVAL(info);
-
-    if(!info) {
-        return NULL;
-    }
-
-    array_init(info);
-    add_assoc_long(info, "num_slots", cache->num_slots);
-    add_assoc_long(info, "num_entries", cache->header->num_entries);
-
-    if(!limited) {
-        /* For each hashtable slot */
-        ALLOC_INIT_ZVAL(list);
-        array_init(list);
-
-        ALLOC_INIT_ZVAL(slots);
-        array_init(slots);
-
-        for (i = 0; i < cache->num_slots; i++) {
-            p = cache->slots[i];
-            j = 0;
-            for (; p != NULL; p = p->next) {
-                zval *link = lpc_cache_link_info(cache, p TSRMLS_CC);
-                add_next_index_zval(list, link);
-                j++;
-            }
-            add_next_index_long(slots, j);
-        }
-
-        /* For each slot pending deletion */
-        ALLOC_INIT_ZVAL(deleted_list);
-        array_init(deleted_list);
-
-        for (p = cache->header->deleted_list; p != NULL; p = p->next) {
-            zval *link = lpc_cache_link_info(cache, p TSRMLS_CC);
-            add_next_index_zval(deleted_list, link);
-        }
-        
-        add_assoc_zval(info, "cache_list", list);
-        add_assoc_zval(info, "deleted_list", deleted_list);
-        add_assoc_zval(info, "slot_distribution", slots);
-    }
-
     return info;
 }
 /* }}} */

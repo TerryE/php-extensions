@@ -46,7 +46,7 @@ typedef void* (*ht_copy_fun_t)(void*, void*, lpc_context_t* TSRMLS_DC);
 //typedef void  (*ht_free_fun_t)(void*, lpc_context_t*);
 typedef int (*ht_check_copy_fun_t)(Bucket*, va_list);
 
-typedef void (*ht_fixup_fun_t)(Bucket*, zend_class_entry*, zend_class_entry*);
+typedef void (*ht_fixup_fun_t)(Bucket*, zend_class_entry*, zend_class_entry*, lpc_context_t* TSRMLS_DC);
 /* }}} */
 
 /* {{{ CHECK and TAG_PTR macro definitions 
@@ -61,7 +61,8 @@ typedef void (*ht_fixup_fun_t)(Bucket*, zend_class_entry*, zend_class_entry*);
  * properly identified as a relocation target.  This applies to any LVALUE within the pool which is the 
  * destination of a pointer to another location in the pool. 
  * NOTE THAT p MUST BE AN LVALUE WHEN USING THIS MACRO */
-#define TAG_PTR(p) _lpc_pool_tag_ptr(&p, ctxt->pool TSRMLS_CC ZEND_FILE_LINE_CC)
+#define TAG_PTR(p) lpc_pool_tag_ptr(p,ctxt->pool)
+#define TAG_SETPTR(p,exp) p = exp; lpc_pool_tag_ptr(p,ctxt->pool)
  
 /* }}} */
 
@@ -92,15 +93,15 @@ static zend_arg_info* my_copy_arg_info(zend_arg_info*, const zend_arg_info*, lpc
 /*
  * The "fixup" functions need for ZEND_ENGINE_2
  */
-static void my_fixup_function( Bucket *p, zend_class_entry *src, zend_class_entry *dst );
-static void my_fixup_hashtable( HashTable *ht, ht_fixup_fun_t fixup, zend_class_entry *src, zend_class_entry *dst );
+static void my_fixup_function( Bucket *p, zend_class_entry *src, zend_class_entry *dst, lpc_context_t* TSRMLS_DC);
+static void my_fixup_hashtable( HashTable *ht, ht_fixup_fun_t fixup, zend_class_entry *src, zend_class_entry *dst, lpc_context_t* TSRMLS_DC);
 /* my_fixup_function_for_execution is the same as my_fixup_function
  * but named differently for clarity
  */
 #define my_fixup_function_for_execution my_fixup_function
 
 #ifdef ZEND_ENGINE_2_2
-static void my_fixup_property_info( Bucket *p, zend_class_entry *src, zend_class_entry *dst );
+static void my_fixup_property_info( Bucket *p, zend_class_entry *src, zend_class_entry *dst, lpc_context_t* ctxt TSRMLS_DC);
 #define my_fixup_property_info_for_execution my_fixup_property_info
 #endif
 
@@ -354,10 +355,9 @@ static LPC_HOTSPOT zval* my_copy_zval(zval* dst, const zval* src, lpc_context_t*
     case IS_CONSTANT:
     case IS_STRING:
         if (src->value.str.val) {
-            CHECK(dst->value.str.val = lpc_string_pmemcpy(src->value.str.val,
+            TAG_SETPTR(dst->value.str.val, lpc_string_pmemcpy(src->value.str.val,
                                                    src->value.str.len+1,
                                                    pool TSRMLS_CC));
-			TAG_PTR(dst->value.str.val);
         }
         break;
 
@@ -366,13 +366,11 @@ static LPC_HOTSPOT zval* my_copy_zval(zval* dst, const zval* src, lpc_context_t*
         if(LPCG(serializer) == NULL ||
             ctxt->copy == LPC_COPY_IN_OPCODE || ctxt->copy == LPC_COPY_OUT_OPCODE) {
 
-            CHECK(dst->value.ht =
-                my_copy_hashtable(NULL,
+            TAG_SETPTR(dst->value.ht, my_copy_hashtable(NULL,
                                   src->value.ht,
                                   (ht_copy_fun_t) my_copy_zval_ptr,
                                   1,
                                   ctxt));
-			TAG_PTR(dst->value.ht);
             break;
         } else {
             /* fall through to object case */
@@ -540,16 +538,14 @@ static zend_function_entry* my_copy_function_entry(zend_function_entry* dst, con
     dst->arg_info = NULL;
 
     if (src->fname) {
-        CHECK((dst->fname = lpc_pstrdup(src->fname, ctxt->pool TSRMLS_CC)));
-		TAG_PTR(dst->fname);
+       TAG_SETPTR(dst->fname, lpc_pstrdup(src->fname, ctxt->pool TSRMLS_CC));
     }
 
     if (src->arg_info) {
-        CHECK((dst->arg_info = my_copy_arg_info_array(NULL,
+        TAG_SETPTR(dst->arg_info, my_copy_arg_info_array(NULL,
                                                 src->arg_info,
                                                 src->num_args,
-                                                ctxt TSRMLS_CC)));
-		TAG_PTR(dst->arg_info);
+                                                ctxt TSRMLS_CC));
     }
 
     return dst;
@@ -580,14 +576,12 @@ static zend_property_info* my_copy_property_info(zend_property_info* dst, zend_p
          * string of the form:
          *      \0<classname>\0<membername>\0
          */
-        CHECK((dst->name = lpc_string_pmemcpy(src->name, src->name_length+1, pool TSRMLS_CC)));
-		TAG_PTR(dst->name); 
-    }
+        TAG_SETPTR(dst->name, lpc_string_pmemcpy(src->name, src->name_length+1, pool TSRMLS_CC));
+   }
 
 #if defined(ZEND_ENGINE_2) && PHP_MINOR_VERSION > 0
     if (src->doc_comment) {
-        CHECK((dst->doc_comment = lpc_pmemcpy(src->doc_comment, (src->doc_comment_len + 1), pool TSRMLS_CC)));
-		TAG_PTR(dst->doc_comment);
+        TAG_SETPTR(dst->doc_comment, lpc_pmemcpy(src->doc_comment, (src->doc_comment_len + 1), pool TSRMLS_CC));
     }
 #endif
 
@@ -651,13 +645,11 @@ static zend_arg_info* my_copy_arg_info(zend_arg_info* dst, const zend_arg_info* 
     dst->class_name = NULL;
 
     if (src->name) {
-        CHECK((dst->name = lpc_string_pmemcpy((char *) src->name, src->name_len+1, pool TSRMLS_CC)));
-		TAG_PTR(dst->name);
-    }
+        TAG_SETPTR(dst->name, lpc_string_pmemcpy((char *) src->name, src->name_len+1, pool TSRMLS_CC));
+	}
 
     if (src->class_name) {
-        CHECK((dst->class_name = lpc_string_pmemcpy((char *) src->class_name, src->class_name_len+1, pool TSRMLS_CC)));
-		TAG_PTR(dst->class_name);
+        TAG_SETPTR(dst->class_name, lpc_string_pmemcpy((char *) src->class_name, src->class_name_len+1, pool TSRMLS_CC));
     }
 
     return dst;
@@ -693,8 +685,7 @@ static zend_class_entry* my_copy_class_entry(zend_class_entry* dst, zend_class_e
     memset(&dst->constants_table, 0, sizeof(dst->constants_table));
 
     if (src->name) {
-        CHECK((dst->name = lpc_pstrdup(src->name, pool TSRMLS_CC)));
-		TAG_PTR(dst->name);
+        TAG_SETPTR(dst->name, lpc_pstrdup(src->name, pool TSRMLS_CC));
     }
 
     my_copy_hashtable_ex(&dst->function_table,
@@ -741,13 +732,12 @@ static zend_class_entry* my_copy_class_entry(zend_class_entry* dst, zend_class_e
     dst->serialize_func = NULL;
     dst->unserialize_func = NULL;
 
-    my_fixup_hashtable(&dst->function_table, (ht_fixup_fun_t)my_fixup_function, src, dst);
+    my_fixup_hashtable(&dst->function_table, (ht_fixup_fun_t)my_fixup_function, src, dst, ctxt TSRMLS_CC);
 
 #ifdef ZEND_ENGINE_2_4
 	dst->default_properties_count = src->default_properties_count;
     if (src->default_properties_count) {
-        CHECK(dst->default_properties_table = (zval**) lpc_pool_alloc(pool, (sizeof(zval*) * src->default_properties_count)));
-        TAG_PTR(dst->default_properties_table);
+        TAG_SETPTR(dst->default_properties_table, (zval**) lpc_pool_alloc(pool, (sizeof(zval*) * src->default_properties_count)));
         for (i = 0; i < src->default_properties_count; i++) {
             if (src->default_properties_table[i]) {
                 my_copy_zval_ptr(&dst->default_properties_table[i], (const zval**)&src->default_properties_table[i], ctxt TSRMLS_CC);
@@ -761,34 +751,34 @@ static zend_class_entry* my_copy_class_entry(zend_class_entry* dst, zend_class_e
     }
 #else
     memset(&dst->default_properties, 0, sizeof(dst->default_properties));
-    my_copy_hashtable_ex(&dst->default_properties,
+    CHECK((my_copy_hashtable_ex(&dst->default_properties,
                          &src->default_properties TSRMLS_CC,
                          (ht_copy_fun_t) my_copy_zval_ptr,
                          1,
                          ctxt,
                          (ht_check_copy_fun_t) my_check_copy_default_property,
-                         src);
+                         src)));
 
 #endif
 
-    my_copy_hashtable_ex(&dst->properties_info,
+    CHECK((my_copy_hashtable_ex(&dst->properties_info,
                          &src->properties_info TSRMLS_CC,
                          (ht_copy_fun_t) my_copy_property_info,
                          0,
                          ctxt,
                          (ht_check_copy_fun_t) my_check_copy_property_info,
-                         src);
+                         src)));
 
 #ifdef ZEND_ENGINE_2_2
     /* php5.2 introduced a scope attribute for property info */
-    my_fixup_hashtable(&dst->properties_info, (ht_fixup_fun_t)my_fixup_property_info_for_execution, src, dst);
+    my_fixup_hashtable(&dst->properties_info, (ht_fixup_fun_t)my_fixup_property_info_for_execution, src, dst, ctxt TSRMLS_CC);
 #endif
 
 #ifdef ZEND_ENGINE_2_4
     dst->default_static_members_count = src->default_static_members_count;
 
     if (src->default_static_members_count) {
-        TAG_PTR(dst->default_static_members_table = (zval**) lpc_pool_alloc(pool, (sizeof(zval*) * src->default_static_members_count)));
+        TAG_SETPTR(dst->default_static_members_table, (zval**) lpc_pool_alloc(pool, (sizeof(zval*) * src->default_static_members_count)));
         for (i = 0; i < src->default_static_members_count; i++) {
             if (src->default_static_members_table[i]) {
                 my_copy_zval_ptr(&dst->default_static_members_table[i], (const zval**)&src->default_static_members_table[i], ctxt TSRMLS_CC);
@@ -799,7 +789,7 @@ static zend_class_entry* my_copy_class_entry(zend_class_entry* dst, zend_class_e
     } else {
         dst->default_static_members_table = NULL;
     }
-    TAG_PTR(dst->static_members_table = dst->default_static_members_table);
+    TAG_SETPTR(dst->static_members_table, dst->default_static_members_table);
 #else
     memset(&dst->default_static_members, 0, sizeof(dst->default_static_members));
     dst->static_members = NULL;
@@ -814,44 +804,41 @@ static zend_class_entry* my_copy_class_entry(zend_class_entry* dst, zend_class_e
 
     if(src->static_members != &src->default_static_members)
     {
-        CHECK((dst->static_members = my_copy_hashtable_ex(NULL,
+        TAG_SETPTR(dst->static_members, my_copy_hashtable_ex(NULL,
 	                                           src->static_members TSRMLS_CC,
 	                                           (ht_copy_fun_t) my_copy_zval_ptr,
 	                                           1,
 	                                           ctxt,
 	                                           (ht_check_copy_fun_t) my_check_copy_static_member,
 	                                           src,
-	                                           src->static_members)));
+	                                           src->static_members));
     }
     else
     {
-        dst->static_members = &dst->default_static_members;
+        TAG_SETPTR(dst->static_members, &dst->default_static_members);
     }
-	TAG_PTR(dst->static_members);
 #endif
 
-    CHECK(my_copy_hashtable_ex(&dst->constants_table,
+    CHECK((my_copy_hashtable_ex(&dst->constants_table,
                                  &src->constants_table TSRMLS_CC,
                                  (ht_copy_fun_t) my_copy_zval_ptr,
                                  1,
                                  ctxt,
                                  (ht_check_copy_fun_t) my_check_copy_constant,
-                                 src));
+                                 src)));
 
     if (src->type == ZEND_USER_CLASS && ZEND_CE_DOC_COMMENT(src)) {
-        CHECK(ZEND_CE_DOC_COMMENT(dst) =
+        TAG_SETPTR(ZEND_CE_DOC_COMMENT(dst),
                     lpc_pmemcpy(ZEND_CE_DOC_COMMENT(src), (ZEND_CE_DOC_COMMENT_LEN(src) + 1), pool TSRMLS_CC));
-        TAG_PTR(ZEND_CE_DOC_COMMENT(dst));
-    }
+   }
 
     if (src->type == ZEND_INTERNAL_CLASS && ZEND_CE_BUILTIN_FUNCTIONS(src)) {
         int n;
 
         for (n = 0; src->type == ZEND_INTERNAL_CLASS && ZEND_CE_BUILTIN_FUNCTIONS(src)[n].fname != NULL; n++) {}
 
-        CHECK((ZEND_CE_BUILTIN_FUNCTIONS(dst) =
-                  (zend_function_entry*) lpc_pool_alloc(pool, ((n + 1) * sizeof(zend_function_entry)))));
-		TAG_PTR(ZEND_CE_BUILTIN_FUNCTIONS(dst));
+        TAG_SETPTR(ZEND_CE_BUILTIN_FUNCTIONS(dst),
+                  (zend_function_entry*) lpc_pool_alloc(pool, ((n + 1) * sizeof(zend_function_entry))));
 
         for (i = 0; i < n; i++) {
             CHECK(my_copy_function_entry((zend_function_entry*)(&ZEND_CE_BUILTIN_FUNCTIONS(dst)[i]),
@@ -862,8 +849,7 @@ static zend_class_entry* my_copy_class_entry(zend_class_entry* dst, zend_class_e
     }
 
     if (src->type == ZEND_USER_CLASS && ZEND_CE_FILENAME(src)) {
-        CHECK((ZEND_CE_FILENAME(dst) = lpc_pstrdup(ZEND_CE_FILENAME(src), pool TSRMLS_CC)));
-		TAG_PTR(ZEND_CE_FILENAME(dst));
+        TAG_SETPTR(ZEND_CE_FILENAME(dst), lpc_pstrdup(ZEND_CE_FILENAME(src), pool TSRMLS_CC));
     }
 
     return dst;
@@ -894,7 +880,7 @@ static LPC_HOTSPOT HashTable* my_copy_hashtable_ex(HashTable* dst,
     memcpy(dst, src, sizeof(src[0]));
 
     /* allocate buckets for the new hashtable */
-    dst->arBuckets = lpc_pool_alloc(pool, (dst->nTableSize * sizeof(Bucket*)));
+    TAG_SETPTR(dst->arBuckets, lpc_pool_alloc(pool, (dst->nTableSize * sizeof(Bucket*))));
 
     memset(dst->arBuckets, 0, dst->nTableSize * sizeof(Bucket*));
     dst->pInternalPointer = NULL;
@@ -922,28 +908,28 @@ static LPC_HOTSPOT HashTable* my_copy_hashtable_ex(HashTable* dst,
         /* create a copy of the bucket 'curr' */
 #ifdef ZEND_ENGINE_2_4
         if (!curr->nKeyLength) {
-            newp = (Bucket*) lpc_pmemcpy(curr, sizeof(Bucket), pool TSRMLS_CC);
+            CHECK((newp = (Bucket*) lpc_pmemcpy(curr, sizeof(Bucket), pool TSRMLS_CC)));
         } else if (IS_INTERNED(curr->arKey)) {
-            newp = (Bucket*) lpc_pmemcpy(curr, sizeof(Bucket), pool TSRMLS_CC);
+            CHECK((newp = (Bucket*) lpc_pmemcpy(curr, sizeof(Bucket), pool TSRMLS_CC)));
         } else if (pool->type != LPC_UNPOOL) {
             char *arKey;
 
             arKey = lpc_new_interned_string(curr->arKey, curr->nKeyLength TSRMLS_CC);
             if (!arKey) {
-                newp = (Bucket*) lpc_pmemcpy(curr, (sizeof(Bucket) + curr->nKeyLength), pool TSRMLS_CC);
+                CHECK((newp = (Bucket*) lpc_pmemcpy(curr, (sizeof(Bucket) + curr->nKeyLength), pool TSRMLS_CC)));
                 newp->arKey = ((char*)newp) + sizeof(Bucket);
             } else {
-                newp = (Bucket*) lpc_pmemcpy(curr, sizeof(Bucket), pool TSRMLS_CC);
+                CHECK((newp = (Bucket*) lpc_pmemcpy(curr, sizeof(Bucket), pool TSRMLS_CC)));
                 newp->arKey = arKey;
             }
         } else {
-            newp = (Bucket*) lpc_pmemcpy(curr, (sizeof(Bucket) + curr->nKeyLength), pool TSRMLS_CC);
+            CHECK((newp = (Bucket*) lpc_pmemcpy(curr, (sizeof(Bucket) + curr->nKeyLength), pool TSRMLS_CC)));
             newp->arKey = ((char*)newp) + sizeof(Bucket);
         }        
 #else
-        newp = (Bucket*) lpc_pmemcpy(curr,
+        CHECK((newp = (Bucket*) lpc_pmemcpy(curr,
                                   (sizeof(Bucket) + curr->nKeyLength - 1),
-                                  pool TSRMLS_CC);
+                                  pool TSRMLS_CC)));
 #endif
 
         /* insert 'newp' into the linked list at its hashed index */
@@ -956,7 +942,7 @@ static LPC_HOTSPOT HashTable* my_copy_hashtable_ex(HashTable* dst,
             newp->pNext = newp->pLast = NULL;
         }
 
-        dst->arBuckets[n] = newp;
+        TAG_SETPTR(dst->arBuckets[n], newp);
 
         /* copy the bucket data using our 'copy_fn' callback function */
         CHECK((newp->pData = copy_fn(NULL, curr->pData, ctxt TSRMLS_CC)));
@@ -986,8 +972,9 @@ static LPC_HOTSPOT HashTable* my_copy_hashtable_ex(HashTable* dst,
 
     dst->pListTail = newp;
 
+	/* in the case of a Serial Pool HashTable, it's easier to scan all the linked lists as a separate
+     * pass to tag the pointers as potentially relocatable */
 	if (ctxt->pool->type == LPC_SERIALPOOL) {
-		/* in the case of a HashTable in a Serial Pool, tag all pointers as potentially relocatable */
 		uint n;
 		TAG_PTR(dst->pInternalPointer);
 		TAG_PTR(dst->pListHead);
@@ -1061,11 +1048,9 @@ static void lpc_fixup_op_array_jumps(zend_op_array *dst, zend_op_array *src, lpc
             case ZEND_JMP:
                 /*Note: if src->opcodes != dst->opcodes then we need to the opline according to src*/
 #ifdef ZEND_ENGINE_2_4
-                zo->op1.jmp_addr = dst->opcodes + (zo->op1.jmp_addr - src->opcodes);
-				TAG_PTR(zo->op1.jmp_addr);
+                TAG_SETPTR(zo->op1.jmp_addr, dst->opcodes + (zo->op1.jmp_addr - src->opcodes));
 #else
-                zo->op1.u.jmp_addr = dst->opcodes + (zo->op1.u.jmp_addr - src->opcodes);
-				TAG_PTR(zo->op1.u.jmp_addr);
+                TAG_SETPTR(zo->op1.u.jmp_addr, dst->opcodes + (zo->op1.u.jmp_addr - src->opcodes));
 #endif
                 break;
             case ZEND_JMPZ:
@@ -1076,11 +1061,9 @@ static void lpc_fixup_op_array_jumps(zend_op_array *dst, zend_op_array *src, lpc
             case ZEND_JMP_SET:
 #endif
 #ifdef ZEND_ENGINE_2_4
-                zo->op2.jmp_addr = dst->opcodes + (zo->op2.jmp_addr - src->opcodes);
-				TAG_PTR(zo->op2.jmp_addr);
+                TAG_SETPTR(zo->op2.jmp_addr, dst->opcodes + (zo->op2.jmp_addr - src->opcodes));
 #else
-                zo->op2.u.jmp_addr = dst->opcodes + (zo->op2.u.jmp_addr - src->opcodes);
-				TAG_PTR(zo->op2.u.jmp_addr);
+                TAG_SETPTR(zo->op2.u.jmp_addr, dst->opcodes + (zo->op2.u.jmp_addr - src->opcodes));
 #endif
                 break;
             default:
@@ -1128,26 +1111,22 @@ zend_op_array* lpc_copy_op_array(zend_op_array* dst, zend_op_array* src, lpc_con
 
     /* copy the arg types array (if set) */
     if (src->arg_info) {
-        CHECK(dst->arg_info = my_copy_arg_info_array(NULL,
+        TAG_SETPTR(dst->arg_info, my_copy_arg_info_array(NULL,
                                                 src->arg_info,
                                                 src->num_args,
                                                 ctxt TSRMLS_CC));
-		TAG_PTR(dst->arg_info);
     }
 
     if (src->function_name) {
-        CHECK(dst->function_name = lpc_pstrdup(src->function_name, pool TSRMLS_CC));
-		TAG_PTR(dst->function_name);
-    }
+        TAG_SETPTR(dst->function_name, lpc_pstrdup(src->function_name, pool TSRMLS_CC));
+   }
     if (src->filename) {
-        CHECK(dst->filename = lpc_pstrdup(src->filename, pool TSRMLS_CC));
-		TAG_PTR(dst->filename);
+        TAG_SETPTR(dst->filename, lpc_pstrdup(src->filename, pool TSRMLS_CC));
     }
 
-    CHECK(dst->refcount = lpc_pmemcpy(src->refcount,
+    TAG_SETPTR(dst->refcount, lpc_pmemcpy(src->refcount,
                                       sizeof(src->refcount[0]),
                                       pool TSRMLS_CC));
-	TAG_PTR(dst->refcount);
 
 #ifdef ZEND_ENGINE_2_4
     if (src->literals) {
@@ -1167,7 +1146,7 @@ zend_op_array* lpc_copy_op_array(zend_op_array* dst, zend_op_array* src, lpc_con
 #endif
 
     /* deep-copy the opcodes */
-    CHECK(dst->opcodes = (zend_op*) lpc_pool_alloc(pool, (sizeof(zend_op) * src->last)));
+    TAG_SETPTR(dst->opcodes, (zend_op*) lpc_pool_alloc(pool, (sizeof(zend_op) * src->last)));
 
     if(lpc_reserved_offset != -1) {
         /* Insanity alert: the void* pointer is cast into an lpc_opflags_t 
@@ -1321,20 +1300,18 @@ zend_op_array* lpc_copy_op_array(zend_op_array* dst, zend_op_array* src, lpc_con
 #endif
                         if((fullpath = realpath(fileinfo->fullpath, canon_path))) {
                             /* everything has to go through a realpath() */
-                            zend_op *dzo = &(dst->opcodes[i]);
-							TAG_PTR(dzo);
+                            zend_op *dzo;
+							TAG_SETPTR(dzo, &(dst->opcodes[i]));
 #ifdef ZEND_ENGINE_2_4
                             dzo->op1.literal = (zend_literal*) lpc_pool_alloc(pool, sizeof(zend_literal));
                             Z_STRLEN_P(dzo->op1.zv) = strlen(fullpath);
-                            Z_STRVAL_P(dzo->op1.zv) = lpc_pstrdup(fullpath, pool TSRMLS_CC);
-							TAG_PTR(Z_STRVAL_P(dzo->op1.zv));
+                            TAG_SETPTR(Z_STRVAL_P(dzo->op1.zv), lpc_pstrdup(fullpath, pool TSRMLS_CC));
                             Z_SET_REFCOUNT_P(dzo->op1.zv, 2);
                             Z_SET_ISREF_P(dzo->op1.zv);
                             dzo->op1.literal->hash_value = zend_hash_func(Z_STRVAL_P(dzo->op1.zv), Z_STRLEN_P(dzo->op1.zv)+1);
 #else
                             dzo->op1.u.constant.value.str.len = strlen(fullpath);
-                            CHECK(dzo->op1.u.constant.value.str.val = lpc_pstrdup(fullpath, pool TSRMLS_CC));
-							TAG_PTR(dzo->op1.u.constant.value.str.val);
+                            TAG_SETPTR(dzo->op1.u.constant.value.str.val, lpc_pstrdup(fullpath, pool TSRMLS_CC));
 #endif
                         }
                     }
@@ -1350,47 +1327,41 @@ zend_op_array* lpc_copy_op_array(zend_op_array* dst, zend_op_array* src, lpc_con
 
     /* copy the break-continue array */
     if (src->brk_cont_array) {
-        CHECK(dst->brk_cont_array = lpc_pmemcpy(src->brk_cont_array,
+        TAG_SETPTR(dst->brk_cont_array, lpc_pmemcpy(src->brk_cont_array,
                                     sizeof(src->brk_cont_array[0]) * src->last_brk_cont,
                                     pool TSRMLS_CC));
-		TAG_PTR(dst->brk_cont_array);
     }
 
     /* copy the table of static variables */
     if (src->static_variables) {
-        CHECK(dst->static_variables = my_copy_static_variables(src, ctxt TSRMLS_CC));
-		TAG_PTR(dst->static_variables);
+        TAG_SETPTR(dst->static_variables, my_copy_static_variables(src, ctxt TSRMLS_CC));
     }
 
     if (src->try_catch_array) {
-        CHECK(dst->try_catch_array = lpc_pmemcpy(src->try_catch_array,
+        TAG_SETPTR(dst->try_catch_array, lpc_pmemcpy(src->try_catch_array,
                                         sizeof(src->try_catch_array[0]) * src->last_try_catch,
                                         pool TSRMLS_CC));
-		TAG_PTR(dst->try_catch_array);
     }
 
 #ifdef ZEND_ENGINE_2_1 /* PHP 5.1 */
     if (src->vars) {
-        CHECK(dst->vars = lpc_pmemcpy(src->vars,
+        TAG_SETPTR(dst->vars, lpc_pmemcpy(src->vars,
                             sizeof(src->vars[0]) * src->last_var,
                             pool TSRMLS_CC));
-		TAG_PTR(dst->vars);
 
         for(i = 0; i <  src->last_var; i++) dst->vars[i].name = NULL;
 
         for(i = 0; i <  src->last_var; i++) {
-            CHECK(dst->vars[i].name = lpc_string_pmemcpy(src->vars[i].name,
+            TAG_SETPTR(dst->vars[i].name, lpc_string_pmemcpy(src->vars[i].name,
                                 src->vars[i].name_len + 1,
                                 pool TSRMLS_CC));
-			TAG_PTR(dst->vars[i].name);
         }
     }
 #endif
 
     if (src->doc_comment) {
-        CHECK(dst->doc_comment
-                = lpc_pmemcpy(src->doc_comment, (src->doc_comment_len + 1), pool TSRMLS_CC));
-		TAG_PTR(dst->doc_comment);
+        TAG_SETPTR(dst->doc_comment,
+                lpc_pmemcpy(src->doc_comment, (src->doc_comment_len + 1), pool TSRMLS_CC));
     }
 
     return dst;
@@ -1439,12 +1410,10 @@ lpc_function_t* lpc_copy_new_functions(int old_count, lpc_context_t* ctxt TSRMLS
 
         zend_hash_get_current_data(CG(function_table), (void**) &fun);
 
-        CHECK(array[i].name = lpc_pmemcpy(key, (int) key_size, pool TSRMLS_CC));
-		TAG_PTR(array[i].name);
+        TAG_SETPTR(array[i].name, lpc_pmemcpy(key, (int) key_size, pool TSRMLS_CC));
         array[i].name_len = (int) key_size-1;
-        CHECK(array[i].function = my_copy_function(NULL, fun, ctxt TSRMLS_CC));
+        TAG_SETPTR(array[i].function, my_copy_function(NULL, fun, ctxt TSRMLS_CC));
         zend_hash_move_forward(CG(function_table));
-		TAG_PTR(array[i].function);
     }																												
 
     array[i].function = NULL;
@@ -1498,11 +1467,9 @@ lpc_class_t* lpc_copy_new_classes(zend_op_array* op_array, int old_count, lpc_co
 
         elem = *((zend_class_entry**)elem);
 
-        CHECK(array[i].name = lpc_pmemcpy(key, (int) key_size, pool TSRMLS_CC));
-		TAG_PTR(array[i].name);
+        TAG_SETPTR(array[i].name, lpc_pmemcpy(key, (int) key_size, pool TSRMLS_CC));
         array[i].name_len = (int) key_size-1;
-        CHECK(array[i].class_entry = my_copy_class_entry(NULL, elem, ctxt TSRMLS_CC));
-		TAG_PTR(array[i].class_entry);
+        TAG_SETPTR(array[i].class_entry, my_copy_class_entry(NULL, elem, ctxt TSRMLS_CC));
 
         /*
          * If the class has a pointer to its parent class, save the parent
@@ -1513,8 +1480,7 @@ lpc_class_t* lpc_copy_new_classes(zend_op_array* op_array, int old_count, lpc_co
          */
 
         if (elem->parent) {
-            CHECK(array[i].parent_name = lpc_pstrdup(elem->parent->name, pool TSRMLS_CC));
-			TAG_PTR(array[i].parent_name);
+            TAG_SETPTR(array[i].parent_name, lpc_pstrdup(elem->parent->name, pool TSRMLS_CC));
         }
         else {
             array[i].parent_name = NULL;
@@ -1803,7 +1769,7 @@ zend_class_entry* lpc_copy_class_entry_for_execution(zend_class_entry* src, lpc_
                       0,
                       ctxt);
 
-    my_fixup_hashtable(&dst->function_table, (ht_fixup_fun_t)my_fixup_function_for_execution, src, dst);
+    my_fixup_hashtable(&dst->function_table, (ht_fixup_fun_t)my_fixup_function_for_execution, src, dst, ctxt TSRMLS_CC);
 
     /* zend_do_inheritance merges properties_info.
      * Need only shallow copying as it doesn't hold the pointers.
@@ -1816,7 +1782,7 @@ zend_class_entry* lpc_copy_class_entry_for_execution(zend_class_entry* src, lpc_
 
 #ifdef ZEND_ENGINE_2_2
     /* php5.2 introduced a scope attribute for property info */
-    my_fixup_hashtable(&dst->properties_info, (ht_fixup_fun_t)my_fixup_property_info_for_execution, src, dst);
+    my_fixup_hashtable(&dst->properties_info, (ht_fixup_fun_t)my_fixup_property_info_for_execution, src, dst, ctxt TSRMLS_CC);
 #endif
 
     /* if inheritance results in a hash_del, it might result in
@@ -1965,7 +1931,7 @@ void lpc_do_halt_compiler_register(const char *filename, long halt_offset TSRMLS
 
 
 /* {{{ my_fixup_function */
-static void my_fixup_function(Bucket *p, zend_class_entry *src, zend_class_entry *dst)
+static void my_fixup_function(Bucket *p, zend_class_entry *src, zend_class_entry *dst, lpc_context_t* ctxt TSRMLS_DC)
 {ENTER(my_fixup_function)
     zend_function* zf = p->pData;
 
@@ -1987,16 +1953,11 @@ static void my_fixup_function(Bucket *p, zend_class_entry *src, zend_class_entry
          * parent's constructor and create problems.
          */
 
-        if(zf->common.fn_flags & ZEND_ACC_CTOR) {
-			dst->constructor = zf;
-//			TAG_PTR(dst->constructor);
-		} else if(zf->common.fn_flags & ZEND_ACC_DTOR) {
-			dst->destructor = zf;
-//			TAG_PTR(dst->destructor);
-		} else if(zf->common.fn_flags & ZEND_ACC_CLONE) {
-			dst->clone = zf;
-//			TAG_PTR(dst->clone);
-        } else {
+        if(zf->common.fn_flags & ZEND_ACC_CTOR) {TAG_SETPTR(dst->constructor, zf);}
+		else if(zf->common.fn_flags & ZEND_ACC_DTOR) {TAG_SETPTR(dst->destructor, zf);}
+		else if(zf->common.fn_flags & ZEND_ACC_CLONE) {TAG_SETPTR(dst->clone, zf);}
+        else
+        {
             SET_IF_SAME_NAME(__get);
             SET_IF_SAME_NAME(__set);
             SET_IF_SAME_NAME(__unset);
@@ -2009,8 +1970,7 @@ static void my_fixup_function(Bucket *p, zend_class_entry *src, zend_class_entry
             SET_IF_SAME_NAME(__callstatic);
 #endif
         }
-        zf->common.scope = dst;
-//		TAG_PTR(zf->common.scope);
+        TAG_SETPTR(zf->common.scope, dst);
     }
     else
     {
@@ -2024,14 +1984,13 @@ static void my_fixup_function(Bucket *p, zend_class_entry *src, zend_class_entry
 
 #ifdef ZEND_ENGINE_2_2
 /* {{{ my_fixup_property_info */
-static void my_fixup_property_info(Bucket *p, zend_class_entry *src, zend_class_entry *dst)
+static void my_fixup_property_info(Bucket *p, zend_class_entry *src, zend_class_entry *dst, lpc_context_t* ctxt TSRMLS_DC)
 {ENTER(my_fixup_property_info)
     zend_property_info* property_info = (zend_property_info*)p->pData;
 
     if(property_info->ce == src)
     {
-        property_info->ce = dst;
-//		TAG_PTR(property_info->ce);
+        TAG_SETPTR(property_info->ce, dst);
     }
     else
     {
@@ -2042,7 +2001,7 @@ static void my_fixup_property_info(Bucket *p, zend_class_entry *src, zend_class_
 #endif
 
 /* {{{ my_fixup_hashtable */
-static void my_fixup_hashtable(HashTable *ht, ht_fixup_fun_t fixup, zend_class_entry *src, zend_class_entry *dst)
+static void my_fixup_hashtable(HashTable *ht, ht_fixup_fun_t fixup, zend_class_entry *src, zend_class_entry *dst, lpc_context_t *ctxt TSRMLS_DC)
 {ENTER(my_fixup_hashtable)
     Bucket *p;
     uint i;
@@ -2051,7 +2010,7 @@ static void my_fixup_hashtable(HashTable *ht, ht_fixup_fun_t fixup, zend_class_e
         if(!ht->arBuckets) break;
         p = ht->arBuckets[i];
         while (p != NULL) {
-            fixup(p, src, dst);
+            fixup(p, src, dst, ctxt TSRMLS_CC);
             p = p->pNext;
         }
     }

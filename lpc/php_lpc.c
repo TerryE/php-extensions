@@ -101,7 +101,7 @@ perdir_ini_entry("max_file_size",          "1M")
 perdir_ini_entry("stat_percentage",         "0")
 perdir_ini_entry("clear_cookie",    (char*)NULL)
 perdir_ini_entry("clear_parameter", (char*)NULL)
-perdir_ini_entry("filters",                NULL)
+perdir_ini_entry("filter" ,                  "")
 PHP_INI_END()
 /* }}} */
 
@@ -124,7 +124,7 @@ static PHP_MINFO_FUNCTION(lpc)
     php_info_print_table_row(2, "LPC Build Date", __DATE__ " " __TIME__);
 	info_convert("%lu", cache_by_default);
 	php_info_print_table_row(2, "Cache by default", buf);    
-//	php_info_print_table_row(2, "Filters",APGC(filters));
+	php_info_print_table_row(2, "Filter", LPCG(filter));
 	info_convert("%lu", file_update_protection);
 	php_info_print_table_row(2, "File update protection",buf);
 	info_convert("%lu", enable_cli);
@@ -162,11 +162,6 @@ static PHP_GSHUTDOWN_FUNCTION(lpc)
     * However, as a safety net the DTOR does a safe cleanup of any of the following 
     * LPCG allocated elements */ 
 #if 0
-    char** filters;              /* array of regex filters that prevent caching */
-    void* compiled_filters;      /* compiled regex filters */
-    lpc_cache_t *current_cache;  /* current cache being modified/read */
-    void *lpc_bd_alloc_ptr;      /* bindump alloc() ptr */
-    void *lpc_bd_alloc_ubptr;    /* bindump alloc() upper bound ptr */
     HashTable *lazy_function_table;  /* lazy function entry table */
     HashTable *lazy_class_table;     /* lazy class entry table */
     char *serializer_name;        /* the serializer config option */
@@ -175,15 +170,6 @@ static PHP_GSHUTDOWN_FUNCTION(lpc)
     char *clear_cookie;	          /* Name of Cookie which will force a cache clear */
     char *clear_parameter;        /* Name of Request parameter which will force a cache clear */
 #endif
-
-    /* deallocate the ignore patterns */
-    if (lpc_globals->filters != NULL) {
-        int i;
-        for (i=0; lpc_globals->filters[i] != NULL; i++) {
-            pefree(lpc_globals->filters[i], PERSISTENT);
-        }
-        pefree(lpc_globals->filters, PERSISTENT);
-    }
 
     /* the rest of the globals are cleaned up in lpc_module_shutdown() */
 	if (1) { ENTER(DUMP) }
@@ -196,7 +182,7 @@ static PHP_MINIT_FUNCTION(lpc)
     LPCG(cache_by_default) = 1;
     LPCG(fpstat) = 1;
     LPCG(canonicalize) = 1;
-    LPCG(use_request_time) = 1;
+    LPCG(sapi_request_time) = (time_t) sapi_get_request_time(TSRMLS_C);
 
     REGISTER_INI_ENTRIES();
 
@@ -213,7 +199,7 @@ static PHP_MINIT_FUNCTION(lpc)
 
 /* {{{ PHP_MSHUTDOWN_FUNCTION(lpc) */
 static PHP_MSHUTDOWN_FUNCTION(lpc)
-{ENTER(PHP_MSHUTDOWN_FUNCTION)
+{
     if(LPCG(enabled)) {
         lpc_zend_shutdown(TSRMLS_C);
         lpc_module_shutdown(TSRMLS_C);
@@ -225,9 +211,33 @@ static PHP_MSHUTDOWN_FUNCTION(lpc)
 
 /* {{{ PHP_RINIT_FUNCTION(lpc) */
 static PHP_RINIT_FUNCTION(lpc)
-{
-    if(LPCG(enabled)) {
-		LPCG(lpc_cache)       = lpc_cache_create(TSRMLS_C);
+{ENTER(PHP_RINIT_FUNCTION)
+#ifdef PHP_REXEP_OK
+	char *f      = INI_STR("lpc.filter");
+	char *filt   = LPCG(filter);
+	char *p;
+	int   i;
+
+	LPCG(filter) = emalloc(strlen(f) + 3);
+
+	/* Pick a PCRE delimiter that isn't in the file string from one of non-alphanumeric 
+	 * characters that isn't already used as meta character in REGEX, viz <#%,@~ '"> */
+#   define DELIMS " \"',~@%#"
+	for( i=strlen(DELIMS+1), p=DELIMS; i>=0; i-- ) {
+		if (!strchr(filt, p[i])) break; /* scan DELIMS in reverse to pick one not in filter */
+	}
+	if (i<0) {
+		lpc_warning("Invalid lpc.filter expression '%s'.  Caching is disabled." TSRMLS_CC, filt);
+		efree(LPCG(filter));
+		LPCG(filter) = "";
+		LPCG(enabled) = 0;
+	}
+	sprintf(LPCG(filter),"%c%s%c",p[i],f,p[i]);
+#else
+	LPCG(filter)		  = "";  /* filters are ignored for PHP versions < 5.2.2 */
+#endif
+
+    if(LPCG(enabled) && lpc_cache_create(TSRMLS_C)) {
 		LPCG(max_file_size)   = lpc_atol(INI_STR("lpc.max_file_size"),0);
 		LPCG(fpstat)          = INI_INT("lpc.stat_percentage");
 		LPCG(clear_cookie)    = INI_STR("lpc.clear_cookie");
@@ -245,13 +255,16 @@ static PHP_RSHUTDOWN_FUNCTION(lpc)
     if(LPCG(enabled)) {
         lpc_request_shutdown(TSRMLS_C);
     }
+	if (LPCG(filter) && LPCG(filter)[0]) {
+		efree(LPCG(filter));
+	}
     return SUCCESS;
 }
 /* }}} */
 
 /* {{{ proto array lpc_cache_info([string type [, bool limited]]) */
 PHP_FUNCTION(lpc_cache_info)
-{
+{ENTER(PHP-lpc_cache_info)
     zval* info;
     char *cache_type;
     int ct_len;
@@ -261,7 +274,7 @@ PHP_FUNCTION(lpc_cache_info)
         return;
     }
 
-    info = lpc_cache_info(LPCG(lpc_cache), limited TSRMLS_CC);
+    info = lpc_cache_info(limited TSRMLS_CC);
 
     if(!info) {
         php_error_docref(NULL TSRMLS_CC, E_WARNING, "No LPC info available.  Perhaps LPC is not enabled? Check lpc.enabled in your ini file");
@@ -275,7 +288,7 @@ PHP_FUNCTION(lpc_cache_info)
 
 /* {{{ proto void lpc_clear_cache() */
 PHP_FUNCTION(lpc_clear_cache)
-{
+{ENTER(PHP-lpc_clear_cache)
 	LPCG(force_cache_delete) = 1;
     RETURN_TRUE;
 }
@@ -284,10 +297,11 @@ PHP_FUNCTION(lpc_clear_cache)
 /* {{{ proto mixed lpc_compile_file(mixed filenames [, bool atomic])
  */
 PHP_FUNCTION(lpc_compile_file) 
-{
+{ENTER(PHP-lpc_compile_file) 
     zval *file;
     zend_file_handle file_handle;
     zend_op_array *op_array;
+//// get rid of this
     char** filters = NULL;
     zend_bool cache_by_default = 1;
     HashTable cg_function_table, cg_class_table;
@@ -316,15 +330,6 @@ PHP_FUNCTION(lpc_compile_file)
         lpc_warning("lpc_compile_file argument must be a string" TSRMLS_CC);
         RETURN_FALSE;
     }
-
-    LPCG(current_cache) = LPCG(lpc_cache);
-
-    /* reset filters and cache_by_default */
-    filters = LPCG(filters);
-    LPCG(filters) = NULL;
-
-    cache_by_default = LPCG(cache_by_default);
-    LPCG(cache_by_default) = 1;
 
     /* Replace function/class tables to avoid namespace conflicts */
     zend_hash_init_ex(&cg_function_table, 100, NULL, ZEND_FUNCTION_DTOR, 1, 0);
@@ -376,11 +381,6 @@ PHP_FUNCTION(lpc_compile_file)
     EG(function_table) = eg_orig_function_table;
     EG(class_table) = eg_orig_class_table;
 
-    /* Restore global settings */
-    LPCG(filters) = filters;
-    LPCG(cache_by_default) = cache_by_default;
-
-    LPCG(current_cache) = NULL;
 }
 /* }}} */
 
