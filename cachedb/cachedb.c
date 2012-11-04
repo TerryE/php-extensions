@@ -70,8 +70,8 @@
 #endif
 
 #include "php.h"
-#include "php_streams.h"
 #include "php_main.h"
+#include "php_streams.h"
 
 #include "zend_API.h"
 #include "zend_alloc.h"
@@ -87,13 +87,50 @@
 #include "cachedb.h"
 
 #include <sys/types.h>
-#include <sys/stat.h>
 #ifdef HAVE_UNISTD_H
 #include <unistd.h>
 #endif
 #include <string.h>
 #include <errno.h>
 #include <zlib.h>
+
+typedef struct _cachedb_rec_t {
+	char       *key;
+    size_t      key_length;
+	int         is_base;
+    off_t       start;
+	size_t      zlen;
+	size_t      len;
+} cachedb_rec_t;
+
+typedef struct _cachedb_file_t {
+	char               *name;
+    size_t              name_length;
+	char               *dir;	
+    size_t              dir_length;
+	off_t               next_pos;
+	size_t              header_length;
+	php_stream         *fp;
+	php_stream_statbuf  sb;
+} cachedb_file_t;
+
+struct _cachedb_t {
+	cachedb_file_t base_file;
+	cachedb_file_t tmp_file;
+	HashTable     *index_list;
+	HashTable     *index_hash;
+	cachedb_rec_t  last_find;
+	int			   is_binary;
+	char           mode;
+};
+
+#define CACHEDB_HEADER_FINGERPRINT "cachedb-"
+typedef struct _cachedb_header_t {
+	char       fingerprint[8];
+	size_t     zlen;
+	size_t     len;
+} cachedb_header_t;
+
 
 static const char _cachedb_ndx_err[]   = "Invalid index in cachedb file %s.";
 static const char _cachedb_eom_err[]   = "Invalid record read in cachedb file";
@@ -107,7 +144,6 @@ static const char _cachedb_write_err[] = "Internal error write to cachedb file";
 
 #define PEFREE(n,p) if(n) {pefree(n,p); n=NULL; }
 #define EFREE(n) if(n) {efree(n); n=NULL;}
-#define ZEND_HASH_DESTROY(n) if(n) {zend_hash_destroy(n);}
 
 #define ZVAL_PTR_DTOR_NZ(n) if(n) {zval_ptr_dtor(n);}
 
@@ -121,14 +157,15 @@ static const char _cachedb_write_err[] = "Internal error write to cachedb file";
 #define hash_index_find(e,i,v) zend_hash_index_find(e, i, (void **) &v)
 #define hash_add_next_index_zval(h,v) zend_hash_next_index_insert(h, &v, sizeof(zval *), NULL)
 #define hash_add(h,k,v) zend_hash_add(h,k,k##_length+1, &v, sizeof(zval *), NULL)
-#define hash_copy(to,fm) zend_hash_copy(to, fm, (copy_ctor_func_t) zval_add_ref, (void *)&dummy, sizeof(zval*))
+#define hash_copy(to,fm,dmy) zend_hash_copy(to, fm, (copy_ctor_func_t) zval_add_ref, (void *)&dmy, sizeof(zval*))
 #define hash_count(h) zend_hash_num_elements(h)
-
 #define hash_init(h,c) zend_hash_init(h, c, NULL, ZVAL_PTR_DTOR, 0)
 #define hash_reset(h) zend_hash_internal_pointer_reset(h)
 #define hash_get(h,e) zend_hash_get_current_data(h, (void **) &e)
 #define hash_key(h,s,l) zend_hash_get_current_key_ex(h, &s, &s##_length, &l, 0, 0)
 #define hash_next(h) zend_hash_move_forward(h)
+#define hash_get_first_zv(h,pzv) hash_reset(h); hash_get(h, pzv); 
+#define hash_get_next_zv(h,pzv) hash_next(h); hash_get(h, pzv); 
 
 #define filelength sb.sb.st_size 
 
@@ -210,7 +247,7 @@ PHPAPI int _cachedb_open(cachedb_t** pdb, char *file, size_t file_length, char *
 
 	EFREE(opened);
 
-	db->is_binary == (mode_length == 2 && mode[1] == 'b');
+	db->is_binary = (mode_length == 2 && mode[1] == 'b');
 
 	/* Load the DB file stats or set a dummy create statrec in the case of a create */
 	if (db->base_file.fp) {
@@ -264,8 +301,9 @@ PHPAPI int _cachedb_close(cachedb_t* db, char force_mode TSRMLS_DC)
       
 		/* Make shallow copies of index_list into a zval list */
 		MAKE_STD_ZVAL(list);
-		array_init_size(list, zend_hash_num_elements(db->index_list));
-		zend_hash_copy(Z_ARRVAL_P(list), db->index_list, (copy_ctor_func_t) zval_add_ref, (void *)&tmp, sizeof(zval*));
+		array_init_size(list, hash_count(db->index_list));
+
+		hash_copy(Z_ARRVAL_P(list), db->index_list, tmp);
 		CHECKA(cachedb_write_var(new, 0, list, &zlen, &len TSRMLS_CC)==SUCCESS);
 		zval_ptr_dtor(&list);
 
@@ -373,9 +411,7 @@ PHPAPI int _cachedb_find(cachedb_t* db, char *key, size_t key_length, zval *meta
 			zval *tmp_zval;
 			zval_dtor(metadata);
 			array_init(metadata);
-			zend_hash_copy(HASH_OF(metadata), HASH_OF(*meta), 
-			               (copy_ctor_func_t) zval_add_ref, 
-  			               (void *) &tmp_zval, sizeof(zval *));
+			hash_copy(HASH_OF(metadata), HASH_OF(*meta), tmp_zval);
 		}
 		return SUCCESS;
 
@@ -460,7 +496,7 @@ PHPAPI int _cachedb_add(cachedb_t* db, char *key, size_t key_length, zval *value
 	tf->next_pos    = tf->filelength;
 
 	/* Update index_list and index_hash */
-	ndx = zend_hash_num_elements(db->index_list);
+	ndx = hash_count(db->index_list);
 	MAKE_STD_ZVAL(tmp);
 	array_init_size(tmp, (metadata ? 4 : 3));
 	add_next_index_stringl(tmp, key, key_length, 1);
@@ -497,12 +533,12 @@ PHPAPI int _cachedb_info( zval **info, cachedb_t* db TSRMLS_DC)
 
 	/* Make shallow copies of index_list and index_hash into zvals */
 	MAKE_STD_ZVAL(list);
-	array_init_size(list, zend_hash_num_elements(db->index_list));
-	hash_copy(Z_ARRVAL_P(list), db->index_list);
+	array_init_size(list, hash_count(db->index_list));
+	hash_copy(Z_ARRVAL_P(list), db->index_list, dummy);
 
 	MAKE_STD_ZVAL(hash);
-	array_init_size(hash, zend_hash_num_elements(db->index_hash));
-	hash_copy(Z_ARRVAL_P(hash), db->index_hash);
+	array_init_size(hash, hash_count(db->index_hash));
+	hash_copy(Z_ARRVAL_P(hash), db->index_hash, dummy);
 
 	array_init_size(*info, 2);
 	add_next_index_zval(*info, list);
@@ -512,6 +548,14 @@ PHPAPI int _cachedb_info( zval **info, cachedb_t* db TSRMLS_DC)
 }
 /* }}} */
 
+/* {{{ proto struct stat *cachedb_get_s(struct db)
+   Return cachedb stat block */
+
+PHPAPI const struct stat *cachedb_get_sb(cachedb_t* db TSRMLS_DC) {
+	return (db && db->base_file.fp) ? (const struct stat *) &db->base_file.sb.sb : NULL;
+}
+
+/* }}} */
 /* {{{ proto boolean cachedb_load_index(struct db)
    Load the initial index from the DB */
 
@@ -527,6 +571,7 @@ static int cachedb_load_index(cachedb_t* db TSRMLS_DC)
 	HashTable          *index_list = NULL;
 	HashTable          *index_hash = NULL;
 	uint                ndx_start  = sizeof(header);
+	uint				ndx;
 	char                error_type = ' ';
 
 	if (db->base_file.fp > 0) {
@@ -548,45 +593,40 @@ static int cachedb_load_index(cachedb_t* db TSRMLS_DC)
 		EFREE(index); 
 
 		/* Initialise another HashTable the same size as index_list for keyed access */
-		ALLOC_HASHTABLE(index_hash);
+		index_hash = emalloc(sizeof(HashTable));
 		hash_init(index_hash, hash_count(index_list));
 
 		/* loop over index_list to build the index_hash */
-		for (hash_reset(index_list); hash_get(index_list, entry) == SUCCESS; hash_next(index_list)) {
+		for (hash_reset(index_list), ndx=0; 
+		     hash_get(index_list, entry) == SUCCESS; 
+			 hash_next(index_list), ndx++) {
 
-			HashTable* entry_hash = Z_ARRVAL_PP(entry);
+			HashTable* entry_array;
 			zval **zkey, **zlen, *tmp;
-			char *dummy, *key;
-			uint  dummy_length, key_length, entry_length;
-			ulong ndx;
 
-			CHECKA(Z_TYPE_PP(entry) == IS_ARRAY); 
-			entry_length = hash_count(entry_hash);
-			CHECKA(entry_length == 3 || entry_length == 4);
+			CHECKA(Z_TYPE_PP(entry) == IS_ARRAY);
+			entry_array = Z_ARRVAL_PP(entry);
+			CHECKA(hash_count(entry_array) == 3 || hash_count(entry_array) == 4); 
 
-			/* Retrieve the next value and its index. Pick out the file path */
-            CHECKA(hash_key(index_list, dummy, ndx) == HASH_KEY_IS_LONG);
-			CHECKA(hash_index_find(entry_hash, 0, zkey) == SUCCESS);
-			CHECKA(hash_index_find(entry_hash, 1, zlen) == SUCCESS);
-			key        = Z_STRVAL_PP(zkey);
-			key_length = Z_STRLEN_PP(zkey);
+			/* Pick out the file path and length ZVALs from the entry array*/
+			hash_get_first_zv(entry_array, zkey); 
+			hash_get_next_zv(entry_array, zlen);
 
 			/* Set index_hash[key] = array(ndx,nxt_start); */
 			MAKE_STD_ZVAL(tmp);
 			array_init_size(tmp,2);
 			add_next_index_long(tmp, ndx);
 			add_next_index_long(tmp, ndx_start);
-
-			hash_add(index_hash,key,tmp);
-
 			ndx_start += Z_LVAL_PP(zlen);
+			zend_hash_add(index_hash, Z_STRVAL_PP(zkey), Z_STRLEN_PP(zkey)+1, 
+			              &tmp, sizeof(zval *), NULL);
 		}
 
 	} else { /* DB creation starts with an empty index array and hash */
 
-		ALLOC_HASHTABLE(index_list);
+		index_list = emalloc(sizeof(HashTable));
 		hash_init(index_list, 0);
-		ALLOC_HASHTABLE(index_hash);
+		index_hash = emalloc(sizeof(HashTable));
 		hash_init(index_hash, 0);
 		ndx_start = 0;
 	}
@@ -613,8 +653,9 @@ static int cachedb_read_var(php_stream *fp, int is_binary, zval *value, size_t z
 	const unsigned char   *p;
 	char                   error_type  = ' ';
 
+	/* Note that the value zval has been preallocated and initialised by the caller */ 
+
 	if (is_binary) {
-		MAKE_STD_ZVAL(value);
 		CHECKA(len == php_stream_copy_to_mem(fp, &buf, len, 0));
 		ZVAL_STRINGL(value, buf, len, 0);
 
@@ -633,8 +674,7 @@ static int cachedb_read_var(php_stream *fp, int is_binary, zval *value, size_t z
 		CHECKA(uncompress(buf, &buf_length, zbuf, zlen)==Z_OK && buf_length==len);
 		PEFREE(zbuf,0);
 
-		/* Unserialize the buffer into the returned zval value. 
-		   Note that this zval has been preallocated and initialised by the caller */ 
+		/* Unserialize the buffer into the returned zval value. */
 		p = (const unsigned char*) buf;
 		PHP_VAR_UNSERIALIZE_INIT(var_hash);
 	 	status = php_var_unserialize(&value, &p, p + buf_length, &var_hash TSRMLS_CC);
@@ -720,11 +760,13 @@ static void cachedb_db_dtor(cachedb_t** pdb TSRMLS_DC)
 	EFREE(db->tmp_file.name);	
 	EFREE(db->tmp_file.dir);	
 	
-	ZEND_HASH_DESTROY(db->index_list);
 	EFREE(db->index_list);
-	ZEND_HASH_DESTROY(db->index_hash);
+	EFREE(db->index_list);
+	EFREE(db->index_hash);
 	EFREE(db->index_hash);
 	EFREE(db);
 	*pdb = NULL;
 }
 /* }}} */
+
+

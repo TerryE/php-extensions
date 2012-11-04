@@ -303,7 +303,6 @@ PHP_FUNCTION(cachedb_add)
 	zval            *metadata=NULL; /* Optional to be added */
 	long             handle=0;      /* The handle to be used (default 0) */
 	cachedb_t       *db;
-	cachedb_rec_t    entry;
 	int              status;
 
 	if (zend_parse_parameters(ZEND_NUM_ARGS() TSRMLS_CC, "sz|la", &key, &key_length, &value, &handle, &metadata) == FAILURE) {
