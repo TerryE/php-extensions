@@ -23,23 +23,21 @@
    leaving this note intact in the source code.
 
    All other licensing and usage conditions are those of the PHP Group.
+*/
 
- */
-
-/* $Id: php_lpc.c 307215 2011-01-07 09:54:00Z gopalv $ */
-
-#include "lpc_zend.h"
-#include "lpc_cache.h"
-#include "lpc_main.h"
-#include "php_globals.h"
-#include "php_ini.h"
-#include "ext/standard/info.h"
-#include "ext/standard/file.h"
 #ifdef HAVE_SYS_FILE_H
 #include <sys/file.h>
 #endif
-#include "SAPI.h"
 #include "php_lpc.h"
+#include "lpc_zend.h"
+#include "lpc_cache.h"
+#include "lpc_main.h"
+
+#include "php_globals.h"
+#include "php_ini.h"
+#include "SAPI.h"
+#include "ext/standard/info.h"
+#include "ext/standard/file.h"
 #include "ext/standard/md5.h"
 
 /* {{{ PHP_FUNCTION declarations */
@@ -162,10 +160,6 @@ static PHP_GSHUTDOWN_FUNCTION(lpc)
     * However, as a safety net the DTOR does a safe cleanup of any of the following 
     * LPCG allocated elements */ 
 #if 0
-    HashTable *lazy_function_table;  /* lazy function entry table */
-    HashTable *lazy_class_table;     /* lazy class entry table */
-    char *serializer_name;        /* the serializer config option */
-    lpc_serializer_t *serializer; /* the actual serializer in use */
     lpc_cache_t* lpc_cache;       /* the global compiler cache */
     char *clear_cookie;	          /* Name of Cookie which will force a cache clear */
     char *clear_parameter;        /* Name of Request parameter which will force a cache clear */
@@ -218,33 +212,39 @@ static PHP_RINIT_FUNCTION(lpc)
 	char *p;
 	int   i;
 
-	LPCG(filter) = emalloc(strlen(f) + 3);
+	if (filt) {
+		LPCG(filter) = emalloc(strlen(f) + 3);
 
-	/* Pick a PCRE delimiter that isn't in the file string from one of non-alphanumeric 
-	 * characters that isn't already used as meta character in REGEX, viz <#%,@~ '"> */
-#   define DELIMS " \"',~@%#"
-	for( i=strlen(DELIMS+1), p=DELIMS; i>=0; i-- ) {
-		if (!strchr(filt, p[i])) break; /* scan DELIMS in reverse to pick one not in filter */
-	}
-	if (i<0) {
-		lpc_warning("Invalid lpc.filter expression '%s'.  Caching is disabled." TSRMLS_CC, filt);
-		efree(LPCG(filter));
+		/* Pick a PCRE delimiter that isn't in the file string from one of non-alphanumeric 
+		 * characters that isn't already used as meta character in REGEX, viz <#%,@~ '"> */
+#       define DELIMS " \"',~@%#"
+		for( i=strlen(DELIMS+1), p=DELIMS; i>=0; i-- ) {
+			if (!strchr(filt, p[i])) break; /* scan DELIMS in reverse to pick one not in filter */
+		}
+		if (i<0) {
+			lpc_warning("Invalid lpc.filter expression '%s'.  Caching is disabled." TSRMLS_CC, filt);
+			efree(LPCG(filter));
+			LPCG(filter) = "";
+			LPCG(enabled) = 0;
+		}
+		sprintf(LPCG(filter),"%c%s%c",p[i],f,p[i]);
+	} else {
 		LPCG(filter) = "";
-		LPCG(enabled) = 0;
 	}
-	sprintf(LPCG(filter),"%c%s%c",p[i],f,p[i]);
 #else
 	LPCG(filter)		  = "";  /* filters are ignored for PHP versions < 5.2.2 */
 #endif
 
-    if(LPCG(enabled) && lpc_cache_create(TSRMLS_C)) {
+    if(LPCG(enabled) && lpc_cache_create(TSRMLS_C)==SUCCESS) {
 		LPCG(max_file_size)   = lpc_atol(INI_STR("lpc.max_file_size"),0);
 		LPCG(fpstat)          = INI_INT("lpc.stat_percentage");
 		LPCG(clear_cookie)    = INI_STR("lpc.clear_cookie");
 		LPCG(clear_parameter) = INI_STR("lpc.clear_parameter");
 
         lpc_request_init(TSRMLS_C);
-    }
+    } else {
+		(LPCG(enabled)) = 0;
+	}
     return SUCCESS;
 }
 /* }}} */
@@ -296,6 +296,7 @@ PHP_FUNCTION(lpc_clear_cache)
 
 /* {{{ proto mixed lpc_compile_file(mixed filenames [, bool atomic])
  */
+/////// TODO: question the entire raison d'etre for this?????????
 PHP_FUNCTION(lpc_compile_file) 
 {ENTER(PHP-lpc_compile_file) 
     zval *file;
@@ -306,8 +307,6 @@ PHP_FUNCTION(lpc_compile_file)
     zend_bool cache_by_default = 1;
     HashTable cg_function_table, cg_class_table;
     HashTable *cg_orig_function_table, *cg_orig_class_table, *eg_orig_function_table, *eg_orig_class_table;
-    lpc_cache_entry_t** cache_entries;
-    lpc_cache_key_t* keys;
     zend_op_array **op_arrays;
     time_t t;
     zval **hentry;
@@ -316,7 +315,6 @@ PHP_FUNCTION(lpc_compile_file)
     int *rval=NULL;
     int count=0;
     zend_bool atomic=1;
-    lpc_context_t ctxt = {0,};
     zend_execute_data *orig_current_execute_data;
     int atomic_fail;
 

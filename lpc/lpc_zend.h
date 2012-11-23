@@ -22,10 +22,7 @@
    leaving this note intact in the source code.
 
    All other licensing and usage conditions are those of the PHP Group.
-
- */
-
-/* $Id: lpc_zend.h 307048 2011-01-03 23:53:17Z kalle $ */
+*/
 
 #ifndef LPC_ZEND_H
 #define LPC_ZEND_H

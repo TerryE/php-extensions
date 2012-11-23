@@ -26,7 +26,7 @@
    All other licensing and usage conditions are those of the PHP Group.
 */
 
-/* $Id: lpc_debug.c 307048 2011-01-03 23:53:17Z kalle $ */
+#include "lpc.h"
 #include "lpc.h"
 #include <stdio.h>
 #include "zend.h"
@@ -103,35 +103,29 @@ int lpc_debug_enter(char *s)
 		static struct _func_table func_table[FUNC_MAX] = {0};
 		static int n_func_probe = 0;
 		static const char* module[] = {
-	"==lpc.c==", "lpc_tokenize", "lpc_restat", "lpc_search_paths", "lpc_regex_destroy_array", "lpc_regex_match_array",
-		"lpc_regex_compile_array", "lpc_crc32", "crc32gen", "lpc_flip_hash", 
-	"==lpc_cache.c==", "hash", "make_prime", "make_slot", "free_slot", "remove_slot", "lpc_cache_create", 
-		"lpc_cache_destroy", "lpc_cache_clear", "lpc_cache_insert", "lpc_cache_find_slot", "lpc_cache_find", 
-		"lpc_cache_release", "lpc_cache_make_file_key", "lpc_cache_make_file_entry", "lpc_cache_link_info", "lpc_cache_info", 
-	"==lpc_compile.c==", "LPC_SERIALIZER_NAME", "LPC_UNSERIALIZER_NAME", "check_op_array_integrity",
-		"my_bitwise_copy_function", "my_copy_zval_ptr", "my_serialize_object", "my_unserialize_object", "my_copy_zval",  
-		"my_check_znode", "my_copy_zend_op","my_copy_znode", "my_copy_zend_op", "my_copy_function", "my_copy_function_entry",  
-		"my_copy_property_info", "my_copy_property_info_for_execution", "my_copy_arg_info_array", "my_copy_arg_info", 
-		"lpc_copy_class_entry", "my_copy_class_entry", "my_copy_hashtable_ex", "my_copy_static_variables", "lpc_copy_zval", 
-		"lpc_fixup_op_array_jumps", "lpc_copy_op_array", "lpc_copy_new_functions", "lpc_copy_new_classes",
-		"my_prepare_op_array_for_execution", "lpc_copy_op_array_for_execution", "lpc_copy_function_for_execution", 
-		"lpc_copy_function_for_execution_ex", "lpc_copy_class_entry_for_execution", "lpc_free_class_entry_after_execution",
-		"lpc_file_halt_offset", "lpc_do_halt_compiler_register", "my_fixup_function", "my_fixup_property_info", 
-		"my_fixup_hashtable", "my_check_copy_function", "my_check_copy_default_property", "my_check_copy_property_info", 
-		"my_check_copy_static_member", "my_check_copy_constant", "lpc_register_optimizer",
-	"==lpc_debug.c==" "dump", 
-	"==lpc_main.c==", "set_compile_hook", "install_function", "lpc_lookup_function_hook", "install_class", 
-		"lpc_lookup_class_hook", "uninstall_class", "copy_function_name", "copy_class_or_interface_name",
-		"lpc_defined_function_hook", "lpc_declared_class_hook", "cached_compile", "lpc_compile_cache_entry", 
-		"my_compile_file", "_lpc_register_serializer", "lpc_find_serializer", "lpc_get_serializers", "lpc_module_init",
-		"lpc_module_shutdown", "lpc_deactivate", "lpc_request_init", "lpc_request_shutdown",
-	"==lpc_pool.c==", "_lpc_pool_create", "_lpc_pool_destroy", "_lpc_pool_set_size", 
-		"_lpc_pool_alloc", "_lpc_pool_strdup", "_lpc_pool_memcpy", "_lpc_pool_unload", "_lpc_pool_load",  
-	"==lpc_string.c==", "lpc_dummy_interned_strings_snapshot_for_php", "lpc_dummy_interned_strings_restore_for_php",
-		"lpc_copy_internal_strings", "lpc_interned_strings_init", "lpc_interned_strings_shutdown", 
-	"==lpc_zend.c==", "lpc_op_ZEND_INCLUDE_OR_EVAL", "lpc_zend_init", "lpc_zend_shutdown", 
-	"==php_lpc.c==", "lpc_atol", "PHP_MINFO_FUNCTION", "PHP_GINIT_FUNCTION", "PHP_GSHUTDOWN_FUNCTION", 
-		"PHP_MINIT_FUNCTION", "PHP_MSHUTDOWN_FUNCTION", "PHP_RINIT_FUNCTION", "PHP_RSHUTDOWN_FUNCTION" };
+"=== lpc.c ===", "lpc_valid_file_match", "lpc_cache_create", "lpc_cache_destroy", "lpc_cache_clear",
+    "lpc_cache_insert", "lpc_cache_retrieve", "lpc_cache_make_key", "lpc_cache_free_key",
+    "lpc_cache_info", "lpc_get_request_context", "lpc_dtor_context",
+"=== lpc_compile.c ===","lpc_compile_cache_entry", "my_copy_zval_ptr", "my_copy_zval",
+    "my_copy_zend_op", "lpc_copy_function", "my_copy_property_info", "my_copy_arg_info_array",
+    "lpc_copy_class_entry", "my_copy_hashtable", "lpc_fixup_op_array_jumps", "lpc_copy_op_array",
+    "my_copy_new_functions", "my_copy_new_classes", "my_file_halt_offset",
+    "lpc_do_halt_compiler_register", "my_fixup_function", "my_fixup_property_info",
+    "my_fixup_hashtable", "my_check_copy_function", "my_check_copy_default_property",
+    "my_check_copy_property_info", "my_check_copy_static_member", "my_check_copy_constant", 
+"=== lpc_main.c ===", "set_compile_hook", "cached_compile", "my_compile_file",
+    "lpc_module_shutdown", "lpc_deactivate", "lpc_request_init", "lpc_request_shutdown", 
+"=== lpc_pool.c ===", "_lpc_pool_create", "_lpc_pool_destroy", "_lpc_pool_set_size",
+    "_lpc_pool_alloc", "_lpc_pool_alloc_zval", "_lpc_pool_alloc_zval", "_lpc_pool_strdup",
+    "_lpc_pool_memcpy", "_lpc_pool_unload", "_lpc_pool_load", "lpc_make_PIC_pool", "lpc_relocate_pool", 
+"=== lpc_string.c ===", "lpc_dummy_interned_strings_snapshot_for_php",
+    "lpc_dummy_interned_strings_restore_for_php", "lpc_new_interned_string",
+    "lpc_copy_internal_strings", "lpc_interned_strings_init", "lpc_interned_strings_shutdown", 
+"=== lpc_zend.c ===", "lpc_op_ZEND_INCLUDE_OR_EVAL", 
+"=== lpc_zend.c ===", "lpc_zend_shutdown", 
+"=== php_lpc.c ===", "lpc_atol", "PHP_MINFO_FUNCTION", "PHP_GINIT_FUNCTION",
+    "PHP_GSHUTDOWN_FUNCTION", "PHP_RINIT_FUNCTION", "PHP_RSHUTDOWN_FUNCTION", "PHP-lpc_cache_info",
+    "PHP-lpc_clear_cache", "PHP-lpc_compile_file"};
 	int stack_depth = get_stack_depth();
 	const char fill[] = "                                                                                                    ";
 	uint i,ndx,found;
@@ -177,5 +171,6 @@ int lpc_debug_enter(char *s)
 	return 0;
 }
 
+void lpc_mem_check(void) { full_mem_check(0);}
 #endif /* APC_DEBUG */
 /* }}} */

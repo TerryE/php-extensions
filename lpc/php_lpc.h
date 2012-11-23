@@ -24,10 +24,7 @@
    leaving this note intact in the source code.
 
    All other licensing and usage conditions are those of the PHP Group.
-
- */
-
-/* $Id: php_lpc.h 307372 2011-01-11 12:04:18Z gopalv $ */
+*/
 
 #ifndef PHP_LPC_H
 #define PHP_LPC_H

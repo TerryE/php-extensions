@@ -26,10 +26,7 @@
    leaving this note intact in the source code.
 
    All other licensing and usage conditions are those of the PHP Group.
-
- */
-
-/* $Id: lpc.h 307264 2011-01-08 13:20:20Z gopalv $ */
+*/
 
 #ifndef LPC_H
 #define LPC_H
@@ -43,6 +40,8 @@ extern int lpc_debug_enter(char *s);
 #else 
 #  define ENTER(s) 
 #endif
+#define NOENTER(s) 
+
 /*
  * This module defines utilities and helper functions used elsewhere in LPC.
  */
@@ -68,13 +67,17 @@ extern int lpc_debug_enter(char *s);
 #endif
 
 #include "php.h"
-#include "main/php_streams.h"
+#include "php_streams.h"
 
-#include "lpc_cache.h"
 #include "lpc_php.h"
 #include "lpc_main.h"
+#include "lpc_cache.h"
 
 #define PERSISTENT 1
+
+#ifdef __DEBUG_LPC__
+#define LPC_DEBUG 
+#endif
 
 /* console display functions */
 extern void lpc_error(const char *format TSRMLS_DC, ...);
@@ -119,53 +122,53 @@ extern int lpc_regex_match_array(void* p, const char* input);
 #endif
 ZEND_BEGIN_MODULE_GLOBALS(lpc)
     /* configuration parameters */
-    zend_bool enabled;      /* if true, lpc is enabled (defaults to true) */
-    char*     filter;            /* regex filter that prevents caching */
+    zend_bool   enabled;                /* if true, lpc is enabled (defaults to true) */
+    char*       filter;                 /* regex filter that prevents caching */
  
     /* module variables */
-    zend_bool initialized;       /* true if module was initialized */
-    zend_bool cache_by_default;  /* true if files should be cached unless filtered out */
-                                 /* false if files should only be cached if filtered in */
-    long file_update_protection; /* Age in seconds before a file is eligible to be cached - 0 to disable */
-    zend_bool enable_cli;        /* Flag to override turning LPC off for CLI */
-    long max_file_size;          /* Maximum size of file, in bytes that LPC will be allowed to cache */
-    zend_bool fpstat;            /* true if fullpath includes should be stat'ed */
-    zend_bool canonicalize;      /* true if relative paths should be canonicalized in no-stat mode */
-    zend_bool stat_ctime;        /* true if ctime in addition to mtime should be checked */
-    zend_bool report_autofilter; /* true for auto-filter warnings */
-    zend_bool include_once;      /* Override the ZEND_INCLUDE_OR_EVAL opcode handler to avoid pointless fopen()s [still experimental] */
-    lpc_optimize_function_t lpc_optimize_function;   /* optimizer function callback */
-    HashTable copied_zvals;      /* my_copy recursion detection list */
-    zend_bool force_file_update; /* force files to be updated during lpc_compile_file */
-    char canon_path[MAXPATHLEN]; /* canonical path for key data */
-    zend_bool coredump_unmap;    /* Trap signals that coredump and unmap shared memory */
-    time_t sapi_request_time;    /* the SAPI request start time is used for any timestamp validation */
-    zend_bool lazy_functions;        /* enable/disable lazy function loading */
-    HashTable *lazy_function_table;  /* lazy function entry table */
-    zend_bool lazy_classes;          /* enable/disable lazy class loading */
-    HashTable *lazy_class_table;     /* lazy class entry table */
+    zend_bool   initialized;            /* true if module was initialized */
+    zend_bool   cache_by_default;       /* true if files should be cached unless filtered out */
+                                        /* false if files should only be cached if filtered in */
+    long        file_update_protection; /* Age in seconds before a file is eligible to be cached - 0 to disable */
+    zend_bool   enable_cli;             /* Flag to override turning LPC off for CLI */
+    long        max_file_size;          /* Maximum size of file, in bytes that LPC will be allowed to cache */
+    zend_bool   fpstat;                 /* true if fullpath includes should be stat'ed */
+    zend_bool   canonicalize;           /* true if relative paths should be canonicalized in no-stat mode */
+    zend_bool   report_autofilter;      /* true for auto-filter warnings */
+    zend_bool   include_once;           /* Override the ZEND_INCLUDE_OR_EVAL opcode handler to avoid pointless fopen()s [still experimental] */
+    HashTable   copied_zvals;           /* my_copy recursion detection list */
+    zend_bool   force_file_update;      /* force files to be updated during lpc_compile_file */
+    char        canon_path[MAXPATHLEN]; /* canonical path for key data */
+    time_t      sapi_request_time;      /* the SAPI request start time is used for any timestamp validation */
 #ifdef ZEND_ENGINE_2_4
-    long shm_strings_buffer;
+    long        shm_strings_buffer;
 #endif
-    char *serializer_name;        /* the serializer config option */
-    lpc_serializer_t *serializer; /* the actual serializer in use */
-    lpc_cache_t* lpc_cache;       /* the global compiler cache */
-	HashTable pools;              /* Table of created pools */
-	zend_bool force_cache_delete; /* Flag that the file D/B is to be deleted and further loading disabbled */
-    char *clear_cookie;	          /* Name of Cookie which will force a cache clear */
-    char *clear_parameter;        /* Name of Request parameter which will force a cache clear */
-	void* lpc_compiled_filters;   /* compiled filters */
+    lpc_cache_t *lpc_cache;             /* the global compiler cache */
+	HashTable   pools;                  /* Table of created pools */
+	zend_bool   force_cache_delete;     /* Flag that the file D/B is to be deleted and further loading disabbled */
+    char       *clear_cookie;	        /* Name of Cookie which will force a cache clear */
+    char       *clear_parameter;        /* Name of Request parameter which will force a cache clear */
 ZEND_END_MODULE_GLOBALS(lpc)
 
 /* (the following declaration is defined in php_lpc.c) */
 ZEND_EXTERN_MODULE_GLOBALS(lpc)
 
+/* The tsrm_ls pointer is carried in the pool header which is passes down many call chains so 
+ * this avoids the need to pass the TSRML_D(C) pointers on a lot of routines */
 #ifdef ZTS
+# define TSRMLS_P *((void ****)pool)
+# define TSRMLS_PC , TSRMLS_P
 # define LPCG(v) TSRMG(lpc_globals_id, zend_lpc_globals *, v)
+# define TSRMGP(id, type, element)	(((type) (*TSRMLS_P)[TSRM_UNSHUFFLE_RSRC_ID(id)])->element)
+# define LPCGP(v) TSRMGP(lpc_globals_id, zend_lpc_globals *, v)
+# define TSRMLS_FETCH_FROM_POOL() void ***tsrm_ls = TSRMLS_P
 #else
+# define TSRMLS_P
+# define TSRMLS_PC
 # define LPCG(v) (lpc_globals.v)
+# define LPCGP(v) (lpc_globals.v)
+# define TSRMLS_FETCH_FROM_POOL()
 #endif
-
 
 #endif
 

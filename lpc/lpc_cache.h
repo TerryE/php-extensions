@@ -23,10 +23,7 @@
    leaving this note intact in the source code.
 
    All other licensing and usage conditions are those of the PHP Group.
-
  */
-
-/* $Id: lpc_cache.h 307048 2011-01-03 23:53:17Z kalle $ */
 
 #ifndef LPC_CACHE_H
 #define LPC_CACHE_H
@@ -35,71 +32,91 @@
  * This module defines the shared memory file cache. Basically all of the
  * logic for storing and retrieving cache entries lives here.
  */
-
-#include "lpc.h"
-#include "lpc_compile.h"
-#include "lpc_pool.h"
-#include "lpc_main.h"
 #include "fopen_wrappers.h"
 #include "TSRM.h"
 
-#define LPC_CACHE_ENTRY_FILE   1
-#define LPC_CACHE_KEY_FILE     2
-#define LPC_CACHE_KEY_FPFILE   3
+#include "lpc_pool.h"
+#include "lpc_main.h"
+#include "lpc.h"
 
-#define LPC_REQUEST_SCRIPT     1
-#define LPC_NOSTAT             2
-#define LPC_PATH_IGNORED       3
-#define LPC_PATH_USED          4
+/* {{{ Overview documentation
+ 
+ LPC and APC use very different caching strategies which are optimised for their different usecases.
 
-#ifdef PHP_WIN32
-typedef unsigned __int64 lpc_ino_t;
-typedef unsigned __int64 lpc_dev_t;
-#else
-typedef ino_t lpc_ino_t;
-typedef dev_t lpc_dev_t;
-#endif
+ *	APC maintains its cache in a SMA that is typically shared across all applications. Here cache
+	integrity must be mainted through tight lock management and extra logic layers to ensure the
+	transactional consistency of any updates to the cache. Cache entries are shared across
+	applications and hence there must be high confidence in their mapping to real files in the
+	filesystem to prevent cross application side effects. 
+
+ * 	LPC maintains its cache in the filesystem and it is specific to the application and even to the
+	request path. Any updates to a cache are only committed on (successful) completion of a request
+	by a file-move operation replacing the old version. So entries only need to be identified by a
+	convention that is internally consistent within the application, and a relaxed attitude to cache
+	consistency is adopted as any updates are discarded on error.
+
+ Whilst the public interface of LPC is aligned to that of APC to minimise unnecessary code changes in
+ lpc_main.c, these architectural differences essentially mean that the caching implementation in LPC
+ is a complete rewrite. It uses a CacheDB file database with a simple HashTable index maintained
+ internally in the cache.  
+
+ The cache is designed to minimise physical I/O (hence the use of CacheDB), as this is the main
+ performance impactor on shared hosting configurations. Entries are keyed by the path used by the
+ application in the compile request as-is. Whilst, there are pathelogical cases where this might not
+ be unique, for example if the application programmatically updates the include_path to one of a set
+ of alternatives on a per-request basis (e.g. altering a language directory), so the option of using
+ canonical filenames (say by the standard php_resolve_path() function) might be considered in a
+ future version.  In the meantime, the application administrator has the option of using the INI
+ option lpc.filter to exclude such files from the cache.
+
+ The cache is considered invalid if any of the following occur:
+
+ *	The PHP version number has changed (as this might invalidate stored opcodes)
+ *  The filesize or mtime of the request script has changed
+ *  The cookie/query parameter associated with INI directives lpc.clear_cookie or
+	lpc.clear_parameter is set
+ *  Any file fails stat validation based on filesize or mtime.  
+
+ In this case the cacheDB file is closed and deleted, then caching is turned off for the remainder of
+ the request with compilation failing back to the default compiler, so that the next request can
+ rebuild a clean cache.
+
+ Note that the inode and idev CANNOT be used to establish the identity of a file.  This is because on
+ some shared hosting stacks, the requests are load balanced across a farm of web servers, with the
+ user files (including in this case the cache and PHP scripts) being loaded from NFS-mounted shared
+ NAS infrastructure.  In such configurations the (idev, inode) can vary from server to server causing
+ false cache invalid events if these were used.
+
+ Also note that LPC uses a percentage (0..100) for lpc.stat rather than a simple boolean. So if
+ lpc.stat = "2" then a random 2% of loads are stat-checked. This provides a low I/O impact safety net
+ to detect (at least eventually) any code base changes and trigger the cache rebuild even if the 
+ application administrator doesn't force an explicit refresh by deleting the cache file or executing
+ a request with one of the clear cookie/parameter options set.
+*/
+
+/* }}}*/
 
 /* {{{ struct definitions: for the lpc_cache_key_t and lpc_cache_entry_t types */
 
 typedef struct _lpc_cache_t lpc_cache_t; /* opaque cache type */
 
-/* 
- * A note on the strategy for file identification used in LPC.  Unlike in APC where cached entries
- * are shared across scripts and even UIDs / applications, and therefore the system must allow
- * some relatively stringent checks on cached opcode integrity, in LPC, the cache is by default
- * specific to the request script and therefore to the UID of that script is running under a CGI/
- * FastCGI SAPI.  The path is also specfic to the  request script, so again a more relaxed
- * treatment of relative and include_path-based filenames also applies.  In this version the
- * standard php_resolve_path() function is used to convert the filename to canonical form, which
- * does require VFAT caching of the script directories, so I may look at this again.
- */
+typedef enum {
+    LPC_CACHE_MISS      = 0x0,  /* A key which doesn't map onto an LPC cache entry, */
+    LPC_CACHE_LOOKUP    = 0x1,  /* A key which maps onto an LPC cache entry */
+	LPC_CACHE_MISMATCH  = 0x2   /* A key which maps onto an LPC cache entry, but the file details mismatch */
+} lpc_cache_type_t;
+
 typedef struct _lpc_cache_key_t {
-    char         *filename;
-    int           filename_length;
-    time_t        mtime;                 /* the mtime of this cached entry */
-	size_t        filesize;
-	ino_t         inode;
-	dev_t         dev_id;
-	int           type;
-    php_stream   *fp;
+    char            *filename;
+    int              filename_length;
+    time_t           mtime;                 /* the mtime of this cached entry */
+	size_t           filesize;
+	lpc_cache_type_t type;
+    php_stream      *fp;
 } lpc_cache_key_t;
-
-#define LPC_REQUEST_SCRIPT 1
-#define LPC_NOSTAT         2
-#define LPC_FSTAT          3
-
-typedef struct _lpc_cache_entry_t {
-    char *filename;             /* absolute path to source file */
-    zend_op_array* op_array;    /* op_array allocated in shared memory */
-    lpc_function_t* functions;  /* array of lpc_function_t's */
-    lpc_class_t* classes;       /* array of lpc_class_t's */
-    long halt_offset;           /* value of __COMPILER_HALT_OFFSET__ for the file */
-    unsigned char type;
-    size_t mem_size;
-    lpc_pool *pool;
-} lpc_cache_entry_t;
 /* }}} */
+
+/* {{{ Public functions */
 
 /*
  * lpc_cache_create creates the local memory compiler cache wrapper for the file-based
@@ -124,26 +141,16 @@ extern void lpc_cache_clear(TSRMLS_D);
  * filename and an optional list of auxillary paths to search. include_path is searched if
  * the filename cannot be found relative to the current working directory.
  */
-extern lpc_cache_key_t* lpc_cache_make_file_key(char* filename TSRMLS_DC);
+extern lpc_cache_key_t* lpc_cache_make_key(zend_file_handle* h TSRMLS_DC);
+extern void lpc_cache_free_key(lpc_cache_key_t* key TSRMLS_DC);
 
 /*
  * lpc_cache_retrieve loads the entry for a filename key and returns a pointer to the 
- * entry record within a serial pool containing the retrieved entry if it exists and NULL 
- * otherwise. It is the responsibiliy of the caller to call the pool DTOR when done with it.
- * Note that executing this DTOR replaces the equivalent APC cache release function.
+ * serial pool containing the retrieved entry if it exists and NULL otherwise. It is the
+ * responsibiliy of the caller to call the pool DTOR when done with it.  Note that
+ * executing this DTOR replaces the equivalent APC cache release function.
  */
-extern lpc_cache_entry_t* lpc_cache_retrieve(lpc_cache_key_t *key TSRMLS_DC);
-
-/*
- * lpc_cache_make_entry creates an lpc_cache_entry_t object for given a filename and the 
- * compilation results returned by the PHP compiler.
- */
-extern lpc_cache_entry_t* lpc_cache_make_entry(const char* filename,
-                                                    zend_op_array* op_array,
-                                                    lpc_function_t* functions,
-                                                    lpc_class_t* classes,
-                                                    lpc_context_t* ctxt
-                                                    TSRMLS_DC);
+extern lpc_pool* lpc_cache_retrieve(lpc_cache_key_t *key TSRMLS_DC);
 
 /*
  * lpc_cache_insert adds an entry to the cache, using a filename as a key. Unlike APC, the
@@ -155,21 +162,15 @@ extern lpc_cache_entry_t* lpc_cache_make_entry(const char* filename,
  * HOWEVER, note the path is revalidated during the find operation and if the path has changed
  * then the cache is considered to be invalidated.   
  */
-extern int lpc_cache_insert(lpc_cache_key_t *key,
-                            lpc_cache_entry_t* value, 
-							lpc_context_t* ctxt TSRMLS_DC);
-
-/* Not sure why this is in lpc_cache.c as the implementation is in lpc_main.c */
-zend_bool lpc_compile_cache_entry(lpc_cache_key_t *key, 
-                                  zend_file_handle* h, 
-                                  int type, zend_op_array** op_array_pp, 
-                                  lpc_cache_entry_t** cache_entry_pp TSRMLS_DC);
+extern void lpc_cache_insert(lpc_cache_key_t *key,
+							lpc_pool* pool);
 
 /*
  * Give information on the cache content
  */
 extern zval* lpc_cache_info(zend_bool limited TSRMLS_DC);
 
+/* }}} */
 #endif
 
 /*

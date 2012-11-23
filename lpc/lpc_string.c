@@ -22,10 +22,7 @@
    leaving this note intact in the source code.
 
    All other licensing and usage conditions are those of the PHP Group.
-
- */
-
-/* $Id: $ */
+*/
 
 #include "lpc.h"
 #include "lpc_php.h"
@@ -63,7 +60,7 @@ static void lpc_dummy_interned_strings_restore_for_php(TSRMLS_D)
 }
 
 char *lpc_new_interned_string(char *arKey, int nKeyLength TSRMLS_DC)
-{
+{ENTER(lpc_new_interned_string)
     ulong h;
     uint nIndex;
     Bucket *p;
@@ -216,7 +213,7 @@ void lpc_interned_strings_init(TSRMLS_D)
 }
 
 void lpc_interned_strings_shutdown(TSRMLS_D)
-{	
+{ENTER(lpc_interned_strings_shutdown)	
     zend_hash_clean(CG(function_table));
     zend_hash_clean(CG(class_table));
     zend_hash_clean(EG(zend_constants));

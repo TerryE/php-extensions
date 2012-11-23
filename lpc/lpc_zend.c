@@ -22,12 +22,10 @@
    leaving this note intact in the source code.
 
    All other licensing and usage conditions are those of the PHP Group.
-
- */
-
-/* $Id: lpc_zend.c 307048 2011-01-03 23:53:17Z kalle $ */
+*/
 
 #include "lpc_zend.h"
+#include "lpc_compile.h"
 
 /* true global */
 int lpc_reserved_offset;

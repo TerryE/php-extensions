@@ -23,9 +23,7 @@
 
    All other licensing and usage conditions are those of the PHP Group.
 
- */
-
-/* $Id: $ */
+*/
 
 #ifndef LPC_POOL_H
 #define LPC_POOL_H
@@ -33,74 +31,72 @@
 #include "zend.h"
 
 /* A pool is a group of dynamically allocated memory objects with a common set of properties:
+ *
  *   *  They share the same memory alloc and free methods
  *   *  They are individually be created (and destroyed) by the same pool methods
  *   *  The pool DTOR will also deallocate any remaining elements in the pool.
  *
- * In fact in the APC/LPC implementation, all element destruction is carried out (or should    
- * be) by the pool DTOR, and hence the element DTOR is private to the pool.
+ * In the APC/LPC implementation, all element destruction is carried out (or should be) by the pool
+ * DTOR, and so the element DTOR is private to the pool.
  *
- * In APC the term "REALPOOL" was used for pools allocated in shared memory.  The concept of 
- * an "UNPOOL" also existed and was considered to be a dummy pool in local memory also
- * a variant of unpool used a serial "BD" allocator.  No DTOR was implemented for unpools 
- * resulting in memory leakage of the unpool contents on destruction.  For REAL and DB pools, a 
- * HashTable was used to track allocation items so that destruction can automatically clean up.
- * 
- * For the LPC implementation I have adopted three pool types */
+ * In APC the term "REALPOOL" and "UNPOOL" were used for pools allocated in shared memory and PHP 
+ * emalloc storage (as the latter was freed by the Execution engine.  A variant of this latter with  
+ * a serial "BD" allocator was use for the binary load/dump routines.  The LPC implementation uses
+ * two pool types, both of which are maintained in thread-local memory: */
 typedef enum {
-    LPC_LOCALPOOL   = 0x0,  /* A pool in the process private address space */
-    LPC_SHAREDPOOL  = 0x1,  /* A pool that was in SMA in APC (but implemented as LOCAL in LPC) */
-	LPC_SERIALPOOL  = 0x2   /* A variant of LOCAL in which all storage is in a contiguous block */
+    LPC_EXECPOOL      = 0x0,  /* The Zend execution environment handles memory recovery */
+	LPC_SERIALPOOL    = 0x1,  /* A pool in which all storage is in contiguous blocks */
+	LPC_RO_SERIALPOOL = 0x2   /* A pool in which all storage is in contiguous blocks */
 } lpc_pool_type_t;
 /*
- * In LPC there is no functional difference between LOCAL and SHARED pools; this distinction 
- * is only maintained to facilitate regression of this implementation back into APC.
- *
  * The public interface to the pool is encapsulated in the following macros.  Note that all 
- * pool elements must be created through one of the constuctors, and that no public element
- * destructor exists.  Also note that the allocator macros with "trsmls" parameters are framed this
- * way to maintain source compatibility with the existing code use and avoid unnecessary code changes.
+ * pool elements must be created through one of the constructors, and that no public element
+ * destructor exists.  To keep these simple, all the macros assume that the variable pool
+ * exists and is in scope and points to the current pool.  Also since the pool is only 
+ * used specific to a given thread, the TSRMLS pointer is moved into the pool to simplify
+ * argument overheads.
  */
-#define lpc_pool_create(type) ((lpc_pool *) _lpc_pool_create(type TSRMLS_CC ZEND_FILE_LINE_CC))
-#define lpc_pool_destroy(pool)  _lpc_pool_destroy(pool TSRMLS_CC ZEND_FILE_LINE_CC)
-#define lpc_pool_set_size(pool, size) _lpc_pool_set_size(pool, size TSRMLS_CC ZEND_FILE_LINE_CC)
+#define pool_create(type) ((lpc_pool *) _lpc_pool_create(type TSRMLS_CC ZEND_FILE_LINE_CC))
+#define pool_destroy()  _lpc_pool_destroy(pool ZEND_FILE_LINE_CC)
+#define pool_unload(bp,size) _lpc_pool_unload(pool, bp, size ZEND_FILE_LINE_CC)
+#define pool_load(buf,buflen) _lpc_pool_load(buf, buflen TSRMLS_CC ZEND_FILE_LINE_CC);
+/*
+ * The allocator macros have a different layout since in the case of Serial kind, the pool 
+ * must identify any intra-pool pointers, so that it can relocate them on reload as the 
+ * base address of the reloaded pool will be different to that of the saved pool. There are
+ * also convenience forms for allocation of zvals, HashTables and string storage to dovetail
+ * into the zend fast allocators for these.
+ */ 
+#define pool_alloc(dest, size)  _lpc_pool_alloc((void **)&(dest), pool, size ZEND_FILE_LINE_CC)
+#define pool_alloc_zval(dest) _lpc_pool_alloc_zval((void **)&(dest), pool ZEND_FILE_LINE_CC)
+#define pool_alloc_ht(dest) _lpc_pool_alloc_ht((void **)&(dest), pool ZEND_FILE_LINE_CC)
+#define pool_alloc_unaligned(dest,size) _lpc_pool_alloc_unaligned((void **)&(dest), size, pool ZEND_FILE_LINE_CC)
 
-#define lpc_pool_alloc(pool, size)  ((void *) _lpc_pool_alloc(pool, size TSRMLS_CC ZEND_FILE_LINE_CC))
-#define lpc_pstrdup(s,ptrsmls)  ((void *) _lpc_pool_strdup((s),ptrsmls ZEND_FILE_LINE_CC))
-#define lpc_pmemcpy(p,n,ptrsmls) ((void *) _lpc_pool_memcpy(p,n,ptrsmls ZEND_FILE_LINE_CC))
+#define pool_strdup(dst,src)  _lpc_pool_strdup((void **)&(dst), (src), pool ZEND_FILE_LINE_CC)
+#define pool_memcpy(dst,src,n) _lpc_pool_memcpy((void **)&(dst),src,n,pool ZEND_FILE_LINE_CC)
+#define is_exec_pool() _lpc_pool_is_exec(pool)
+#define pool_get_entry_rec() _lpc_pool_get_entry_rec(pool)
 
-#define lpc_pool_tag_ptr(p,pool) _lpc_pool_tag_ptr(&(p), pool TSRMLS_CC ZEND_FILE_LINE_CC);
-#define lpc_pool_unload(p, bp, entry) _lpc_pool_unload(p, bp, entry TSRMLS_CC ZEND_FILE_LINE_CC);
-#define lpc_pool_load(buf,buflen) _lpc_pool_load(buf, buflen TSRMLS_CC ZEND_FILE_LINE_CC);
+#define pool_tag_ptr(p) _lpc_pool_tag_ptr((void **)&(p), pool ZEND_FILE_LINE_CC);
 
 /* The pool is implemented with the following type and extern calls */
 
-typedef struct _lpc_pool {
-	lpc_pool_type_t type;
-#ifdef APC_DEBUG
-	char           *orig_filename;
-	uint            orig_lineno;
-#endif
-	uint			count;              /* count of pool elements*/
-    size_t          size;               /* sum of individual element sizes */
-	void           *element_head;       /* only used for LOCAL & SHARED implementation */
-    void           *element_tail;       /* only used for LOCAL & SHARED implementation */
-	void           *bd_storage;         /* only used for SERIAL implementation */
-	off_t           bd_next_free;       /* only used for SERIAL implementation */
-	size_t          bd_allocated;       /* only used for SERIAL implementation */
-	HashTable      *bd_fixups;          /* only used for SERIAL implementation */
-	unsigned char  *bd_reloc;			/* only used for SERIAL implementation */
-		
-} lpc_pool;
+typedef struct _lpc_pool_brick lpc_pool_brick;
+typedef struct _lpc_pool lpc_pool;
 
 extern lpc_pool* _lpc_pool_create(lpc_pool_type_t type TSRMLS_DC ZEND_FILE_LINE_DC);
-extern void _lpc_pool_destroy(lpc_pool* pool TSRMLS_DC ZEND_FILE_LINE_DC);
-extern void* _lpc_pool_alloc(lpc_pool* pool, size_t size TSRMLS_DC ZEND_FILE_LINE_DC);
-extern void* _lpc_pool_strdup(const char* s, lpc_pool* pool TSRMLS_DC ZEND_FILE_LINE_DC);
-extern void* _lpc_pool_memcpy(const void* p, size_t n, lpc_pool* pool TSRMLS_DC ZEND_FILE_LINE_DC);
-extern void *_lpc_pool_tag_ptr(void *ptr, lpc_pool* pool TSRMLS_DC ZEND_FILE_LINE_DC);
-extern int _lpc_pool_unload(lpc_pool* pool, void **pool_buffer, void *entry TSRMLS_DC ZEND_FILE_LINE_DC);
-extern void *_lpc_pool_load(void* pool_buffer, size_t pool_buffer_length TSRMLS_DC ZEND_FILE_LINE_DC);
+extern lpc_pool* _lpc_pool_load(void* pool_buf, size_t pool_buf_len TSRMLS_DC ZEND_FILE_LINE_DC);
+/* All the remaining pool functions pass the pool as an arg and therefore don't need the TSRMLS_DC */
+extern void _lpc_pool_destroy(lpc_pool* pool ZEND_FILE_LINE_DC);
+extern void _lpc_pool_alloc(void **dest, lpc_pool* pool, size_t size ZEND_FILE_LINE_DC);
+extern void _lpc_pool_alloc_zval(void **dest, lpc_pool* pool ZEND_FILE_LINE_DC);
+extern void _lpc_pool_alloc_ht(void **dest, lpc_pool* pool ZEND_FILE_LINE_DC);
+extern void _lpc_pool_strdup(void **dest, const char* s, lpc_pool* pool ZEND_FILE_LINE_DC);
+extern void _lpc_pool_memcpy(void **dest, const void* p, size_t n, lpc_pool* pool ZEND_FILE_LINE_DC);
+extern void _lpc_pool_tag_ptr(void **ptr, lpc_pool* pool ZEND_FILE_LINE_DC);
+extern int _lpc_pool_unload(lpc_pool* pool, void** pool_buffer, size_t* pool_size ZEND_FILE_LINE_DC);
 
+extern int _lpc_pool_is_exec(lpc_pool* pool);
+extern void* _lpc_pool_get_entry_rec(lpc_pool* pool);
 
 #endif /* LPC_POOL_H */

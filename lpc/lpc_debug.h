@@ -26,7 +26,12 @@
    All other licensing and usage conditions are those of the PHP Group.
 */
 
+#ifndef LPC_DEBUG_H
+#define LPC_DEBUG_H
+
 void dump(zend_op_array *array TSRMLS_DC);
 
 int lpc_debug_enter(char *s);
+
+#endif /* LPC_DEBUG_H */
 

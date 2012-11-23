@@ -1,141 +1,192 @@
 LPC Quick-Start Braindump
 
-This is a rapidly written braindump of how LPC currently works in the
-form of a quick-start guide to start hacking on LPC.
+This is a rapidly written braindump of how LPC (a Lite Progam Cache) currently works in the form of
+a quick-start guide to start hacking on LPC. It assumes that you are already familiar with the
+corresponding guide to APC, so doesn't include the intro sections on how to get, install, buld and
+debug it.
 
-1. Install and use LPC a bit so you know what it does from the end-user's
-   perspective.  
-   user-space functions are all explained here: 
 
-2. Grab the current LPC code from CVS:
-    
-    cvs -d:pserver:cvsread@cvs.php.net:/repository login
-    Password: phpfi
-    cvs -d:pserver:cvsread@cvs.php.net:/repository co pecl/lpc
+1. How LPC is different to APC.
 
-   lpc/php_lpc.c has most of the code for the user-visible stuff.  It is
-   also a regular PHP extension in the sense that there are MINIT, MINFO, 
-   MSHUTDOWN, RSHUTDOWN, etc. functions.  
+PHP installations are broadly divided into two categories. Accelerators such as APC effectively
+address the first of these: application-optimised systems which host a single application or a set
+of mutually trusted applications on a dedicated server or VM. LPC is designed to address the second
+category: shared hosting environments where a hosting provider provides the infrastructure and a
+managed service the hosts a (large number of) number of independent accounts.
 
-3. Build it.
+In a shared hosting environment, UID based access control is used to enable account separation.
+Individual web-requests which require PHP script execution are executed in an account-specific UID
+process: either on a per-request PHP activation (using suEXEC or suPHP), or sometimes using
+per-account persistent PHP threads (using FastGCI). LPC aims to generate a comrparable performance
+acceleration to APC but at his very different scaling sweet-spot and infrastructure template.
 
-   cd pecl/lpc
-   phpize
-   ./configure --enable-lpc --enable-mmap
-   make
-   cp modules/lpc.so /usr/local/lib/php
-   apachectl restart
+So LPC discards a lot of the functional richness of APC to focus on delivering the core functional
+requirement and that is provide an opcode cache which obviates the need to enumerate and load the
+many script files which implement an application and also the compilation process. It discards: 
 
-4. Debugging Hints
+*   All user variable/data object caching
 
-     apachectl stop
-     gdb /usr/bin/httpd
-     break ??
-     run -X
+*	Persistent shared memory, with the necessary SMA-base memory management, lock management, SMA 
+    update integrity (with a one-per-request script file database used instead)  
 
-   Grab the .gdbinit from the PHP source tree and have a look at the macros.
+*   The ability to save and load caches from user files
 
-5. Look through lpc/lpc_sma.c
-   It is a pretty standard memory allocator.
+*   The bulk of the API including the APC iterator class
 
-   lpc_sma_malloc, lpc_sma_realloc, lpc_sma_strdup and lpc_sma_free behave to the
-   caller just like malloc, realloc, strdup and free
+*   Various tuning and reporting INI parameters
 
-   On server startup the MINIT hook in php_lpc.c calls lpc_module_init() in
-   lpc_main.c which in turn calls lpc_sma_init().  lpc_sma_init calls into
-   lpc_mmap.c to mmap the specified sized segment (I tend to just use a single
-   segment).  lpc_mmap.c should be self-explanatory.  It mmaps a temp file and
-   then unlinks that file right after the mmap to provide automatic shared memory
-   cleanup in case the process dies.
+*   Lazy function and class loading.
 
-   Once the region has been initialized we stick a header_t at the beginning
-   of the region.  It contains the total size in header->segsize and the number 
-   of bytes available in header->avail.  
+These incidentally represent roughly two-thirds of the APC source code base and nearly all of the
+material covered in the APC TECHNOTES, so the LPC code base is a lot smaller. 
 
-   After the header comes a bit of a hack.  A zero-sized block is inserted just
-   to make things easier later on.  And then a huge block that is basically
-   the size of the entire segment minus the two (for the 0-sized block, and this one)
-   block headers.
+2.  More on LPC differences from APC
 
-   The code for this is:
+When I started using a triage strategy with the APC code base, sentencing it into three categories: 
 
-     header = (header_t*) shmaddr;
-     header->segsize = sma_segsize;
-     header->avail = sma_segsize - sizeof(header_t) - sizeof(block_t) - alignword(sizeof(int));
-     memset(&header->lock,0,sizeof(header->lock));
-     sma_lock = &header->lock;
-     block = BLOCKAT(sizeof(header_t));
-     block->size = 0;
-     block->next = sizeof(header_t) + sizeof(block_t);
-     block = BLOCKAT(block->next);
-     block->size = header->avail;
-     block->next = 0;
+*   Stuff which is no longer relevant to LPC such as the SMA management and could be removed;
 
-   So the shared memory looks like this:
+*   Stuff which needed rewriting cache and pool implementations;
 
-     +--------+-------+---------------------------------+
-     | header | block |             block               |
-     +--------+-------+---------------------------------+
+*   And finally code modules where I adopted a minimum change strategy (essentially apc_main.c and
+    apc_cache.c. However as I started to develop / debug the core of these I realised that because
+    LPC removed so much functionality and change much of the remainder, that these modules were also
+    becoming a complete rewrite. So I abandoned the minimum change policy; instead adopting my own
+    preference for minimum coding subject to clarity and functionality constraints. I discuss
+    examples in the remainder of this section. 
 
-   sma_shmaddrs[0] gives you the address of header
+APC has a difficult to understand policy on error handling as in general hard errors result in
+functions aborting with an error status or NULL pointer being returning up the call stack, only for
+these to be sometimes ignored at the higher call levels. Because LPC adopts an update-on-close
+strategy for its file-based opcode cache, there are no cache integrity issues associated application
+failure and it can follow a simple stragey: lpc errors are treated as fatal, except when the upper
+tiers of application logic have functional code paths and rules to handle such failure returns.
+ 
+The APC concept of a context is also dropped as the destination pool defines the context in LPC:
+copying code out goes from an exec pool to a serial one, and copying code in v.v. Also since the
+pool is also thread-specific, it also contains the TSRMLS id (in the ZTS variant) allowing the
+TSRMLS_DC (et al) macros to be dropped from those functions which include a pool argument, whilst
+still retaining thread-safety. lpc.h defines equivalent macros to allow calls to wider the PHP /
+Zend API to recover these. 
 
-   The blocks are just a simple offset-based linked list (so no pointers):
+The APC concept of lazy function and class loading is also dropped. This was introduced in 2009 to
+support mega-applications such as facebook (see http://www.serverphorums.com/read.php?7,11145). It
+really isn't the design point for LPC and it produces marginal if any performance gains for medium
+applications such as Wordpress or mediawiki which use sensible autoload strategies anyway.
 
-     typedef struct block_t block_t;
-     struct block_t {
-         size_t size;       /* size of this block */
-         size_t next;       /* offset in segment of next free block */
-         size_t canary;     /* canary to check for memory overwrites */
-#ifdef __LPC_SMA_DEBUG__
-         int id;         /* identifier for the memory block */
-#endif
-     };
 
-   The BLOCKAT macro turns an offset into an actual address for you:
+3.  Opcode caching at 20,000 ft
 
-     #define BLOCKAT(offset) ((block_t*)((char *)shmaddr + offset))
+The PHP Zend engine is a compile and go system which compiles down to an intermediate form that is
+build largely on the PHP storage mechanisms (zvals, hashtables, etc) and its emalloc memory
+management subsistem to a format which is then interpreted by the Zend RTS. On request completion,
+the RTS runs a distructor to enumerate and destroy these intermediate forms for each function,
+class, etc. 
 
-   where shmaddr = sma_shaddrs[0]
+LPC hooks into this compile subsystem and intercepts the compile request. If no copy of the module
+exists in its cache then is calls the underlying PHP compiler to do its business, but then does a
+deep copy of the compiled out to a serial format before passing control back to the execution system
+to run the code. 
 
-   And the OFFSET macro goes the other way:
+If a copy of the module does exist in its cache then it does another deep copy, this time from the
+serial format back into the standard emalloc-based format, in effect recreating the compiler output
+but without invoking the compiler, and again passing control back to the execution system to run the
+code. That is LPC in a nutshell. 
 
-     #define OFFSET(block) ((int)(((char*)block) - (char*)shmaddr))
+The deep copy function is based heavily on the corresponding code from APC.  The cache and memory 
+pool code are total rewrites, because the requirements here are just too different.
 
-   Allocating a block with a call to lpc_sma_allocate() walks through the
-   linked list of blocks until it finds one that is >= to the requested size.
-   The first call to lpc_sma_allocate() will hit the second block.  We then
-   chop up that block so it looks like this:
+All allocation and management of memory resources in done through an abstraction interface known as
+a memory pool, and memory pools come in two flavours: 
 
-     +--------+-------+-------+-------------------------+
-     | header | block | block |         block           |
-     +--------+-------+-------+-------------------------+
+*   An Exec pool is stored in the internal form expected by the Zend RTS.
 
-   Then we unlink that block from the linked list so it won't show up
-   as an available block on the next allocate.  So we actually have:
+*   A Serial pool is stored as a contiguous set of allocation units, that can be copied out to a
+    record in the cache file, and then on subsequent request be reread (into probably a different
+	base address).  Hence serial pool storage must be Position Independent -- that is all internal
+    pointers must be correctly offset to match new base address of the storage.   
 
-     +--------+-------+       +-------------------------+
-     | header | block |------>|         block           |
-     +--------+-------+       +-------------------------+
+	Once relocated, the copy routine can successfully walk the internal storage structures with the
+	serial pool in read-only mode -- which is all that is needed to copy it into a target exec pool.
+	However, if any of the code paths attempt to use the emalloc subsystem to reclaim any of the
+	serial pool elements, then the outcome is a messy death. So a deep copy is essential to preserve
+	the integrity of the RTS. Once the deep copy is completed then the serial pool can be deleted
+	en-masse with a single efree.
 
-   And header->avail along with block->size of the remaining large
-   block are updated accordingly.  The arrow there representing the
-   link which now points to a block with an offset further along in
-   the segment.
+OK, there are a few wrinkles, such as how to implement the PIC identification and implementing
+the cache itself so the remaining sections discuss these in more detail.
 
-   When the block is freed using lpc_sma_deallocate() the steps are
-   basically just reversed.  The block is put back and then the deallocate
-   code looks at the block before and after to see if the block immediately
-   before and after are free and if so the blocks are combined.  So you never
-   have 2 free blocks next to each other, apart from at the front with that
-   0-sized dummy block.  This mostly prevents fragmentation.  I have been
-   toying with the idea of always allocating block at 2^n boundaries to make
-   it more likely that they will be re-used to cut down on fragmentation further.
-   That's what the POWER_OF_TWO_BLOCKSIZE you see in lpc_sma.c is all about.
-  
-   Of course, anytime we fiddle with our shared memory segment we lock using
-   the locking macros, LOCK() and UNLOCK().
 
-   That should mostly take care of the low-level shared memory handling.
+4.  Pools and Caches
+
+The LPC pool and cache implementations are a complete rewrite compared to APC. This is because the
+requirements driving their design are very different.
+
+The cache is a fairly simple wrapper around a CacheDB cache file, with the file index loaded into a
+hashtable as part of request initiation and contains one record per compiled module in initial
+creation order. As most scripts follow the same programmatic path (as far as module loading is
+concerned) -- or at least one of a relatively small number of variants -- in practice the cache file
+is then read essentially sequentailly during the execution process to load all remaining modules.
+This is the only file accessed to load all scripts under default INI settings. 
+
+The pool supports the exec and serial forms as described above.  Unlike APC, the implementation of
+the allocators, etc., is entirely private to the pool module, so the upper levels cannot use
+'backdoor' access to these and MUST call the pool functions.  Also as with the emalloc system upon
+which it is based, any allocation failures / memory exhaustion throw fatal errors, so the upper
+levels do not need to check for or handle potential zero pointer returns, which simplifies error 
+coding. 
+
+Special alloc variants pool_alloc_zval and pool_alloc_ht exist which use the fast allocator macros 
+for zval and HashTable structures in the exec pool variants.
+
+
+5.  Ensuring that serial pools can be relocated 
+
+A serial pool is initially allocated in a set of bricks (typically only one). The deep copy process
+tags any putative internal pointers, and during creation these are maintained in a HashTable. As
+part of the unload process this bricks are logically concatenated and this HashTable is converted
+into a relocation vector (typically one byte per pointer) which is appended to the serial pool,
+before being gzip compressed and written to the DB. (This compression is only done once during
+initial compilation.
+
+On reload, the gzip expansion overhead is relatively cheap compared to the compilation load, but the
+approximate 4x reduction in the DB filesize DOES benefit subsequent retrievals. The relocation
+vector is also enumerated to fix all internal pointer addresses.
+
+To simplify this pointer tagging, all pool allocation routines take a (void**) destination as an
+input parameter and return the (void*) to the destination address (Each is are wrapped in a macro to
+allow the first argument to be expressed in any valid lvalue format) . This enables most internal
+pointer tagging required for serial pool form to be handled internally within the pool logic.
+However there also is an explicit tag function to enable upper copy code to use the pattern: 
+
+	pool_alloc(tmp, some_size);
+	...
+	dest = tmp;
+	pool_tag_ptr(&dest);
+
+These allocation macros also use source line forwarding to the underlying _emalloc allocators, so
+that the memory leakage reports in debugging mode give meaningful source addresses rather than all
+pointing to some line in the pool allocator routine.
+
+6.  Deep copying opcode structures
+
+In APC the cached pools are in shared memory and accessible as a read-only resource by the execution
+environment.  To reduce memory footprint, separate "for_execution" variants of the copy code 
+duplicate only the runtime-modifiable elements into a local "unpool", and some care is taken with
+reference counting to ensure that the Zend engine does not try to reclaim shared pool content.
+
+In LPC, all pool structures (including serial pools reloaded from the cache file) are in local
+memory. A part-clone strategy is memory inefficient, involves additional complexity and provides
+minimal runtime savings. LPC therefore adopts a simpler strategy of LPC loading each cached compile
+by reading in the serial pool form from file, then copying it in its entirety to an exec pool for
+execution before immediately destroying the serial pool. Because the serial pool format is destroyed
+before execution (unlike APC), and all copies must be deep; so there isn't any need for separate
+"for_execution" variants of these copy routines.   
+
+
+
+
+----------------------------
 
 6. Next up is lpc_main.c and lpc_cache.c which implement the meat of the
    cache logic.

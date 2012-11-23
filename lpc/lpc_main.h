@@ -22,20 +22,16 @@
    This software was contributed to PHP by Community Connect Inc. in 2002
    and revised in 2005 by Yahoo! Inc. to add support for PHP 5.1.
    Future revisions and derivatives of this source code must acknowledge
-   Community Connect Inc. as the original contributor of this module by
+   Community Conn.ect Inc. as the original contributor of this module by
    leaving this note intact in the source code.
 
    All other licensing and usage conditions are those of the PHP Group.
-
- */
-
-/* $Id: lpc_main.h 307215 2011-01-07 09:54:00Z gopalv $ */
+*/
 
 #ifndef LPC_MAIN_H
 #define LPC_MAIN_H
 
 #include "lpc_pool.h"
-#include "lpc_serializer.h"
 
 /*
  * This module provides the primary interface between PHP and LPC.
@@ -46,35 +42,11 @@ extern int lpc_module_shutdown(TSRMLS_D);
 extern int lpc_request_init(TSRMLS_D);
 extern int lpc_request_shutdown(TSRMLS_D);
 
-typedef enum _lpc_copy_type {
-    LPC_NO_COPY = 0,
-    LPC_COPY_IN_OPCODE,
-    LPC_COPY_OUT_OPCODE,
-    LPC_COPY_IN_USER,
-    LPC_COPY_OUT_USER
-} lpc_copy_type;
-
-typedef struct _lpc_context_t
-{
-    lpc_pool *pool;
-    lpc_copy_type copy;
-    unsigned int force_update:1;
-} lpc_context_t;
-
-/* {{{ struct lpc_serializer_t */
-typedef struct lpc_serializer_t lpc_serializer_t;
-struct lpc_serializer_t {
-    const char *name;
-    lpc_serialize_t serialize;
-    lpc_unserialize_t unserialize;
-    void *config;
-};
-/* }}} */
-
-lpc_serializer_t* lpc_get_serializers(TSRMLS_D);
+/* pointer to the original Zend engine compile_file function */
+typedef zend_op_array* (zend_compile_t)(zend_file_handle*, int TSRMLS_DC);
+extern zend_compile_t* lpc_set_compile_hook(zend_compile_t *ptr);
 
 #endif
-
 /*
  * Local variables:
  * tab-width: 4

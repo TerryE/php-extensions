@@ -22,22 +22,17 @@
    leaving this note intact in the source code.
 
    All other licensing and usage conditions are those of the PHP Group.
+*/
 
- */
-
-/* $Id: $ */
-
-#ifndef LPC_STRING
-#define LPC_STRING
-
-#include "lpc.h"
+#ifndef LPC_STRING_H
+#define LPC_STRING_H
 
 void lpc_interned_strings_init(TSRMLS_D);
 void lpc_interned_strings_shutdown(TSRMLS_D);
 
 char *lpc_new_interned_string(char *arKey, int nKeyLength TSRMLS_DC);
 
-#endif
+#endif /* LPC_STRING_H */
 
 /*
  * Local variables:
