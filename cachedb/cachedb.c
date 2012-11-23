@@ -304,8 +304,9 @@ PHPAPI int _cachedb_close(cachedb_t* db, char force_mode TSRMLS_DC)
 		array_init_size(list, hash_count(db->index_list));
 
 		hash_copy(Z_ARRVAL_P(list), db->index_list, tmp);
-		CHECKA(cachedb_write_var(new, 0, list, &zlen, &len TSRMLS_CC)==SUCCESS);
+			CHECKA(cachedb_write_var(new, 0, list, &zlen, &len TSRMLS_CC)==SUCCESS);
 		zval_ptr_dtor(&list);
+		/* Now append base if it exists and temp file contents */
 
 		/* Overwrite header with correct contents */
 		memcpy(hdr.fingerprint, CACHEDB_HEADER_FINGERPRINT, sizeof(CACHEDB_HEADER_FINGERPRINT)-1);
@@ -315,7 +316,6 @@ PHPAPI int _cachedb_close(cachedb_t* db, char force_mode TSRMLS_DC)
 		CHECKA(php_stream_write(new, (const char *) &hdr, sizeof(hdr))==sizeof(hdr));
 		php_stream_seek(new, 0, SEEK_END);
 
-		/* Now append base if it exists and temp file contents */
 		if(db->base_file.fp) {
 			php_stream_seek(db->base_file.fp, db->base_file.header_length, SEEK_SET);
 			php_stream_copy_to_stream_ex(db->base_file.fp, new, PHP_STREAM_COPY_ALL, &dummy);
@@ -760,9 +760,9 @@ static void cachedb_db_dtor(cachedb_t** pdb TSRMLS_DC)
 	EFREE(db->tmp_file.name);	
 	EFREE(db->tmp_file.dir);	
 	
+	zend_hash_destroy(db->index_list);
 	EFREE(db->index_list);
-	EFREE(db->index_list);
-	EFREE(db->index_hash);
+	zend_hash_destroy(db->index_hash);
 	EFREE(db->index_hash);
 	EFREE(db);
 	*pdb = NULL;
