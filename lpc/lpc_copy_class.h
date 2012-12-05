@@ -12,54 +12,44 @@
   | obtain it through the world-wide-web, please send a note to          |
   | license@php.net so we can mail you a copy immediately.               |
   +----------------------------------------------------------------------+
-  | Authors: Daniel Cowgill <dcowgill@communityconnect.com>              |
-  |          George Schlossnagle <george@omniti.com>                     |
-  |          Rasmus Lerdorf <rasmus@php.net>                             |
+  | Authors: Terry Ellison <Terry@ellisons.org.uk>                       |
   +----------------------------------------------------------------------+
 
-   This software was contributed to PHP by Community Connect Inc. in 2002
-   and revised in 2005 by Yahoo! Inc. to add support for PHP 5.1.
-   Future revisions and derivatives of this source code must acknowledge
-   Community Connect Inc. as the original contributor of this module by
-   leaving this note intact in the source code.
-
+   This software was derived from the APC extension which was initially 
+   contributed to PHP by Community Connect Inc. in 2002 and revised in 2005 
+   by Yahoo! Inc. See README for further details.
+ 
    All other licensing and usage conditions are those of the PHP Group.
 */
 
-#ifndef PHP_LPC_H
-#define PHP_LPC_H
+#ifndef LPC_COPY_CLASS_H
+#define LPC_COPY_CLASS_H
 
-#include "lpc.h"
-#include "zend.h"
-#include "zend_API.h"
+/*
+ * This module encapsulates most of the complexity involved in deep-copying
+ * the Zend compiler data structures. The routines are allocator-agnostic, so
+ * the same function can be used for copying to and from shared memory.
+ */
 #include "zend_compile.h"
-#include "zend_hash.h"
-#include "zend_extensions.h"
+#include "lpc.h"
+#include "lpc_pool.h"
 
-#if ZEND_MODULE_API_NO >= 20100409
-#define ZEND_ENGINE_2_4
-#endif
-#if ZEND_MODULE_API_NO > 20060613
-#define ZEND_ENGINE_2_3
-#endif
-#if ZEND_MODULE_API_NO > 20050922
-#define ZEND_ENGINE_2_2
-#endif
-#if ZEND_MODULE_API_NO > 20050921
-#define ZEND_ENGINE_2_1
-#endif
-#ifdef ZEND_ENGINE_2_1
-#include "zend_vm.h"
-#endif
+/* {{{ struct definition: lpc_class_t */
+typedef struct lpc_class_t {
+    char* name;                     /* the class name */
+    int name_len;                   /* length of name */
+    char* parent_name;              /* the parent class name */
+    zend_class_entry* class_entry;  /* the zend class data structure */
+} lpc_class_t;
+/* }}} */
 
-#define PHP_LPC_VERSION "3.1.7"
-
-extern zend_module_entry lpc_module_entry;
-#define lpc_module_ptr &lpc_module_entry
-
-#define phpext_lpc_ptr lpc_module_ptr
-
-#endif /* PHP_LPC_H */
+/*
+ * These are the top-level class copy functions.
+ */
+extern void      lpc_copy_class_entry(zend_class_entry* dst, zend_class_entry* src, lpc_pool* pool);
+extern void      lpc_copy_new_classes(lpc_class_t* cl_array, zend_uint count, lpc_pool* pool);
+extern zend_bool lpc_install_classes(lpc_class_t* classes, zend_uint num_classes, lpc_pool* pool);
+#endif
 
 /*
  * Local variables:

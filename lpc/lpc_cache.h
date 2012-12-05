@@ -16,14 +16,10 @@
   |          Rasmus Lerdorf <rasmus@php.net>                             |
   +----------------------------------------------------------------------+
 
-   This software was contributed to PHP by Community Connect Inc. in 2002
-   and revised in 2005 by Yahoo! Inc. to add support for PHP 5.1.
-   Future revisions and derivatives of this source code must acknowledge
-   Community Connect Inc. as the original contributor of this module by
-   leaving this note intact in the source code.
-
-   All other licensing and usage conditions are those of the PHP Group.
- */
+   This software was derived from the APC extension which was initially 
+   contributed to PHP by Community Connect Inc. in 2002 and revised in 2005 
+   by Yahoo! Inc. See README for further details.
+*/ 
 
 #ifndef LPC_CACHE_H
 #define LPC_CACHE_H
@@ -32,12 +28,10 @@
  * This module defines the shared memory file cache. Basically all of the
  * logic for storing and retrieving cache entries lives here.
  */
-#include "fopen_wrappers.h"
+#include "zend.h"
+//#include "fopen_wrappers.h"
 #include "TSRM.h"
-
 #include "lpc_pool.h"
-#include "lpc_main.h"
-#include "lpc.h"
 
 /* {{{ Overview documentation
  

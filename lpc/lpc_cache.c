@@ -18,24 +18,22 @@
   |          Gopal Vijayaraghavan <gopalv@yahoo-inc.com>                 |
   +----------------------------------------------------------------------+
 
-   This software was contributed to PHP by Community Connect Inc. in 2002
-   and revised in 2005 by Yahoo! Inc. to add support for PHP 5.1.
-   Future revisions and derivatives of this source code must acknowledge
-   Community Connect Inc. as the original contributor of this module by
-   leaving this note intact in the source code.
-
+   This software was derived from the APC extension which was initially 
+   contributed to PHP by Community Connect Inc. in 2002 and revised in 2005 
+   by Yahoo! Inc. See README for further details.
+ 
    All other licensing and usage conditions are those of the PHP Group.
 */
 
 #include <zlib.h>
 
-#include "lpc_compile.h"
-#include "lpc_cache.h"
-#include "lpc_zend.h"
-#include "lpc_pool.h"
-
 #include "SAPI.h"
 #include "ext/cachedb/cachedb.h"
+
+#include "lpc_cache.h"
+#include "lpc.h"
+//#include "lpc_zend.h"
+#include "lpc_pool.h"
 
 /* {{{ private struct definitions: lpc_cache_t and lpc_cache_context_t */
 typedef struct _lpc_cache_context_t {
@@ -45,7 +43,7 @@ typedef struct _lpc_cache_context_t {
 	char         *cachedb_fullpath;
 	char         *PHP_version;
 	time_t        request_mtime;
-	size_t        request_filesize;
+  	size_t        request_filesize;
 	int           clear_flag_set;
 } lpc_cache_context_t;
 
@@ -66,7 +64,7 @@ struct _lpc_cache_t {
 #define hash_add_next_index_zval(h,v) zend_hash_next_index_insert(h, &v, sizeof(zval *), NULL)
 #define hash_add(h,k,v) zend_hash_add(h,k,strlen(k)+1, &v, sizeof(zval *), NULL)
 #define hash_add(h,k,v) zend_hash_add(h,k,strlen(k)+1, &v, sizeof(zval *), NULL)
-#define hash_copy(to,fm,dmy) zend_hash_copy(to, fm, (copy_ctor_func_t) zval_add_ref, (void *)&dmy, sizeof(zval*))
+#define hash_cop1y(to,fm,dmy) zend_hash_copy(to, fm, (copy_ctor_func_t) zval_add_ref, (void *)&dmy, sizeof(zval*))
 #define hash_count(h) zend_hash_num_elements(h)
 #define hash_init(h,c) zend_hash_init(h, c, NULL, ZVAL_PTR_DTOR, 0)
 #define hash_reset(h) zend_hash_internal_pointer_reset(h)
@@ -96,6 +94,11 @@ zend_bool lpc_cache_create(TSRMLS_D)
 	char         *dummy;
 
 	cache->context = ctxt;
+    if( ctxt->request_fullpath == NULL) {
+        efree(ctxt);
+        efree(cache);
+        return FAILURE;
+    }
 
 	/* Open the CacheDB using the cache name and obtain the directory info */
 	CHECK(cachedb_open(&cache->db, ctxt->cachedb_fullpath, strlen(ctxt->cachedb_fullpath), "wb") == SUCCESS);
@@ -453,25 +456,26 @@ static lpc_cache_context_t *lpc_get_request_context(TSRMLS_D)
 
 	/* Determine the request dirname and basename from the request path */
 	sc->request_fullpath = SG(request_info).path_translated;
-	sc->request_dir      = estrdup(sc->request_fullpath);
-	dir_length           = zend_dirname(sc->request_dir, strlen(sc->request_fullpath));
-	sc->request_dir[dir_length] = '\0';
-	php_basename(sc->request_fullpath, strlen(sc->request_fullpath), NULL, 0, 
-				 &sc->request_basename, &basename_length TSRMLS_CC);
+    if (sc->request_fullpath) {
+	    sc->request_dir      = estrdup(sc->request_fullpath);
+	    dir_length           = zend_dirname(sc->request_dir, strlen(sc->request_fullpath));
+	    sc->request_dir[dir_length] = '\0';
+	    php_basename(sc->request_fullpath, strlen(sc->request_fullpath), NULL, 0, 
+				     &sc->request_basename, &basename_length TSRMLS_CC);
 
-	/* Determine the cache name from the dirname and basename of the request path */
-	sc->cachedb_fullpath    = emalloc(dir_length + basename_length + sizeof("./.cache\0"));
-	sprintf(sc->cachedb_fullpath, "%s%c.%s.cache", 
-	        sc->request_dir, DEFAULT_SLASH, sc->request_basename);
- 
-	sc->request_mtime       = sb->st_mtime;
-	sc->request_filesize    = sb->st_size;
-	sc->PHP_version         = PHP_VERSION;
-
+	    /* Determine the cache name from the dirname and basename of the request path */
+	    sc->cachedb_fullpath    = emalloc(dir_length + basename_length + sizeof("./.cache\0"));
+	    sprintf(sc->cachedb_fullpath, "%s%c.%s.cache", 
+	            sc->request_dir, DEFAULT_SLASH, sc->request_basename);
+     
+	    sc->request_mtime       = sb->st_mtime;
+	    sc->request_filesize    = sb->st_size;
+	    sc->PHP_version         = PHP_VERSION;
+  
 ///////////////////// TODO: set clear_flag_set based on cookie and request parameter in the meantime default to false
 
-	sc->clear_flag_set = 0;
-
+    	sc->clear_flag_set = 0;
+    }
 	return sc;
 }
 

@@ -12,41 +12,40 @@
   | obtain it through the world-wide-web, please send a note to          |
   | license@php.net so we can mail you a copy immediately.               |
   +----------------------------------------------------------------------+
-  | Authors: Daniel Cowgill <dcowgill@communityconnect.com>              |
-  |          George Schlossnagle <george@omniti.com>                     |
-  |          Rasmus Lerdorf <rasmus@php.net>                             |
-  |          Arun C. Murthy <arunc@yahoo-inc.com>                        |
-  |          Gopal Vijayaraghavan <gopalv@yahoo-inc.com>                 |
+  | Authors: Terry Ellison <Terry@ellisons.org.uk>                       |
   +----------------------------------------------------------------------+
 
-   This software was contributed to PHP by Community Connect Inc. in 2002
-   and revised in 2005 by Yahoo! Inc. to add support for PHP 5.1.
-   Future revisions and derivatives of this source code must acknowledge
-   Community Conn.ect Inc. as the original contributor of this module by
-   leaving this note intact in the source code.
-
+   This software was derived from the APC extension which was initially 
+   contributed to PHP by Community Connect Inc. in 2002 and revised in 2005 
+   by Yahoo! Inc. See README for further details.
+ 
    All other licensing and usage conditions are those of the PHP Group.
 */
 
-#ifndef LPC_MAIN_H
-#define LPC_MAIN_H
-
-#include "lpc_pool.h"
+#ifndef LPC_COPY_FUNCTION_H
+#define LPC_COPY_FUNCTION_H
 
 /*
- * This module provides the primary interface between PHP and LPC.
+ * This module encapsulates most of the complexity involved in deep-copying the Zend compiler data
+ * structures relating to functions. The routines are allocator-agnostic, so the same function can
+ * be used for copying to and from shared memory.
  */
+#include "zend_compile.h"
+#include "lpc.h"
+#include "lpc_pool.h"
 
-extern int lpc_module_init(int module_number TSRMLS_DC);
-extern int lpc_module_shutdown(TSRMLS_D);
-extern int lpc_request_init(TSRMLS_D);
-extern int lpc_request_shutdown(TSRMLS_D);
+/* {{{ struct definition: lpc_function_t */
+typedef struct lpc_function_t {
+    char* name;                 /* the function name */
+    int name_len;               /* length of name */
+    zend_function* function;    /* the zend function data structure */
+} lpc_function_t;
 
-/* pointer to the original Zend engine compile_file function */
-typedef zend_op_array* (zend_compile_t)(zend_file_handle*, int TSRMLS_DC);
-extern zend_compile_t* lpc_set_compile_hook(zend_compile_t *ptr);
-
+extern void lpc_copy_function(zend_function* dst, zend_function* src, lpc_pool* pool);
+extern void lpc_copy_new_functions(lpc_function_t* dst_array, uint count, lpc_pool* pool);
+extern void lpc_install_functions(lpc_function_t* functions, uint num_functions, lpc_pool* pool);
 #endif
+
 /*
  * Local variables:
  * tab-width: 4

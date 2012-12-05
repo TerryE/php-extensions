@@ -57,11 +57,14 @@ if test "$PHP_LPC" != "no"; then
   ])
 
   lpc_sources="lpc.c php_lpc.c \
+               lpc_request.c \
+               lpc_copy_class.c \
+               lpc_copy_function.c \
+               lpc_copy_op_array.c \
+               lpc_copy_source.c \
+               lpc_hashtable.c \
                lpc_cache.c \
-               lpc_compile.c \
                lpc_debug.c \
-               lpc_main.c \
-               lpc_zend.c \
                lpc_pool.c \
                lpc_string.c "
 

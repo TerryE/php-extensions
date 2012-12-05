@@ -71,18 +71,42 @@ typedef enum {
 #define pool_alloc_zval(dest) _lpc_pool_alloc_zval((void **)&(dest), pool ZEND_FILE_LINE_CC)
 #define pool_alloc_ht(dest) _lpc_pool_alloc_ht((void **)&(dest), pool ZEND_FILE_LINE_CC)
 #define pool_alloc_unaligned(dest,size) _lpc_pool_alloc_unaligned((void **)&(dest), size, pool ZEND_FILE_LINE_CC)
-
 #define pool_strdup(dst,src)  _lpc_pool_strdup((void **)&(dst), (src), pool ZEND_FILE_LINE_CC)
 #define pool_memcpy(dst,src,n) _lpc_pool_memcpy((void **)&(dst),src,n,pool ZEND_FILE_LINE_CC)
-#define is_exec_pool() _lpc_pool_is_exec(pool)
+#define is_exec_pool() (pool->type == LPC_EXECPOOL)
 #define pool_get_entry_rec() _lpc_pool_get_entry_rec(pool)
-
 #define pool_tag_ptr(p) _lpc_pool_tag_ptr((void **)&(p), pool ZEND_FILE_LINE_CC);
+
+#define is_copy_out()  (pool->type != LPC_EXECPOOL)
+#define is_copy_in()   (pool->type == LPC_EXECPOOL)
 
 /* The pool is implemented with the following type and extern calls */
 
 typedef struct _lpc_pool_brick lpc_pool_brick;
-typedef struct _lpc_pool lpc_pool;
+typedef struct _lpc_pool {
+#ifdef ZTS
+	void         ***tsrm_ls;		 /* the thread context in ZTS builds */
+#endif
+	lpc_pool_type_t type;           
+    size_t          size;            /* sum of individual element sizes */
+	uint			count;           /* count of pool elements*/
+#ifdef APC_DEBUG
+	char           *orig_filename;   /* plus the file-line creator in debug builds */
+	uint            orig_lineno;
+#endif
+	/* The following fields are only used for serial pools */
+	uint			brick_count;
+	lpc_pool_brick *brickvec;		 /* array of allocated bricks (typically 1) */
+	lpc_pool_brick *brick;           /* current brick -- a simple optimization */
+	size_t          available;       /* bytes available in current brick -- ditto */
+	struct {                         /* tag hash */
+	size_t         *hash;
+	size_t          size;
+	ulong			mask;
+	uint			count;			
+	}               tag;
+	unsigned char  *reloc;			 /* byte relocation vector */
+} lpc_pool;
 
 extern lpc_pool* _lpc_pool_create(lpc_pool_type_t type TSRMLS_DC ZEND_FILE_LINE_DC);
 extern lpc_pool* _lpc_pool_load(void* pool_buf, size_t pool_buf_len TSRMLS_DC ZEND_FILE_LINE_DC);
@@ -94,9 +118,7 @@ extern void _lpc_pool_alloc_ht(void **dest, lpc_pool* pool ZEND_FILE_LINE_DC);
 extern void _lpc_pool_strdup(void **dest, const char* s, lpc_pool* pool ZEND_FILE_LINE_DC);
 extern void _lpc_pool_memcpy(void **dest, const void* p, size_t n, lpc_pool* pool ZEND_FILE_LINE_DC);
 extern void _lpc_pool_tag_ptr(void **ptr, lpc_pool* pool ZEND_FILE_LINE_DC);
-extern int _lpc_pool_unload(lpc_pool* pool, void** pool_buffer, size_t* pool_size ZEND_FILE_LINE_DC);
-
-extern int _lpc_pool_is_exec(lpc_pool* pool);
+extern int  _lpc_pool_unload(lpc_pool* pool, void** pool_buffer, size_t* pool_size ZEND_FILE_LINE_DC);
 extern void* _lpc_pool_get_entry_rec(lpc_pool* pool);
 
 #endif /* LPC_POOL_H */

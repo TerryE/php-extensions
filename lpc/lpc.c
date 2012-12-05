@@ -29,12 +29,11 @@
 
 */
 #include "lpc.h"
-#include "lpc_zend.h"
+//#include "lpc_zend.h"
 
 /* Only implement regexp filters for PHP versions >= 5.2.2 otherwise it acts as a Noop */
 #ifdef PHP_REXEP_OK
 #  include "ext/pcre/php_pcre.h"
-#  include "ext/standard/php_smart_str.h"
 #endif
 
 /* }}} */

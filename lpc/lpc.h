@@ -69,8 +69,7 @@ extern int lpc_debug_enter(char *s);
 #include "php.h"
 #include "php_streams.h"
 
-#include "lpc_php.h"
-#include "lpc_main.h"
+#include "php_lpc.h"
 #include "lpc_cache.h"
 
 #define PERSISTENT 1
@@ -97,12 +96,7 @@ typedef struct lpc_fileinfo_t
     php_stream_statbuf st_buf;
 } lpc_fileinfo_t;
 
-extern int lpc_search_paths(const char* filename, const char* path, lpc_fileinfo_t* fileinfo TSRMLS_DC);
-
-/* regular expression wrapper functions */
-extern void* lpc_regex_compile_array(char* pattern_list TSRMLS_DC);
-extern void lpc_regex_destroy_array(void* p TSRMLS_DC);
-extern int lpc_regex_match_array(void* p, const char* input);
+extern int lpc_valid_file_match(const char *filename TSRMLS_DC);
 
 #if defined(__GNUC__)
 # define LPC_UNUSED __attribute__((unused))
@@ -136,7 +130,7 @@ ZEND_BEGIN_MODULE_GLOBALS(lpc)
     zend_bool   canonicalize;           /* true if relative paths should be canonicalized in no-stat mode */
     zend_bool   report_autofilter;      /* true for auto-filter warnings */
     zend_bool   include_once;           /* Override the ZEND_INCLUDE_OR_EVAL opcode handler to avoid pointless fopen()s [still experimental] */
-    HashTable   copied_zvals;           /* my_copy recursion detection list */
+    zend_uint   copied_zvals;           /* copy zvals recursion detection counter */
     zend_bool   force_file_update;      /* force files to be updated during lpc_compile_file */
     char        canon_path[MAXPATHLEN]; /* canonical path for key data */
     time_t      sapi_request_time;      /* the SAPI request start time is used for any timestamp validation */
@@ -152,6 +146,8 @@ ZEND_END_MODULE_GLOBALS(lpc)
 
 /* (the following declaration is defined in php_lpc.c) */
 ZEND_EXTERN_MODULE_GLOBALS(lpc)
+
+extern int lpc_reserved_offset;
 
 /* The tsrm_ls pointer is carried in the pool header which is passes down many call chains so 
  * this avoids the need to pass the TSRML_D(C) pointers on a lot of routines */
@@ -169,6 +165,8 @@ ZEND_EXTERN_MODULE_GLOBALS(lpc)
 # define LPCGP(v) (lpc_globals.v)
 # define TSRMLS_FETCH_FROM_POOL()
 #endif
+
+#define LPC_COPIED_ZVALS_COUNTDOWN  100
 
 #endif
 

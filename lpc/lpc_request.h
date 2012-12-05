@@ -12,55 +12,33 @@
   | obtain it through the world-wide-web, please send a note to          |
   | license@php.net so we can mail you a copy immediately.               |
   +----------------------------------------------------------------------+
-  | Authors: Daniel Cowgill <dcowgill@communityconnect.com>              |
-  |          George Schlossnagle <george@omniti.com>                     |
-  |          Rasmus Lerdorf <rasmus@php.net>                             |
+  | Authors: Terry Ellison <Terry@ellisons.org.uk>                       |
   +----------------------------------------------------------------------+
 
-   This software was contributed to PHP by Community Connect Inc. in 2002
-   and revised in 2005 by Yahoo! Inc. to add support for PHP 5.1.
-   Future revisions and derivatives of this source code must acknowledge
-   Community Connect Inc. as the original contributor of this module by
-   leaving this note intact in the source code.
-
+   This software was derived from the APC extension which was initially 
+   contributed to PHP by Community Connect Inc. in 2002 and revised in 2005 
+   by Yahoo! Inc. See README for further details.
+ 
    All other licensing and usage conditions are those of the PHP Group.
 */
 
-#ifndef PHP_LPC_H
-#define PHP_LPC_H
+#ifndef LPC_REQUEST_H
+#define LPC_REQUEST_H
 
-#include "lpc.h"
-#include "zend.h"
-#include "zend_API.h"
-#include "zend_compile.h"
-#include "zend_hash.h"
-#include "zend_extensions.h"
+/*
+ * This module provides the primary interface between PHP and LPC.
+ */
 
-#if ZEND_MODULE_API_NO >= 20100409
-#define ZEND_ENGINE_2_4
+extern int lpc_module_init(int module_number TSRMLS_DC);
+extern int lpc_module_shutdown(TSRMLS_D);
+extern int lpc_request_init(TSRMLS_D);
+extern int lpc_request_shutdown(TSRMLS_D);
+
+/* pointer to the original Zend engine compile_file function */
+typedef zend_op_array* (zend_compile_t)(zend_file_handle*, int TSRMLS_DC);
+extern zend_compile_t* lpc_set_compile_hook(zend_compile_t *ptr);
+
 #endif
-#if ZEND_MODULE_API_NO > 20060613
-#define ZEND_ENGINE_2_3
-#endif
-#if ZEND_MODULE_API_NO > 20050922
-#define ZEND_ENGINE_2_2
-#endif
-#if ZEND_MODULE_API_NO > 20050921
-#define ZEND_ENGINE_2_1
-#endif
-#ifdef ZEND_ENGINE_2_1
-#include "zend_vm.h"
-#endif
-
-#define PHP_LPC_VERSION "3.1.7"
-
-extern zend_module_entry lpc_module_entry;
-#define lpc_module_ptr &lpc_module_entry
-
-#define phpext_lpc_ptr lpc_module_ptr
-
-#endif /* PHP_LPC_H */
-
 /*
  * Local variables:
  * tab-width: 4

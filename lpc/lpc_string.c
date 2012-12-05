@@ -25,7 +25,7 @@
 */
 
 #include "lpc.h"
-#include "lpc_php.h"
+#include "php_lpc.h"
 
 #ifdef ZEND_ENGINE_2_4
 
@@ -51,12 +51,12 @@ static const char *lpc_dummy_new_interned_string_for_php(const char *str, int le
     return str;
 }
 
-static void lpc_dummy_interned_strings_snapshot_for_php(TSRMLS_D)
-{ENTER(lpc_dummy_interned_strings_snapshot_for_php)
+static void dummy_interned_strings_snapshot_for_php(TSRMLS_D)
+{ENTER(dummy_interned_strings_snapshot_for_php)
 }
 
-static void lpc_dummy_interned_strings_restore_for_php(TSRMLS_D)
-{ENTER(lpc_dummy_interned_strings_restore_for_php)
+static void dummy_interned_strings_restore_for_php(TSRMLS_D)
+{ENTER(dummy_interned_strings_restore_for_php)
 }
 
 char *lpc_new_interned_string(char *arKey, int nKeyLength TSRMLS_DC)
@@ -206,8 +206,8 @@ void lpc_interned_strings_init(TSRMLS_D)
     CG(interned_strings_start) = APCSG(interned_strings_start);
     CG(interned_strings_end) = APCSG(interned_strings_end);
     zend_new_interned_string = lpc_dummy_new_interned_string_for_php;
-    zend_interned_strings_snapshot = lpc_dummy_interned_strings_snapshot_for_php;
-    zend_interned_strings_restore = lpc_dummy_interned_strings_restore_for_php;
+    zend_interned_strings_snapshot = dummy_interned_strings_snapshot_for_php;
+    zend_interned_strings_restore = dummy_interned_strings_restore_for_php;
 
     lpc_copy_internal_strings(TSRMLS_C);
 }

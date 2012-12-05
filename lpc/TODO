@@ -1,8 +1,50 @@
-I will use this to note pending work for future commits.
+lpc_cache.c:
+	CHECK((LPCG(sapi_request_time) - key->mtime) > LPCG(file_update_protection));
 
-This version is at a clean compile and infact php -i works fine.
+    Add error notice here    
 
-Next stage is to sort out and debug the cache implementation so that LPC works in its culled APC mode: 
-that is with a full "shared" cache but in unpool process space with the old compile to shared cache mode.
+    set clear_flag_set based on cookie and request parameter in the meantime default to false
 
+lpc_copy_class.c:
+    resolve the (unimplemented) assertion in APC that the op_array should be scanned in the null
+    case to determine if this class inherits from some base class at execution-time. As far as I can
+    see, this is addressed in zend_do_inheritance
+
+    figure out whether ACC_CHANGED is more appropriate here
+lpc_copy_op_array.c:
+    These 2.4 macros haven't been debugged yet
+
+    Work out the interpretation and treatment of the scope field which should point back to the
+    parent class in the case of a method.
+
+    Review the treatment of relative path files on the include path.  Do we convert to absolute?
+
+    For now disable this code path and revisit later.
+ 
+    The op_array for execution stuff in APC needs reviewed and included here 
+
+lpc_copy_source.c:
+    If the source includes classes with parents then this inheritance is validate using
+    zend_do_inheritance(). This path needs testing.
+
+    This still leaves the class structures in memory so these WILL leak.
+
+    Decide on correct action if cached compile fails, but drop-through isn't the correct response
+
+lpc_hashtable.c:
+    add Zend 2.4 insert interned strings for keys, etc.
+
+    review interned string changes in PHP 5.4 to work out how this works 
+
+    Copy out a new bucket with the deinterred key or inplace key
+
+lpc_pool.c:
+    Investigate a table-driven zeroing of  "ANY" operands as part of copy-out
+
+lpc_request.c:
+    unwind code from MSHUTDOWN needs to be folded in RSHUTDOWN now that caches and stacks only have
+    a request lifetime
+
+php_lpc.c:
+    question the entire raison d'etre for this?????????
 

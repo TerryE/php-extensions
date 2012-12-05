@@ -27,7 +27,6 @@
 */
 
 #include "lpc.h"
-#include "lpc.h"
 #include <stdio.h>
 #include "zend.h"
 #include "zend_compile.h"
@@ -69,7 +68,6 @@ void dump(zend_op_array *op_array TSRMLS_DC)
 #endif
 }
 /* }}} */
-
 /* {{{ lpc_debug_enter 
 		HEALTH WARNING this code is NOT thread safe as it's only intended for coverage collection during 
 		development.  To keep the code simple, this uses a simple hash + linear scan algo since we can't 
@@ -88,9 +86,13 @@ void dump(zend_op_array *op_array TSRMLS_DC)
 static void *get_bp(void) { __asm__ __volatile__("mov %rbp, %rax"); }
 
 static int get_stack_depth(void) {
-    void *bp = (void *)get_bp();
-    int stack_depth = 0;
-    while((bp = *(void **)bp) != NULL) { stack_depth++; }
+    void *bp;
+    bp = (void *)get_bp();
+    int stack_depth = -1;
+    while(bp) {
+        bp = *(void **)bp;
+        stack_depth++; 
+    }
     return stack_depth;
 }
 
@@ -103,29 +105,33 @@ int lpc_debug_enter(char *s)
 		static struct _func_table func_table[FUNC_MAX] = {0};
 		static int n_func_probe = 0;
 		static const char* module[] = {
-"=== lpc.c ===", "lpc_valid_file_match", "lpc_cache_create", "lpc_cache_destroy", "lpc_cache_clear",
-    "lpc_cache_insert", "lpc_cache_retrieve", "lpc_cache_make_key", "lpc_cache_free_key",
-    "lpc_cache_info", "lpc_get_request_context", "lpc_dtor_context",
-"=== lpc_compile.c ===","lpc_compile_cache_entry", "my_copy_zval_ptr", "my_copy_zval",
-    "my_copy_zend_op", "lpc_copy_function", "my_copy_property_info", "my_copy_arg_info_array",
-    "lpc_copy_class_entry", "my_copy_hashtable", "lpc_fixup_op_array_jumps", "lpc_copy_op_array",
-    "my_copy_new_functions", "my_copy_new_classes", "my_file_halt_offset",
-    "lpc_do_halt_compiler_register", "my_fixup_function", "my_fixup_property_info",
-    "my_fixup_hashtable", "my_check_copy_function", "my_check_copy_default_property",
-    "my_check_copy_property_info", "my_check_copy_static_member", "my_check_copy_constant", 
-"=== lpc_main.c ===", "set_compile_hook", "cached_compile", "my_compile_file",
-    "lpc_module_shutdown", "lpc_deactivate", "lpc_request_init", "lpc_request_shutdown", 
-"=== lpc_pool.c ===", "_lpc_pool_create", "_lpc_pool_destroy", "_lpc_pool_set_size",
-    "_lpc_pool_alloc", "_lpc_pool_alloc_zval", "_lpc_pool_alloc_zval", "_lpc_pool_strdup",
-    "_lpc_pool_memcpy", "_lpc_pool_unload", "_lpc_pool_load", "lpc_make_PIC_pool", "lpc_relocate_pool", 
-"=== lpc_string.c ===", "lpc_dummy_interned_strings_snapshot_for_php",
-    "lpc_dummy_interned_strings_restore_for_php", "lpc_new_interned_string",
-    "lpc_copy_internal_strings", "lpc_interned_strings_init", "lpc_interned_strings_shutdown", 
-"=== lpc_zend.c ===", "lpc_op_ZEND_INCLUDE_OR_EVAL", 
-"=== lpc_zend.c ===", "lpc_zend_shutdown", 
-"=== php_lpc.c ===", "lpc_atol", "PHP_MINFO_FUNCTION", "PHP_GINIT_FUNCTION",
-    "PHP_GSHUTDOWN_FUNCTION", "PHP_RINIT_FUNCTION", "PHP_RSHUTDOWN_FUNCTION", "PHP-lpc_cache_info",
-    "PHP-lpc_clear_cache", "PHP-lpc_compile_file"};
+"***lpc.c***", "lpc_valid_file_match",
+"***lpc_cache.c***", "lpc_cache_create", "lpc_cache_destroy", "lpc_cache_clear", "lpc_cache_insert",
+"lpc_cache_retrieve", "lpc_cache_make_key", "lpc_cache_free_key", "lpc_cache_info",
+"lpc_get_request_context", "lpc_dtor_context",
+"***lpc_copy_class.c***", "lpc_copy_class_entry", "lpc_copy_new_classes", "lpc_install_classes",
+"copy_property_info","check_copy_default_property", "fixup_property_info",
+"check_copy_property_info", "check_copy_static_member", "check_copy_constant", "fixup_method",
+"check_copy_method",
+"***lpc_copy_function.c***", "lpc_copy_function", "lpc_copy_new_functions","lpc_install_functions",
+"***lpc_copy_op_array.c***", "copy_opcodes_out", "copy_zval_out", "lpc_copy_op_array", 
+"lpc_copy_zval_ptr",
+"***lpc_hashtable.c***","lpc_copy_hashtable", "lpc_fixup_hashtable", 
+"***lpc_copy_source.c***", "cached_compile", "lpc_compile_file", "compile_cache_entry",
+"file_halt_offset", "do_halt_compiler_register",
+"***lpc_debug.c***", "dump",
+"***lpc_pool.c***", "_lpc_pool_create", "_lpc_pool_destroy", "_lpc_pool_alloc",
+"_lpc_pool_alloc_zval", "_lpc_pool_alloc_zval", "_lpc_pool_strdup", "_lpc_pool_memcpy",
+"_lpc_pool_unload", "lpc_make_PIC_pool", "_lpc_pool_load", "lpc_relocate_pool", "lpc_pool_compress",
+"***lpc_request.c***", "lpc_set_compile_hook", "lpc_module_shutdown", "lpc_deactivate",
+"lpc_request_init", "lpc_request_shutdown",
+"***lpc_string.c***", "dummy_interned_strings_snapshot_for_php",
+"dummy_interned_strings_restore_for_php", "lpc_new_interned_string",
+"lpc_copy_internal_strings", "lpc_interned_strings_init", "lpc_interned_strings_shutdown",
+"***lpc_zend.c***", "lpc_get_zval_ptr", "lpc_op_ZEND_INCLUDE_OR_EVAL", "lpc_zend_shutdown",
+"***php_lpc.c***", "lpc_atol", "PHP_MINFO_FUNCTION", "PHP_GINIT_FUNCTION", "PHP_GSHUTDOWN_FUNCTION",
+ "PHP_RINIT_FUNCTION", "PHP_RSHUTDOWN_FUNCTION", "PHP-lpc_cache_info", "PHP-lpc_clear_cache",
+ "PHP-lpc_compile_file"};
 	int stack_depth = get_stack_depth();
 	const char fill[] = "                                                                                                    ";
 	uint i,ndx,found;

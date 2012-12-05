@@ -32,6 +32,7 @@
 #include "lpc.h"
 #include "lpc_pool.h"
 #include "lpc_debug.h"
+#include "Zend/zend_types.h"
 /* 
  * The APC REALPOOL and BDPOOL implementations used a hastable to track individual 
  * elements and for the DTOR.  However, since the element DTOR is private, a simple
@@ -45,11 +46,10 @@
 
 /* {{{ Pool defines and private structures/typdefs */
 /* emalloc but relay the calling location reference */
-#define POOL_EMALLOC(size) _emalloc((size) ZEND_FILE_LINE_RELAY_CC ZEND_FILE_LINE_EMPTY_CC)
-#define POOL_TAG_PTR(p) _lpc_pool_tag_ptr(p, pool ZEND_FILE_LINE_RELAY_CC);
 #define POOL_TYPE_STR() (pool->type == LPC_EXECPOOL ? "Exec" : "Serial")
 
-#define BRICK_ALLOC_UNIT 128*1024*sizeof(void *)
+#define BRICK_ALLOC_UNIT  128*1024*sizeof(void *)
+#define BRICK_ALLOC_AVAIL (BRICK_ALLOC_UNIT - sizeof(zend_uint))
 #define POOL_TAG_HASH_INITIAL_SIZE 0x2000
 #define NOT_SET ((ulong) -1)
 
@@ -60,31 +60,6 @@ typedef struct _lpc_pool_brick {
     size_t          allocated;       /* storage allocated */
 	size_t			base_offset;     /* offset from start of pool for start of brick */ 
 } lpc_pool_brick;
-
-struct _lpc_pool {
-#ifdef ZTS
-	void         ***tsrm_ls;		 /* the thread context in ZTS builds */
-#endif
-	lpc_pool_type_t type;           
-    size_t          size;            /* sum of individual element sizes */
-	uint			count;           /* count of pool elements*/
-#ifdef APC_DEBUG
-	char           *orig_filename;   /* plus the file-line creator in debug builds */
-	uint            orig_lineno;
-#endif
-	/* The following fields are only used for serial pools */
-	uint			brick_count;
-	lpc_pool_brick *brickvec;		 /* array of allocated bricks (typically 1) */
-	lpc_pool_brick *brick;           /* current brick -- a simple optimization */
-	size_t          available;       /* bytes available in current brick -- ditto */
-	struct {                         /* tag hash */
-	size_t         *hash;
-	size_t          size;
-	ulong			mask;
-	uint			count;			
-	}               tag;
-	unsigned char  *reloc;			 /* byte relocation vector */
-};
 
 typedef struct _lpc_pool_header {
     size_t  size;
@@ -121,7 +96,7 @@ lpc_pool* _lpc_pool_create(lpc_pool_type_t type TSRMLS_DC ZEND_FILE_LINE_DC)
     * Calloc the pool structure and for serial pools, the pool header. Note that the initialisation
     * uses this zeroing and doesn't initialise variables to zero / null.
     */
-    pool = POOL_EMALLOC(sizeof(lpc_pool));
+    pool = emalloc_rel(sizeof(lpc_pool));
 	memset(pool, 0, sizeof(lpc_pool));
 	pool->type  = type;
 #if ZTS
@@ -139,15 +114,21 @@ lpc_pool* _lpc_pool_create(lpc_pool_type_t type TSRMLS_DC ZEND_FILE_LINE_DC)
 		* Allocate first brick to the serial storage and then the pool header.
 		*/ 
 		pool->brick_count        = 1;
-		pool->available          = BRICK_ALLOC_UNIT;
-		pool->brickvec           = emalloc(sizeof(lpc_pool_brick));
+		pool->available          = BRICK_ALLOC_AVAIL;
+		pool->brickvec           = ecalloc(1, sizeof(lpc_pool_brick));
 		pool->brick              = pool->brickvec;
-		pool->brick->storage     = emalloc(BRICK_ALLOC_UNIT);
 		pool->brick->base_offset = 0;
 		pool->brick->allocated   = 0;
-		_lpc_pool_alloc((void**) &hdr, pool, sizeof(lpc_pool_header) ZEND_FILE_LINE_RELAY_CC);
+		pool->brick->storage     = ecalloc(1, BRICK_ALLOC_UNIT);
+        hdr                      = pool->brick->storage; /* the header is the first entry */
+		_lpc_pool_alloc((void **) 0, pool, sizeof(lpc_pool_header) ZEND_FILE_LINE_RELAY_CC);
 		memset(hdr, 0, sizeof(lpc_pool_header));
 		hdr->first_rec           = pool->brick->allocated;
+	   /*
+		* The last 4 bytes of the brick are a marker word to ensure that the output
+        * compression algo doesn't run over the end of the buffer.
+		*/ 
+        ((zend_uint *)pool->brick->storage)[BRICK_ALLOC_AVAIL/sizeof(zend_uint)] = 0xEE00EE00;
 	}
 
 	zend_hash_index_update(&LPCG(pools), (ulong) pool, &dummy, sizeof(void *), NULL);
@@ -162,7 +143,7 @@ void _lpc_pool_destroy(lpc_pool *pool ZEND_FILE_LINE_DC)
 	lpc_debug("destroy %s pool 0x%08lx (%u) at %s:%u" TSRMLS_PC, 
 	          POOL_TYPE_STR(), pool, (uint) (pool->size) ZEND_FILE_LINE_RELAY_CC);
 
-	if (pool->type == LPC_SERIALPOOL) {
+	if (pool->type != LPC_EXECPOOL) {
 		uint i; 
 		if (pool->tag.hash) efree(pool->tag.hash);
 		for (i=0; i < (pool->brick_count); i++) if ((pool->brick[i]).storage) efree((pool->brick[i]).storage);
@@ -175,13 +156,6 @@ void _lpc_pool_destroy(lpc_pool *pool ZEND_FILE_LINE_DC)
 #endif
 	zend_hash_index_del(&LPCG(pools), (ulong) pool);
     efree(pool);
-}
-/* }}} */
-
-/* {{{ _lpc_pool_is_exec */
-int _lpc_pool_is_exec(lpc_pool* pool)
-{
-	return pool->type == LPC_EXECPOOL;
 }
 /* }}} */
 
@@ -204,7 +178,7 @@ void _lpc_pool_alloc(void **dest, lpc_pool* pool, size_t size ZEND_FILE_LINE_DC)
 	   /*
 	 	* Unlike APC, LPC explicitly rounds up any sizes to the next sizeof(void *) boundary
 		* because there's quite a performance hit for unaligned access on CPUs such as x86 which
-		* permit it, and it would alos be nice for this code to work on those such ARM which
+		* permit it, and it would also be nice for this code to work on those such ARM which
 		* don't without barfing.
 		*/
 		size_t rounded_size = (size + (sizeof(void *)-1)) & (~((size_t) (sizeof(void *)-1)));
@@ -213,16 +187,18 @@ void _lpc_pool_alloc(void **dest, lpc_pool* pool, size_t size ZEND_FILE_LINE_DC)
 			storage = (unsigned char *) pool->brick->storage + pool->brick->allocated;
 			pool->brick->allocated  += rounded_size;
 			pool->available         -= rounded_size;
-
+            /* set the last size_t of storage to zero so that any unalloc tail isn't A5A5A5... */
+            *((size_t *)((char*) storage + (rounded_size - sizeof(void *)))) = 0;
  		} else {
 			/*
 			 * Add another allocation brick to the serial storage (this rarely happens), but in the
-			 * case of loarge op_arrays the unit can exceed the brick size so allocate a brick large
+			 * case of large op_arrays the unit can exceed the brick size so allocate a brick large
 			 * enough to take the array.
 			 */ 
 			lpc_pool_brick *p, *lastp;
-			size_t          allocate = (rounded_size > BRICK_ALLOC_UNIT) ? rounded_size : BRICK_ALLOC_UNIT;
-
+			size_t  allocate = (rounded_size > BRICK_ALLOC_AVAIL) ? 
+                                   rounded_size + sizeof(zend_uint) : 
+                                   BRICK_ALLOC_UNIT;
 			pool->brick_count++;	
 			pool->brickvec   = erealloc(pool->brickvec, pool->brick_count * sizeof (lpc_pool_brick));
 			p                = pool->brickvec + (pool->brick_count-1); /* #1 === [0] ... */
@@ -232,11 +208,12 @@ void _lpc_pool_alloc(void **dest, lpc_pool* pool, size_t size ZEND_FILE_LINE_DC)
 			p->base_offset   = lastp->base_offset + lastp->allocated;
 			p->storage       = storage = emalloc(allocate);
             p->allocated     = rounded_size;
-			pool->available  = allocate - rounded_size;
+			pool->available  = allocate - sizeof(zend_uint) - rounded_size;
+            ((zend_uint *)p->storage)[(allocate/sizeof(zend_uint)) - 1] = 0xEE00EE00;
 		}
 
 	} else if (pool->type == LPC_EXECPOOL) {
-		storage = POOL_EMALLOC(sizeof(void *) + size);
+		storage = emalloc_rel(size);
 
     } else {/* LPC_RO_SERIALPOOL */
 		lpc_error("Allocation operations are not permitted on a readonly Serial Pool" TSRMLS_PC);
@@ -252,7 +229,7 @@ void _lpc_pool_alloc(void **dest, lpc_pool* pool, size_t size ZEND_FILE_LINE_DC)
 
 	if (dest) {
 		*dest = storage;
-		POOL_TAG_PTR(dest);
+		if (!is_exec_pool()) _lpc_pool_tag_ptr(dest, pool ZEND_FILE_LINE_RELAY_CC);
 	}
 
     return;
@@ -558,7 +535,8 @@ static int lpc_make_PIC_pool(lpc_pool *pool, unsigned char *rbvec)
 	size_t offset_x, ro_x, this_offset_x, this_allocated_x, this_base_offset_x,  *this_storage, target_offset;
 	char **this_ptr, *this_target;
 	lpc_pool_brick *b, *bb, *brick; 
-	int i, j, k, found, buffer_length, missed_relocs;
+	int i, j, k, found, buffer_length; 
+    uint missed_relocs = 0, missed_externs = 0;
 
 	brick              = pool->brickvec;
 	this_storage       = (size_t *) brick->storage;
@@ -631,25 +609,45 @@ static int lpc_make_PIC_pool(lpc_pool *pool, unsigned char *rbvec)
 	*/	
 	lpc_debug("=== Missed Report ====" TSRMLS_PC);
 	for (i = 0, b = brick, missed_relocs = 0; i < pool->brick_count; i++, b--){
-		uint max = b->allocated<<size_shift;
+		uint max = b->allocated>>size_shift;
 		for (j=0; j<max; j++) {
-			size_t target = ((size_t *)b->storage)[j];
+            size_t *ptr   = &((size_t *)b->storage)[j];
+			size_t target = *ptr;
+            uint missed = 0;
 			for(k = 0, bb = pool->brickvec; k < pool->brick_count; k++, bb++){
 				target_offset = (size_t) ((char *)target - (char *) bb->storage);
-			
 				if (target_offset < bb->allocated) {
-					lpc_debug("check: 0x%08lx (0x%08lx + 0x%08lx). misses reference to "
-							  "0x%08lx (0x%08lx + 0x%08lx)" TSRMLS_PC,
-							   (char*)(b->storage + j), b->storage, j<<size_shift,
-							  target, bb->storage, target_offset);
-					missed_relocs++;
+                    missed = 1;
 					break;
 				}
 			}
+            if (missed) {
+				lpc_debug("checkR: 0x%08lx (0x%08lx + 0x%08lx). misses reference to "
+						  "0x%08lx (0x%08lx + 0x%08lx)" TSRMLS_PC,
+						  ptr, b->storage, j<<size_shift,
+						  target, bb->storage, target_offset);
+				missed_relocs++;
+           /*
+            * This is an empirical exclusion list. No apologies.  It might miss some but the 
+            * detections don't seem to be false-alarms on my system. The main issue here is that (as 
+            * at Zend 2.3 there are 19 opcodes with no operands and another 51 with only one.  The
+            * PHP compiler doesn't initialise unused operands to zero, but they just have garbage in
+            * them.  Frustrating for output compression and a possibly worth explicitly zeroing on
+            * copying to serial buffer.
+            */
+///////// TODO: Investigate a table-driven zeroing of  "ANY" operands as part of copy-out
+            } else if ( target > 0x1000000 && target < 0x7ffffffff000 &&
+                       (target & 0x00000000ffffff00) &&
+                       (target < 0x4000000 || target > 0x7ff000000000)) {
+				lpc_debug("checkE: 0x%08lx (0x%08lx + 0x%08lx). possible reference to "
+						  "0x%08lx" TSRMLS_PC, ptr, b->storage, j<<size_shift,
+						   target);
+				missed_externs++;
+            }
 		}
 	}
-	if (missed_relocs) {
-		lpc_debug("=== Missed Totals %d listed ====" TSRMLS_PC, missed_relocs);
+	if (missed_relocs || missed_externs) {
+		lpc_debug("=== Missed Totals %d / %d listed ====" TSRMLS_PC, missed_relocs, missed_externs);
 	}
 #endif
 }
@@ -735,7 +733,7 @@ static void *lpc_relocate_pool(size_t *pool_storage, size_t pool_size, unsigned 
        the out parameter outbuf. This routine is derived from the zlib.h example zpipe.c.
 */
 static int lpc_pool_compress(lpc_pool *pool, unsigned char **outbuf)
-{
+{ENTER(lpc_pool_compress)
     int i, j, k, flush, ret, last_length;
     unsigned have;
     z_stream strm;

@@ -29,9 +29,10 @@
 #include <sys/file.h>
 #endif
 #include "php_lpc.h"
-#include "lpc_zend.h"
+//#include "lpc_zend.h"
 #include "lpc_cache.h"
-#include "lpc_main.h"
+#include "lpc_request.h"
+#include "lpc_copy_source.h"
 
 #include "php_globals.h"
 #include "php_ini.h"
@@ -48,6 +49,11 @@ PHP_FUNCTION(lpc_compile_file);
 
 /* {{{ ZEND_DECLARE_MODULE_GLOBALS(lpc) */
 ZEND_DECLARE_MODULE_GLOBALS(lpc)
+/* }}} */
+
+/* {{{ lpc_reserved_offset 
+       a true global: fixed LPC-specific offset used to allocate opcode flags in the op_array*/
+int lpc_reserved_offset;
 /* }}} */
 
 /* {{{ proto long lpc_atol( string str, int str_len)
@@ -173,6 +179,9 @@ static PHP_GSHUTDOWN_FUNCTION(lpc)
 /* {{{ PHP_MINIT_FUNCTION(lpc) */
 static PHP_MINIT_FUNCTION(lpc)
 {
+    zend_extension dummy_ext;
+    lpc_reserved_offset = zend_get_resource_handle(&dummy_ext); 
+
     LPCG(cache_by_default) = 1;
     LPCG(fpstat) = 1;
     LPCG(canonicalize) = 1;
@@ -183,7 +192,6 @@ static PHP_MINIT_FUNCTION(lpc)
     if (LPCG(enabled)) {
         if(!LPCG(initialized)) {
             lpc_module_init(module_number TSRMLS_CC);
-            lpc_zend_init(TSRMLS_C);
         } 
     }
 
@@ -195,7 +203,6 @@ static PHP_MINIT_FUNCTION(lpc)
 static PHP_MSHUTDOWN_FUNCTION(lpc)
 {
     if(LPCG(enabled)) {
-        lpc_zend_shutdown(TSRMLS_C);
         lpc_module_shutdown(TSRMLS_C);
     }
     UNREGISTER_INI_ENTRIES();
