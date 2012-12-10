@@ -464,7 +464,7 @@ int _lpc_pool_unload(lpc_pool* pool, void** pool_buffer, size_t* pool_size ZEND_
 
 	/* Loop over relocation vector again, now generating the relocation byte vector */
 	for (i = 0, p = reloc_bvec; i < reloc_vec_len; i++) {
-		if (reloc_vec[i]<0x7f) { /* the typical case */
+		if (reloc_vec[i]<=0x7f) { /* the typical case */
 			*p++ = (unsigned char) (reloc_vec[i]);
 		} else {                /* handle pathelogical cases */
 			ro = reloc_vec[i];
@@ -472,12 +472,12 @@ int _lpc_pool_unload(lpc_pool* pool, void** pool_buffer, size_t* pool_size ZEND_
 			* Emit multi-bytes lsb first with 7 bits sig. and high-bit set to indicate follow-on.
 			*/
 			*p++ = (unsigned char)(ro & 0x7f) | 0x80;
-			if (ro < 0x3fff) {
+			if (ro <= 0x3fff) {
 		    	*p++ = (unsigned char)((ro>>7) & 0x7f);
-			} else if (ro < 0x1fffff) {
+			} else if (ro <= 0x1fffff) {
 		    	*p++ = (unsigned char)((ro>>7) & 0x7f) | 0x80;
 		    	*p++ = (unsigned char)((ro>>14) & 0x7f);    
-			} else if (ro < 0xfffffff) {
+			} else if (ro <= 0xfffffff) {
 		    	*p++ = (unsigned char)((ro>>7) & 0x7f) | 0x80;
 		    	*p++ = (unsigned char)((ro>>14) & 0x7f) | 0x80;
 		    	*p++ = (unsigned char)((ro>>21) & 0x7f);    
@@ -787,6 +787,7 @@ static int lpc_pool_compress(lpc_pool *pool, unsigned char **outbuf)
 	}
 
 	*outbuf = compressed_buf;
+    efree(brickvec);
 	return (k*BRICK_ALLOC_UNIT) + last_length;
 }
 

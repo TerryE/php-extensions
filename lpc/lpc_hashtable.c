@@ -22,8 +22,8 @@
    All other licensing and usage conditions are those of the PHP Group.
 */
 
+#include "lpc.h"
 #include "lpc_hashtable.h"
-//#include "lpc_zend.h"
 #include "lpc_string.h"
 #include "ext/standard/php_var.h"
 /* {{{ lpc_copy_hashtable
@@ -112,6 +112,8 @@ void lpc_copy_hashtable(HashTable* dst, const HashTable* src, lpc_pool* pool,
         } else { /* copy-out */
             Bucket **lastPtr;
             dst->nNumOfElements = nNumOfElements;
+            /* flag arBuckets so that copy-in knows to allocate the arBuckets array */
+            dst->arBuckets = (void *) 1;
             for (i=0; i<nNumOfElements; i++) {
 #ifdef ZEND_ENGINE_2_4
                     ////// TODO: review interned string changes in PHP 5.4 to work out how this works 
@@ -128,6 +130,7 @@ void lpc_copy_hashtable(HashTable* dst, const HashTable* src, lpc_pool* pool,
                 pool_alloc(p->pData, rec_size);
                 p->pDataPtr  = NULL;  /* These aren't used in a serial HT, so */
                 p->pListLast = NULL;  /* set to NULL to improve O/P compression */
+                p->pListNext = NULL;
                 p->pNext     = NULL;  /* and avoid false tagging alarms in debug */
                 p->pLast     = NULL;
 

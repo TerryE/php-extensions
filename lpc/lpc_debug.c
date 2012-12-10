@@ -33,14 +33,14 @@
 #include "zend_hash.h"
 
 /* {{{ zend_op_array */
-#if defined(__DEBUG_LPC__)
+#ifdef DEBUG_LPC
 /* keep track of vld_dump_oparray() signature */
 typedef void (*vld_dump_f) (zend_op_array * TSRMLS_DC);
 #endif
 
 void dump(zend_op_array *op_array TSRMLS_DC)
 {ENTER(dump)
-#if defined(__DEBUG_LPC__)
+#ifdef DEBUG_LPC
   vld_dump_f dump_op_array;
   DL_HANDLE handle = NULL;
 
@@ -78,7 +78,7 @@ void dump(zend_op_array *op_array TSRMLS_DC)
 		dynamic analysis of the APC code base to be refactored. 
 */
 
-#ifdef APC_DEBUG
+#ifdef LPC_DEBUG
 
 #define FUNC_MAX  0x200
 #define FUNC_MASK 0x1ff
@@ -105,7 +105,7 @@ int lpc_debug_enter(char *s)
 		static struct _func_table func_table[FUNC_MAX] = {0};
 		static int n_func_probe = 0;
 		static const char* module[] = {
-"***lpc.c***", "lpc_valid_file_match",
+"***lpc.c***", "lpc_valid_file_match", "lpc_generate_cache_name", "lpc_atol",
 "***lpc_cache.c***", "lpc_cache_create", "lpc_cache_destroy", "lpc_cache_clear", "lpc_cache_insert",
 "lpc_cache_retrieve", "lpc_cache_make_key", "lpc_cache_free_key", "lpc_cache_info",
 "lpc_get_request_context", "lpc_dtor_context",
@@ -124,12 +124,11 @@ int lpc_debug_enter(char *s)
 "_lpc_pool_alloc_zval", "_lpc_pool_alloc_zval", "_lpc_pool_strdup", "_lpc_pool_memcpy",
 "_lpc_pool_unload", "lpc_make_PIC_pool", "_lpc_pool_load", "lpc_relocate_pool", "lpc_pool_compress",
 "***lpc_request.c***", "lpc_set_compile_hook", "lpc_module_shutdown", "lpc_deactivate",
-"lpc_request_init", "lpc_request_shutdown",
+"add_filter_delims", "lpc_request_init", "lpc_request_shutdown", "lpc_dtor_context",
 "***lpc_string.c***", "dummy_interned_strings_snapshot_for_php",
 "dummy_interned_strings_restore_for_php", "lpc_new_interned_string",
 "lpc_copy_internal_strings", "lpc_interned_strings_init", "lpc_interned_strings_shutdown",
-"***lpc_zend.c***", "lpc_get_zval_ptr", "lpc_op_ZEND_INCLUDE_OR_EVAL", "lpc_zend_shutdown",
-"***php_lpc.c***", "lpc_atol", "PHP_MINFO_FUNCTION", "PHP_GINIT_FUNCTION", "PHP_GSHUTDOWN_FUNCTION",
+"***php_lpc.c***",  "PHP_MINFO_FUNCTION", "PHP_GINIT_FUNCTION", "PHP_GSHUTDOWN_FUNCTION",
  "PHP_RINIT_FUNCTION", "PHP_RSHUTDOWN_FUNCTION", "PHP-lpc_cache_info", "PHP-lpc_clear_cache",
  "PHP-lpc_compile_file"};
 	int stack_depth = get_stack_depth();
@@ -178,5 +177,5 @@ int lpc_debug_enter(char *s)
 }
 
 void lpc_mem_check(void) { full_mem_check(0);}
-#endif /* APC_DEBUG */
+#endif /* LPC_DEBUG */
 /* }}} */

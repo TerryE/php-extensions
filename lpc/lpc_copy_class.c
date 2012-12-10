@@ -27,6 +27,7 @@
    All other licensing and usage conditions are those of the PHP Group.
 */
 
+#include "lpc.h"
 #include "lpc_copy_class.h"
 #include "lpc_copy_function.h"
 #include "lpc_copy_op_array.h"
@@ -102,7 +103,7 @@ void lpc_copy_class_entry(zend_class_entry* dst, zend_class_entry* src, lpc_pool
 	TSRMLS_FETCH_FROM_POOL();
 
 	BITWISE_COPY(src,dst);
-   /*
+   /*-
     * Set all fields that shouldn't be inherited on copy to 0/NULL 
     */
     dst->name = NULL;
@@ -184,12 +185,12 @@ void lpc_copy_class_entry(zend_class_entry* dst, zend_class_entry* src, lpc_pool
     }
 #else
     COPY_HT(default_properties, lpc_copy_zval_ptr, zval *, check_copy_default_property, NULL);
-
 #endif
+
    /*
 	* Copy the properties info table and fixup scope attribute (introduced in Zend 2.2) 
     */
-    COPY_HT(properties_info, copy_property_info, zend_class_entry, check_copy_property_info, NULL);
+    COPY_HT(properties_info, copy_property_info, zend_property_info, check_copy_property_info, NULL);
 #ifdef ZEND_ENGINE_2_2
     lpc_fixup_hashtable(&dst->properties_info, 
 	                   (lpc_ht_fixup_fun_t)fixup_property_info, 
@@ -317,7 +318,6 @@ void lpc_copy_new_classes(lpc_class_t* cl_array, zend_uint count, lpc_pool* pool
         }
         else {
             cle->parent_name = NULL;
-/////// TODO: resolve the (unimplemented) assertion in APC that the op_array should be scanned in the null case  to determine if this class inherits from some base class at execution-time.  As far as I can see, this is addressed in zend_do_inheritance
         }
     }
 }
@@ -444,7 +444,9 @@ static void fixup_property_info(Bucket *p, zend_class_entry *src, zend_class_ent
 }
 /* }}} */
 #endif
-/* {{{ check_copy_property_info */
+/* {{{ check_copy_property_info 
+       accept property info element for copy if
+       (Zend Engine >= 2.2)      */
 static lpc_check_t check_copy_property_info(Bucket* p, const void *arg1, 
                                                        const void *dummy)
 {ENTER(check_copy_property_info)
@@ -455,9 +457,8 @@ static lpc_check_t check_copy_property_info(Bucket* p, const void *arg1,
 
 #ifdef ZEND_ENGINE_2_2
     /* so much easier */
-    return (child_info->ce == src);
-#endif
-
+    return (child_info->ce == src) ? CHECK_ACCEPT_ELT : CHECK_SKIP_ELT;
+#else
     if (parent &&
         zend_hash_quick_find(&parent->properties_info, p->arKey, p->nKeyLength,
             p->h, (void **) &parent_info)==SUCCESS) {
@@ -466,14 +467,14 @@ static lpc_check_t check_copy_property_info(Bucket* p, const void *arg1,
         }
         if ((parent_info->flags & ZEND_ACC_PPP_MASK) !=
             (child_info->flags & ZEND_ACC_PPP_MASK)) {
- ////////  TODO: figure out whether ACC_CHANGED is more appropriate here
             return CHECK_ACCEPT_ELT;
         }
         return  CHECK_SKIP_ELT;
     }
 
     /* property doesn't exist in parent, copy into cached child */
-    return CHECK_ACCEPT_ELT;
+    return ;
+#endif
 }
 /* }}} */
 

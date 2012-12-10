@@ -28,13 +28,16 @@
    All other licensing and usage conditions are those of the PHP Group.
 */
 
+#include "config.h"
 #ifndef LPC_H
 #define LPC_H
+#define PERSISTENT 1
 
-#define                    APC_DEBUG   1
-// #define                  __DEBUG_LPC__ 1
+#ifdef __DEBUG_LPC__
+#define LPC_DEBUG 
+#endif
 
-#ifdef APC_DEBUG
+#ifdef LPC_DEBUG
 #  define ENTER(s) int dummy_to_be_ignored = lpc_debug_enter(#s);
 extern int lpc_debug_enter(char *s);
 #else 
@@ -71,12 +74,7 @@ extern int lpc_debug_enter(char *s);
 
 #include "php_lpc.h"
 #include "lpc_cache.h"
-
-#define PERSISTENT 1
-
-#ifdef __DEBUG_LPC__
-#define LPC_DEBUG 
-#endif
+#include "lpc_request.h"
 
 /* console display functions */
 extern void lpc_error(const char *format TSRMLS_DC, ...);
@@ -96,7 +94,8 @@ typedef struct lpc_fileinfo_t
     php_stream_statbuf st_buf;
 } lpc_fileinfo_t;
 
-extern int lpc_valid_file_match(const char *filename TSRMLS_DC);
+extern int lpc_valid_file_match(char *filename TSRMLS_DC);
+extern long lpc_atol(const char *str, int str_len);
 
 #if defined(__GNUC__)
 # define LPC_UNUSED __attribute__((unused))
@@ -117,31 +116,35 @@ extern int lpc_valid_file_match(const char *filename TSRMLS_DC);
 ZEND_BEGIN_MODULE_GLOBALS(lpc)
     /* configuration parameters */
     zend_bool   enabled;                /* if true, lpc is enabled (defaults to true) */
-    char*       filter;                 /* regex filter that prevents caching */
  
     /* module variables */
     zend_bool   initialized;            /* true if module was initialized */
     zend_bool   cache_by_default;       /* true if files should be cached unless filtered out */
                                         /* false if files should only be cached if filtered in */
-    long        file_update_protection; /* Age in seconds before a file is eligible to be cached - 0 to disable */
+    long        file_update_protection; /* Age in seconds before a file is eligible to be cached -
+                                           0 to disable */
     zend_bool   enable_cli;             /* Flag to override turning LPC off for CLI */
-    long        max_file_size;          /* Maximum size of file, in bytes that LPC will be allowed to cache */
+    long        max_file_size;          /* Maximum size of file, in bytes that LPC will be allowed 
+                                           to cache */
     zend_bool   fpstat;                 /* true if fullpath includes should be stat'ed */
-    zend_bool   canonicalize;           /* true if relative paths should be canonicalized in no-stat mode */
+    zend_bool   canonicalize;           /* true if relative paths should be canonicalized in no-stat
+                                           mode */
     zend_bool   report_autofilter;      /* true for auto-filter warnings */
-    zend_bool   include_once;           /* Override the ZEND_INCLUDE_OR_EVAL opcode handler to avoid pointless fopen()s [still experimental] */
     zend_uint   copied_zvals;           /* copy zvals recursion detection counter */
     zend_bool   force_file_update;      /* force files to be updated during lpc_compile_file */
-    char        canon_path[MAXPATHLEN]; /* canonical path for key data */
-    time_t      sapi_request_time;      /* the SAPI request start time is used for any timestamp validation */
+    time_t      sapi_request_time;      /* the SAPI request start time is used for any timestamp
+                                           validation */
 #ifdef ZEND_ENGINE_2_4
     long        shm_strings_buffer;
 #endif
     lpc_cache_t *lpc_cache;             /* the global compiler cache */
 	HashTable   pools;                  /* Table of created pools */
-	zend_bool   force_cache_delete;     /* Flag that the file D/B is to be deleted and further loading disabbled */
+	zend_bool   force_cache_delete;     /* Flag that the file D/B is to be deleted and further
+                                           loading disabbled */
     char       *clear_cookie;	        /* Name of Cookie which will force a cache clear */
     char       *clear_parameter;        /* Name of Request parameter which will force a cache clear */
+    char       *current_filename;       /* pointer to filename of file being currently compiled */
+    lpc_request_context_t *request_context;  /* pointer to SAPI derived context of the script being requested */
 ZEND_END_MODULE_GLOBALS(lpc)
 
 /* (the following declaration is defined in php_lpc.c) */
@@ -166,7 +169,7 @@ extern int lpc_reserved_offset;
 # define TSRMLS_FETCH_FROM_POOL()
 #endif
 
-#define LPC_COPIED_ZVALS_COUNTDOWN  100
+#define LPC_COPIED_ZVALS_COUNTDOWN  1000
 
 #endif
 

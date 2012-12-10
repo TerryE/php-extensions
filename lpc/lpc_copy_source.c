@@ -22,10 +22,10 @@
    All other licensing and usage conditions are those of the PHP Group.
 */
 
+#include "lpc.h"
 #include "lpc_copy_op_array.h"
 #include "lpc_copy_source.h"
 #include "lpc_hashtable.h"
-//#include "lpc_zend.h"
 
 static zend_op_array* cached_compile(lpc_entry_block_t* cache_entry, lpc_pool* pool);
 static long           file_halt_offset(const char *filename TSRMLS_DC);
@@ -66,13 +66,15 @@ zend_op_array* lpc_compile_file(zend_file_handle* h, int type TSRMLS_DC)
     * Chain onto the old (zend) compile file function if the file isn't cacheable 
     */
     if (!LPCG(enabled) ||
-	    !lpc_valid_file_match(filename TSRMLS_CC) ||
+	    !lpc_valid_file_match((char *)filename TSRMLS_CC) ||
         !(key = lpc_cache_make_key(h TSRMLS_CC))) { 
         return lpc_old_compile_file(h, type TSRMLS_CC);
     }
 
     lpc_debug("1. h->opened_path=[%s]  h->filename=[%s]" TSRMLS_CC, 
               h->opened_path?h->opened_path:"null",h->filename);
+
+    LPCG(current_filename) = h->filename;
 
     /* If a valid cache entry exists then load the previously compiled module */
     if ( key->type == LPC_CACHE_LOOKUP &&
@@ -93,6 +95,9 @@ zend_op_array* lpc_compile_file(zend_file_handle* h, int type TSRMLS_DC)
 		}
  		lpc_cache_free_key(key TSRMLS_CC);
         pool_destroy();
+
+        LPCG(current_filename) = NULL;
+           
         return op_array;
  
    } else if(key->type == LPC_CACHE_MISS) {
@@ -102,9 +107,11 @@ zend_op_array* lpc_compile_file(zend_file_handle* h, int type TSRMLS_DC)
 		        lpc_cache_insert(key, pool);
 		    }
 		lpc_cache_free_key(key TSRMLS_CC);
+        LPCG(current_filename) = NULL;
 		return op_array;
 
 	} else {
+        LPCG(current_filename) = NULL;
         return lpc_old_compile_file(h, type TSRMLS_CC);
     }
 }

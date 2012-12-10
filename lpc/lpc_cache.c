@@ -30,29 +30,18 @@
 #include "SAPI.h"
 #include "ext/cachedb/cachedb.h"
 
-#include "lpc_cache.h"
 #include "lpc.h"
-//#include "lpc_zend.h"
+#include "lpc_cache.h"
 #include "lpc_pool.h"
+#include "lpc_request.h"
 
-/* {{{ private struct definitions: lpc_cache_t and lpc_cache_context_t */
-typedef struct _lpc_cache_context_t {
-	char         *request_fullpath;
-	char         *request_dir;
-	char         *request_basename;
-	char         *cachedb_fullpath;
-	char         *PHP_version;
-	time_t        request_mtime;
-  	size_t        request_filesize;
-	int           clear_flag_set;
-} lpc_cache_context_t;
-
+/* {{{ private struct definitions: lpc_cache_t */
 struct _lpc_cache_t {
 	cachedb_t           *db;           /* CacheDB database to be used to hold the filesysten copy */
 	HashTable           *index;        /* Local index array of filename=>array(...) */
 	time_t               mtime;		   /* mtime of the cache */
 	off_t                filesize;
-	lpc_cache_context_t *context;
+	lpc_request_context_t *context;
 };
 /* }}} */
 
@@ -64,7 +53,7 @@ struct _lpc_cache_t {
 #define hash_add_next_index_zval(h,v) zend_hash_next_index_insert(h, &v, sizeof(zval *), NULL)
 #define hash_add(h,k,v) zend_hash_add(h,k,strlen(k)+1, &v, sizeof(zval *), NULL)
 #define hash_add(h,k,v) zend_hash_add(h,k,strlen(k)+1, &v, sizeof(zval *), NULL)
-#define hash_cop1y(to,fm,dmy) zend_hash_copy(to, fm, (copy_ctor_func_t) zval_add_ref, (void *)&dmy, sizeof(zval*))
+#define hash_copy(to,fm,dmy) zend_hash_copy(to, fm, (copy_ctor_func_t) zval_add_ref, (void *)&dmy, sizeof(zval*))
 #define hash_count(h) zend_hash_num_elements(h)
 #define hash_init(h,c) zend_hash_init(h, c, NULL, ZVAL_PTR_DTOR, 0)
 #define hash_reset(h) zend_hash_internal_pointer_reset(h)
@@ -79,29 +68,21 @@ struct _lpc_cache_t {
 #define CHECK(p) if(!(p)) goto error;
 /* }}} */
 
-static lpc_cache_context_t *lpc_get_request_context(TSRMLS_D);
-static int lpc_dtor_context(lpc_cache_context_t *sc TSRMLS_DC);
-
 /* {{{ lpc_cache_create */
 zend_bool lpc_cache_create(TSRMLS_D)
 {ENTER(lpc_cache_create)
     lpc_cache_t         *cache = (lpc_cache_t*) ecalloc(1, sizeof(lpc_cache_t));
-	lpc_cache_context_t *ctxt  = lpc_get_request_context(TSRMLS_C);
 	struct stat         *sb;
-
+    lpc_request_context_t *r_cxt;
 	zval         **zctxt, *zinfo, **zlist;
 	HashTable    *hlist, *hindex;
 	char         *dummy;
 
-	cache->context = ctxt;
-    if( ctxt->request_fullpath == NULL) {
-        efree(ctxt);
-        efree(cache);
-        return FAILURE;
-    }
+    cache->context = r_cxt = LPCG(request_context);
 
 	/* Open the CacheDB using the cache name and obtain the directory info */
-	CHECK(cachedb_open(&cache->db, ctxt->cachedb_fullpath, strlen(ctxt->cachedb_fullpath), "wb") == SUCCESS);
+	CHECK(cachedb_open(&cache->db, r_cxt->cachedb_fullpath,
+                       strlen(r_cxt->cachedb_fullpath), "wb") == SUCCESS);
 	MAKE_STD_ZVAL(zinfo);
 	CHECK(cachedb_info(zinfo,cache->db)==SUCCESS);
 
@@ -129,12 +110,12 @@ zend_bool lpc_cache_create(TSRMLS_D)
 		hash_get_next_zv(Z_ARRVAL_PP(zctxt_metadata),zmtime);
 		hash_get_next_zv(Z_ARRVAL_PP(zctxt_metadata),zfilesize);
 
-		if(!strcmp(Z_STRVAL_PP(zPHP_version), ctxt->PHP_version) &&
-		   !strcmp(Z_STRVAL_PP(zdir), ctxt->request_dir) &&
-		   !strcmp(Z_STRVAL_PP(zbasename), ctxt->request_basename) &&
-		   Z_LVAL_PP(zmtime) == ctxt->request_mtime &&
-		   Z_LVAL_PP(zfilesize) == ctxt->request_filesize &&
-		   !ctxt->clear_flag_set) {	
+		if(!strcmp(Z_STRVAL_PP(zPHP_version), r_cxt->PHP_version) &&
+		   !strcmp(Z_STRVAL_PP(zdir), r_cxt->request_dir) &&
+		   !strcmp(Z_STRVAL_PP(zbasename), r_cxt->request_basename) &&
+		   Z_LVAL_PP(zmtime) == r_cxt->request_mtime &&
+		   Z_LVAL_PP(zfilesize) == r_cxt->request_filesize &&
+		   !r_cxt->clear_flag_set) {	
 
 			/* The cache is OK to use so loop over the remaining list array setting up zle
 			 * to enumerate the elements of: 
@@ -178,11 +159,11 @@ zend_bool lpc_cache_create(TSRMLS_D)
 
 		MAKE_STD_ZVAL(zctxt_metadata);
 		array_init_size(zctxt_metadata, 5);
-		add_next_index_string(zctxt_metadata, ctxt->PHP_version, 1);
-		add_next_index_string(zctxt_metadata, ctxt->request_dir, 1);
-		add_next_index_string(zctxt_metadata, ctxt->request_basename, 1);
-		add_next_index_long(zctxt_metadata, ctxt->request_mtime);
-		add_next_index_long(zctxt_metadata, ctxt->request_filesize);
+		add_next_index_string(zctxt_metadata, r_cxt->PHP_version, 1);
+		add_next_index_string(zctxt_metadata, r_cxt->request_dir, 1);
+		add_next_index_string(zctxt_metadata, r_cxt->request_basename, 1);
+		add_next_index_long(zctxt_metadata, r_cxt->request_mtime);
+		add_next_index_long(zctxt_metadata, r_cxt->request_filesize);
 
 		CHECK(cachedb_add(cache->db, context_key, sizeof(context_key)-1, zdummy, zctxt_metadata)==SUCCESS);
 		zval_dtor(zdummy);
@@ -208,7 +189,7 @@ zend_bool lpc_cache_create(TSRMLS_D)
     return SUCCESS;
 
 error:
-	lpc_warning("Cannot create cache %s.  Falling back to default compile" TSRMLS_CC, ctxt->cachedb_fullpath);
+	lpc_warning("Cannot create cache %s.  Falling back to default compile" TSRMLS_CC, r_cxt->cachedb_fullpath);
 	return FAILURE;
 }
 
@@ -225,8 +206,6 @@ void lpc_cache_destroy(TSRMLS_D)
 		
 	if (cache->db) cachedb_close(cache->db);
 
-	if (cache->context) lpc_dtor_context(cache->context TSRMLS_CC);
-
 	efree(cache);
 }
 /* }}} */
@@ -238,7 +217,6 @@ void lpc_cache_clear(TSRMLS_D)
 	if (cache->db) _cachedb_close(cache->db, 'r' TSRMLS_CC);
 	cache->db = NULL;
 	remove(cache->context->cachedb_fullpath);
-	lpc_dtor_context(cache->context TSRMLS_CC);
 	LPCG(enabled) = 0;
 }
 
@@ -444,49 +422,6 @@ zval* lpc_cache_info(zend_bool limited TSRMLS_DC)
     zval *info = NULL;
     if(!cache) return NULL;
     return info;
-}
-/* }}} */
-
-/* {{{ lpc_get_request_context */
-static lpc_cache_context_t *lpc_get_request_context(TSRMLS_D)
-{ENTER(lpc_get_request_context)
-	lpc_cache_context_t  *sc = ecalloc(1, sizeof(lpc_cache_context_t));
-	struct stat          *sb = sapi_get_stat(TSRMLS_C);
-	size_t        dir_length, basename_length;
-
-	/* Determine the request dirname and basename from the request path */
-	sc->request_fullpath = SG(request_info).path_translated;
-    if (sc->request_fullpath) {
-	    sc->request_dir      = estrdup(sc->request_fullpath);
-	    dir_length           = zend_dirname(sc->request_dir, strlen(sc->request_fullpath));
-	    sc->request_dir[dir_length] = '\0';
-	    php_basename(sc->request_fullpath, strlen(sc->request_fullpath), NULL, 0, 
-				     &sc->request_basename, &basename_length TSRMLS_CC);
-
-	    /* Determine the cache name from the dirname and basename of the request path */
-	    sc->cachedb_fullpath    = emalloc(dir_length + basename_length + sizeof("./.cache\0"));
-	    sprintf(sc->cachedb_fullpath, "%s%c.%s.cache", 
-	            sc->request_dir, DEFAULT_SLASH, sc->request_basename);
-     
-	    sc->request_mtime       = sb->st_mtime;
-	    sc->request_filesize    = sb->st_size;
-	    sc->PHP_version         = PHP_VERSION;
-  
-///////////////////// TODO: set clear_flag_set based on cookie and request parameter in the meantime default to false
-
-    	sc->clear_flag_set = 0;
-    }
-	return sc;
-}
-
-static int lpc_dtor_context(lpc_cache_context_t *sc TSRMLS_DC)
-{ENTER(lpc_dtor_context)
-	if (sc) {
-		efree(sc->request_dir);
-		efree(sc->request_basename);
-		efree(sc->cachedb_fullpath);
-		efree(sc);
-	}
 }
 /* }}} */
 

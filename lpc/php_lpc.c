@@ -28,8 +28,9 @@
 #ifdef HAVE_SYS_FILE_H
 #include <sys/file.h>
 #endif
+#include "lpc.h"
 #include "php_lpc.h"
-//#include "lpc_zend.h"
+#include "lpc.h"
 #include "lpc_cache.h"
 #include "lpc_request.h"
 #include "lpc_copy_source.h"
@@ -56,39 +57,6 @@ ZEND_DECLARE_MODULE_GLOBALS(lpc)
 int lpc_reserved_offset;
 /* }}} */
 
-/* {{{ proto long lpc_atol( string str, int str_len)
-	   Chain to zend_atol, except for PHP 5.2.x which doesn't handle [KMG], so in this case reimplement */
-static long lpc_atol(const char *str, int str_len)
-{ENTER(lpc_atol)
-#if PHP_MAJOR_VERSION >= 6 || PHP_MAJOR_VERSION == 5 && PHP_MINOR_VERSION >= 3
-    return zend_atol(str, str_len);
-#else
-    /* Re-implement zend_atol() for 5.2.x */
-    long retval;
-
-    if (!str_len) {
-        str_len = strlen(str);
-    }
-
-    retval = strtol(str, NULL, 0);
-
-    if (str_len > 0) {
-        switch (str[str_len - 1]) {
-            case 'g': case 'G':
-                retval *= 1024;
-                /* break intentionally missing */
-            case 'm': case 'M':
-                retval *= 1024;
-                /* break intentionally missing */
-            case 'k': case 'K':
-                retval *= 1024;
-                break;
-        }
-    }
-    return retval;
-#endif
-}
-/* }}} */
 
 /* {{{ PHP_INI 
    Register INI entries.  Note the the SYSTEM / PERDIR split is subject to review */
@@ -101,6 +69,8 @@ std_ini_bool( "enabled",                    "1", PHP_INI_SYSTEM, OnUpdateBool,  
 std_ini_bool( "cache_by_default",           "1", PHP_INI_ALL,    OnUpdateBool,   cache_by_default)
 std_ini_bool( "enable_cli",                 "0", PHP_INI_SYSTEM, OnUpdateBool,   enable_cli)
 std_ini_entry("file_update_protection",     "2", PHP_INI_SYSTEM, OnUpdateLong,   file_update_protection)
+perdir_ini_entry("cache_pattern",            "")
+perdir_ini_entry("cache_replacement",        "")
 perdir_ini_entry("max_file_size",          "1M")
 perdir_ini_entry("stat_percentage",         "0")
 perdir_ini_entry("clear_cookie",    (char*)NULL)
@@ -112,6 +82,7 @@ PHP_INI_END()
 /* {{{ PHP_MINFO_FUNCTION(lpc) */
 static PHP_MINFO_FUNCTION(lpc)
 {ENTER(PHP_MINFO_FUNCTION)
+    lpc_request_context_t *rc=LPCG(request_context);
    	char buf[100];
 #define info_convert(f,v) snprintf(buf, sizeof(buf)-1, f, LPCG(v)) 
     int i;
@@ -119,7 +90,7 @@ static PHP_MINFO_FUNCTION(lpc)
     php_info_print_table_start();
     php_info_print_table_header(2, "LPC Support", LPCG(enabled) ? "enabled" : "disabled");
     php_info_print_table_row(2, "Version", PHP_LPC_VERSION);
-#ifdef __DEBUG_LPC__
+#ifdef DEBUG_LPC
     php_info_print_table_row(2, "LPC Debugging", "Enabled");
 #else
     php_info_print_table_row(2, "LPC Debugging", "Disabled");
@@ -128,7 +99,9 @@ static PHP_MINFO_FUNCTION(lpc)
     php_info_print_table_row(2, "LPC Build Date", __DATE__ " " __TIME__);
 	info_convert("%lu", cache_by_default);
 	php_info_print_table_row(2, "Cache by default", buf);    
-	php_info_print_table_row(2, "Filter", LPCG(filter));
+	php_info_print_table_row(2, "Filter", rc->filter);
+	php_info_print_table_row(2, "Cache pattern", rc->cachedb_pattern);
+	php_info_print_table_row(2, "Cache replacement", rc->cachedb_replacement);
 	info_convert("%lu", file_update_protection);
 	php_info_print_table_row(2, "File update protection",buf);
 	info_convert("%lu", enable_cli);
@@ -213,45 +186,9 @@ static PHP_MSHUTDOWN_FUNCTION(lpc)
 /* {{{ PHP_RINIT_FUNCTION(lpc) */
 static PHP_RINIT_FUNCTION(lpc)
 {ENTER(PHP_RINIT_FUNCTION)
-#ifdef PHP_REXEP_OK
-	char *f      = INI_STR("lpc.filter");
-	char *filt   = LPCG(filter);
-	char *p;
-	int   i;
 
-	if (filt) {
-		LPCG(filter) = emalloc(strlen(f) + 3);
+	LPCG(enabled) = lpc_request_init(TSRMLS_C);
 
-		/* Pick a PCRE delimiter that isn't in the file string from one of non-alphanumeric 
-		 * characters that isn't already used as meta character in REGEX, viz <#%,@~ '"> */
-#       define DELIMS " \"',~@%#"
-		for( i=strlen(DELIMS+1), p=DELIMS; i>=0; i-- ) {
-			if (!strchr(filt, p[i])) break; /* scan DELIMS in reverse to pick one not in filter */
-		}
-		if (i<0) {
-			lpc_warning("Invalid lpc.filter expression '%s'.  Caching is disabled." TSRMLS_CC, filt);
-			efree(LPCG(filter));
-			LPCG(filter) = "";
-			LPCG(enabled) = 0;
-		}
-		sprintf(LPCG(filter),"%c%s%c",p[i],f,p[i]);
-	} else {
-		LPCG(filter) = "";
-	}
-#else
-	LPCG(filter)		  = "";  /* filters are ignored for PHP versions < 5.2.2 */
-#endif
-
-    if(LPCG(enabled) && lpc_cache_create(TSRMLS_C)==SUCCESS) {
-		LPCG(max_file_size)   = lpc_atol(INI_STR("lpc.max_file_size"),0);
-		LPCG(fpstat)          = INI_INT("lpc.stat_percentage");
-		LPCG(clear_cookie)    = INI_STR("lpc.clear_cookie");
-		LPCG(clear_parameter) = INI_STR("lpc.clear_parameter");
-
-        lpc_request_init(TSRMLS_C);
-    } else {
-		(LPCG(enabled)) = 0;
-	}
     return SUCCESS;
 }
 /* }}} */
@@ -262,9 +199,7 @@ static PHP_RSHUTDOWN_FUNCTION(lpc)
     if(LPCG(enabled)) {
         lpc_request_shutdown(TSRMLS_C);
     }
-	if (LPCG(filter) && LPCG(filter)[0]) {
-		efree(LPCG(filter));
-	}
+	lpc_dtor_request_context(TSRMLS_C);
     return SUCCESS;
 }
 /* }}} */

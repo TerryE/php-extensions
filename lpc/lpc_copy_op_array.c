@@ -22,12 +22,12 @@
    All other licensing and usage conditions are those of the PHP Group.
 */
 
+#include "lpc.h"
 #include "lpc_copy_op_array.h"
 #include "lpc_op_table.h"
 #include "lpc_hashtable.h"
 #include "lpc_copy_function.h"
 #include "lpc_copy_class.h"
-//#include "lpc_zend.h"
 #include "lpc_string.h"
 #include "ext/standard/php_var.h"
 
@@ -118,7 +118,7 @@ static void copy_zval_out(zval* dst, const zval* src, lpc_pool* pool)
     Z_SET_ISREF_TO_P(dst, Z_ISREF_P((zval*)src));
     Z_TYPE_P(dst) = Z_TYPE_P(src);
 
-    switch (Z_TYPE_P(src) & (~IS_CONSTANT_INDEX)) {
+    switch (Z_TYPE_P(src) & IS_CONSTANT_TYPE_MASK) {
 
         case IS_BOOL:
             Z_LVAL_P(dst) = Z_BVAL_P(src) != 0;
@@ -170,7 +170,7 @@ static inline void copy_zval_in(zval* dst, const zval* src, lpc_pool* pool)
     Z_SET_REFCOUNT_P(dst, Z_REFCOUNT_P((zval*)src));
     Z_SET_ISREF_TO_P(dst, Z_ISREF_P((zval*)src));
 
-    switch (Z_TYPE_P(src) & (~IS_CONSTANT_INDEX)) {
+    switch (Z_TYPE_P(src) & IS_CONSTANT_TYPE_MASK) {
         case IS_CONSTANT:
         case IS_STRING:
             if (Z_STRVAL_P(src)) pool_memcpy(Z_STRVAL_P(dst), Z_STRVAL_P(src), Z_STRLEN_P(src)+1);
@@ -352,7 +352,7 @@ TODO: Add processing of literals and interned strings for Zend 2.4
                   zend_property_info *, NULL, NULL);
     }
 
-    POOL_STRDUP_FLD(filename);
+    dst->filename = is_copy_in() ? LPCG(current_filename) : NULL;
 
     POOL_MEMCPY_FLD(doc_comment, src->doc_comment_len + 1);
 
@@ -443,6 +443,7 @@ TODO: Add processing of literals and interned strings for Zend 2.4
             */
         }
     }
+    i = i;    ///////////////   DEBUG TRACE TARGET
 }
 /* }}} */
 

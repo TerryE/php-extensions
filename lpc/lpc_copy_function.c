@@ -22,9 +22,9 @@
    All other licensing and usage conditions are those of the PHP Group.
 */
 
+#include "lpc.h"
 #include "lpc_copy_op_array.h"
 #include "lpc_copy_function.h"
-//#include "lpc_zend.h"
 
 /* {{{ lpc_copy_function */
 void lpc_copy_function(zend_function* dst, zend_function* src, lpc_pool* pool)

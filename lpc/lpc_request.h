@@ -25,6 +25,20 @@
 #ifndef LPC_REQUEST_H
 #define LPC_REQUEST_H
 
+typedef struct _lpc_request_context_t {
+	char         *request_fullpath;
+	char         *request_dir;
+	char         *request_basename;
+    char         *filter;
+    char         *cachedb_pattern;
+    char         *cachedb_replacement;
+	char         *cachedb_fullpath;
+	char         *PHP_version;
+	time_t        request_mtime;
+  	size_t        request_filesize;
+	int           clear_flag_set;
+} lpc_request_context_t;
+
 /*
  * This module provides the primary interface between PHP and LPC.
  */
@@ -37,6 +51,7 @@ extern int lpc_request_shutdown(TSRMLS_D);
 /* pointer to the original Zend engine compile_file function */
 typedef zend_op_array* (zend_compile_t)(zend_file_handle*, int TSRMLS_DC);
 extern zend_compile_t* lpc_set_compile_hook(zend_compile_t *ptr);
+void lpc_dtor_request_context(TSRMLS_D);
 
 #endif
 /*

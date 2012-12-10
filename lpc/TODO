@@ -1,27 +1,34 @@
 lpc_cache.c:
-	CHECK((LPCG(sapi_request_time) - key->mtime) > LPCG(file_update_protection));
 
-    Add error notice here    
+    APC has a mininum file age that is cacheable to prevent the caching of a file that is fetched
+    which being stored.  It's proably worth disabling the LPC cache if the age is less than 2s say.
 
-    set clear_flag_set based on cookie and request parameter in the meantime default to false
+    lpc_cache_make_key(() has a silent error path.  Need to raise an error notice here.    
 
-lpc_copy_class.c:
-    resolve the (unimplemented) assertion in APC that the op_array should be scanned in the null
-    case to determine if this class inherits from some base class at execution-time. As far as I can
-    see, this is addressed in zend_do_inheritance
+    Need to set clear_flag_set based on cookie and request parameter. In the meantime I am
+    defaulting to false. The whole date detection algo is a bit bumpy in that the first detection
+    disables LPC and deletes the cache, the next creates the new cache, so you need two executions
+    to prime the cache. Maybe need to rethink. 
 
-    figure out whether ACC_CHANGED is more appropriate here
 lpc_copy_op_array.c:
-    These 2.4 macros haven't been debugged yet
+    The Zend Engine 2.4 macros haven't been debugged yet.  Need to be done.
 
     Work out the interpretation and treatment of the scope field which should point back to the
     parent class in the case of a method.
 
-    Review the treatment of relative path files on the include path.  Do we convert to absolute?
+    Review the treatment of relative constant path files on the include path. We should convert
+    these to absolute on copy-out. See discusion below.
 
-    For now disable this code path and revisit later.
+    Need to add the new 2,4 functionality for interned strings etc as per "Performance Improvements"
+    RFC.
  
-    The op_array for execution stuff in APC needs reviewed and included here 
+    Raise a bugrep for APC -- It assumes that unknown autoglobals must begin with _. However, this 
+    is only a convention and there is nothing to stop another extensino declaring an autoglobal 
+    without a leading underscore.
+
+    Raise a bugrep for APC -- apc_copy_new_classes() and apc_copy_new_functions() locate the last 
+    few classes / functions to be added by stepping forwards Nold entries.  They should step 
+    backwards N-Nold+1 entries -- faster in general. 
 
 lpc_copy_source.c:
     If the source includes classes with parents then this inheritance is validate using
@@ -38,13 +45,150 @@ lpc_hashtable.c:
 
     Copy out a new bucket with the deinterred key or inplace key
 
-lpc_pool.c:
-    Investigate a table-driven zeroing of  "ANY" operands as part of copy-out
-
 lpc_request.c:
     unwind code from MSHUTDOWN needs to be folded in RSHUTDOWN now that caches and stacks only have
     a request lifetime
 
 php_lpc.c:
-    question the entire raison d'etre for this?????????
+    The only real API call left is lpc_compile_file().  I am really not sure what this brings to the
+    party in LPC.  Maybe once to discuss with Rasmus later. 
 
+=== General Memory Leaks ===
+
+    Nothing major. Typically one or two emalloced strings per included source and emalloced memory
+    is captured at RSHUTDOWN anyway. The challenge is that the op_array data structures are released
+    by the Zend RTS so I've got to work out the path variants to release these safely. Leaving these
+    for RSHUTDOWN sweep up is inelegant and a slight annoyance but doing a double free is fatal.
+
+    Try / catch processing and compile errors in general seem to generate more so need to look at 
+    this further. 
+
+=== Functional Improvements ===
+
+1)  Remove the opline handler from copy-out formats IF this is the default which is looked up 
+    in the zend_opcode_handlers table as a function of the opcode and op1+op2 types.  Removing
+    this redundant field will (i) improve serial format compression, and (ii) mean that the serial
+    format is no longer link version dependent.
+
+2)  Add zero-byte run compression.  This will run slower than the current gz compression, but this
+    is a trade-off.  Yes the cache files will be slightly largey, but the expand time is so fast for
+    this algo to be neglible. 
+
+=== Test Summaries ===
+
+What I've done is to run LPC against the PHP test suites running each test twice -- once to prime
+the cache and once to use it to load the op arrays, etc. I have copied any that fail -- by abending
+or by producing different output or unexplained errors -- into my own LPC suite then cutting the
+test down further until I've reached a threshold where I am toggling the errors. This is then used
+to analyse and debug the problem. 
+
+What's left so far are largely niggles, rather than show stoppers.
+
+Tests 25, 32, 40, 43, 44, 46, 47 and 48 failed due to differences in script file names (e.g. 
+test25.php ./test25.php) and informational errors leaking through the pre diff filters.  However 
+the following two tests still show up material difference.  
+
+Test50 and test51 Failed due to corruption of literals in nested includes.  The correct filename 
+(e.g. 'echo.inc' in the case of Test50, but stepping through the PHP RTS, this call is intercepted 
+by Phar which does a realpath on this and is somehow screwing up the path search across the include
+path.  It's also doing various stat's in the process.  However the following:
+
+    require_once dirname(__FILE__) . '/echo.inc';
+    require_once './' . '/echo.inc';
+    require_once '/home/terry/work/ext/lpc/tests/include_files/echo.inc';
+    
+all	work fine.   I've realised that I need to adopt the APC strategy of resolving any constant 
+relative paths at compile time.  This will remove these unnecessary stats and (largely) remove
+the changes in reported filenames in the uncached and cached versions.
+
+Test25  (classes/abstract_inherit -- A class that inherits an abstract method is abstract) succeeds 
+        but the error refers to different filename variant. 
+Test32  succeeds but compiler warnings are only emitted on the compile cycle 
+Test44  (lang/038 -- Convert warnings to exceptions) 
+        Succeeds but reported line numbers are crazy and errors are being listed to stdout 
+Test45  (lang/039 -- Catch Interfaces)
+        Succeeds but generates PHP Fatal error:  Uncaught exception with silly (e.g. 40035984) 
+        line numbers for my LPC generated debug notices emitted during the error path.
+Test46  (lang/bug22592 -- cascading assignments to strings with curly braces broken)
+        Succeeds
+Test47  (lang/bug28213 -- crash in debug_print_backtrace in static methods) 
+        Intercepts stderr so diffs on devt diag error reporting.  This is another case of different
+        filenames (being embeded in traceback info) causing a false difference in outputs.
+Test48  (lang/catchable_error_002 -- Catchable fatal error [2]. Need to investigate.
+Test50  (lang/include_variation2 -- Including a file in the current script directory from an 
+        included function generates garbage strings e.g. 
+> PHP Warning:  require_once(echo.inc): failed to open stream: No such file or directory in ZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZ... on line 2
+        This is because Phar is resolving a relative address and barfing to give a bad directory 
+        path.
+Test51  (lang/include_variation3 -- Including a file in the current script directory from eval'd code)
+        Ditto 
+
+
+Known Memory leaks:
+
+The request handle filename leaks is the file is loaded from the cache and not openned
+   ...//php5/main/main.c(2279) :  Freeing 0x02893320 (<length of filename> bytes)
+
+test08  1  lpc_cache.c(318)                          0x02035C08 (48 bytes)
+test08  1                               1 leaks
+test08  2  lpc_cache.c(318)                          0x0280FC08 (48 bytes)
+test08  2                               2 leaks
+test21  2  lpc_copy_class.c(155)                     0x02739360 (0 bytes)
+test21  2  lpc_copy_class.c(272)                     0x02739998 (42 bytes)
+test21  2                               3 leaks
+test22  2  lpc_copy_class.c(155)                     0x026558C0 (0 bytes)
+test22  2  lpc_copy_class.c(272)                     0x026575E0 (42 bytes)
+test22  2                               3 leaks
+test23  2  lpc_copy_class.c(155)                     0x01357848 (0 bytes)
+test23  2  lpc_copy_class.c(272)                     0x0135C9C0 (38 bytes)
+test23  2                               3 leaks
+test24  2  lpc_copy_class.c(155)                     0x01918728 (0 bytes)
+test24  2  lpc_copy_class.c(272)                     0x01919408 (42 bytes)
+test24  2                               5 leaks
+test31  2  lpc_pool.c(248)                           0x02E8E568 (32 bytes)
+test31  2  php5/Zend/zend_hash.c(315)                0x02E8F3A0 (78 bytes)
+test31  2  lpc_copy_class.c(155)                     0x02E923E0 (0 bytes)
+test31  2  lpc_pool.c(265)                           0x02E92630 (72 bytes)
+test31  2  lpc_hashtable.c(102)                      0x02E926D8 (64 bytes)
+test31  2  lpc_copy_op_array.c(176)                  0x02E92828 (11 bytes)
+test31  2  lpc_copy_class.c(272)                     0x02E92D38 (42 bytes)
+test31  2                              14 leaks
+test32  2  lpc_copy_class.c(155)                     0x01CBEDD8 (0 bytes)
+test32  2  lpc_copy_op_array.c(328)                  0x01CBEED8 (80 bytes)
+test32  2  lpc_copy_op_array.c(326)                  0x01CBEF88 (7 bytes)
+test32  2  lpc_copy_op_array.c(332)                  0x01CBF1E8 (10 bytes)
+test32  2  lpc_copy_op_array.c(336)                  0x01CBF2B8 (4 bytes)
+test32  2  lpc_copy_op_array.c(339)                  0x01CBF318 (72 bytes)
+test32  2  lpc_copy_op_array.c(341)                  0x01CBF3C0 (10 bytes)
+test32  2  lpc_copy_op_array.c(406)                  0x01CBF4F8 (1560 bytes)
+test32  2  lpc_copy_op_array.c(176)                  0x01CBFB70 (5 bytes)
+test32  2  lpc_copy_class.c(272)                     0x01CC0660 (42 bytes)
+test32  2                              19 leaks
+test40a 2  lpc_copy_class.c(155)                     0x013152B8 (0 bytes)
+test40a 2  lpc_copy_class.c(272)                     0x013157F0 (43 bytes)
+test40a 2                               3 leaks
+test41  2  lpc_pool.c(248)                           0x025D05E8 (32 bytes)
+test41  2  php5/Zend/zend_constants.c(403)           0x025D1F10 (6 bytes)
+test41  2  lpc_copy_class.c(155)                     0x025D4220 (0 bytes)
+test41  2  lpc_pool.c(265)                           0x025D4748 (72 bytes)
+test41  2  lpc_hashtable.c(102)                      0x025D47F0 (64 bytes)
+test41  2  php5/Zend/zend_hash.c(1312)               0x025D49A0 (77 bytes)
+test41  2  lpc_copy_op_array.c(176)                  0x025D4DA8 (5 bytes)
+test41  2  lpc_copy_class.c(272)                     0x025D4E10 (42 bytes)
+test41  2                              15 leaks
+test42  2  lpc_copy_class.c(155)                     0x01AD6C90 (0 bytes)
+test42  2  lpc_copy_class.c(272)                     0x01AD7420 (42 bytes)
+test42  2                               3 leaks
+test47  1  lpc_cache.c(318)                          0x01FAEC08 (48 bytes)
+test47  1                               1 leaks
+test47  2  lpc_cache.c(318)                          0x02532C08 (48 bytes)
+test47  2  lpc_copy_class.c(155)                     0x025415E0 (0 bytes)
+test47  2  lpc_copy_class.c(272)                     0x02541DE8 (42 bytes)
+test47  2                               4 leaks
+test48  2  lpc_copy_class.c(155)                     0x0304AD38 (0 bytes)
+test48  2  lpc_copy_class.c(272)                     0x0304B0B8 (42 bytes)
+test48  2                               3 leaks
+test52  2  lpc_copy_class.c(155)                     0x0190F970 (0 bytes)
+test52  2  lpc_copy_class.c(272)                     0x01910170 (42 bytes)
+test52  2                               5 leaks
+		

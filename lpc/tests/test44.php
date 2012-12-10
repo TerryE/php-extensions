@@ -1,0 +1,37 @@
+*** Derived from PHP test script lang/038 ***
+Convert warnings to exceptions
+<?php
+
+class MyException extends Exception
+{
+	function __construct($errstr, $errno=0, $errfile='', $errline='')
+	{
+		parent::__construct($errstr, $errno);
+		$this->file = $errfile;
+		$this->line = $errline;
+	}
+}
+
+function Error2Exception($errno, $errstr, $errfile, $errline)
+{
+	throw new MyException($errstr, $errno, $errfile, $errline);
+}
+
+$err_msg = 'no exception';
+set_error_handler('Error2Exception', E_ERROR | E_PARSE | E_CORE_ERROR | E_COMPILE_ERROR);
+
+try
+{
+	$con = fopen("/tmp/a_file_that_does_not_exist",'r');
+}
+catch (Exception $e)
+{
+	$trace = $e->getTrace();
+	var_dump($trace[0]['function']);
+	var_dump($trace[1]['function']);
+}
+
+?>
+===DONE===
+<?php exit(0); ?>
+ 

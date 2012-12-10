@@ -90,7 +90,7 @@ typedef struct _lpc_pool {
 	lpc_pool_type_t type;           
     size_t          size;            /* sum of individual element sizes */
 	uint			count;           /* count of pool elements*/
-#ifdef APC_DEBUG
+#ifdef LPC_DEBUG
 	char           *orig_filename;   /* plus the file-line creator in debug builds */
 	uint            orig_lineno;
 #endif

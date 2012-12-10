@@ -58,7 +58,7 @@ LPC_PRINT_FUNCTION(error, E_ERROR)
 LPC_PRINT_FUNCTION(warning, E_WARNING)
 LPC_PRINT_FUNCTION(notice, E_NOTICE)
 
-#ifdef __DEBUG_LPC__
+#ifdef DEBUG_LPC
 LPC_PRINT_FUNCTION(debug, E_NOTICE)
 #else
 void lpc_debug(const char *format TSRMLS_DC, ...) {}
@@ -86,43 +86,160 @@ void lpc_debug(const char *format TSRMLS_DC, ...) {}
 
 /* {{{ lpc_valid_file_match (string filename)
    LPC has cut REGEX support back to a minimum subset:
-   *  REGEXs are only supported for PHP versions >= 5.2.2 and ignored otherwise
+   *  REGEXs are only used if PHP version >= 5.2.2 and ignored otherwise
    *  The PHP regexp engine goes to great lengths to cache REGEX compiles so don't redo this!
    *  This is now thread aware and so can directly access the LPC global vector 
    *  Only a single expression is used because normal REGEX syntax (alternative selections 
       and negative assertion) can be used do all of the previous APC REGEX functions.
 */
-
-int lpc_valid_file_match(const char *filename TSRMLS_DC)
+int lpc_valid_file_match(char *filename TSRMLS_DC)
 {ENTER(lpc_valid_file_match)
-#ifdef PHP_REXEP_OK
+	char *filt = LPCG(request_context)->filter;
+	pcre_cache_entry *pce;
+	zval retval;
 
-	char *filt = LPCG(filter);
-	pcre *re;
-
-	/* handle the simple "always match and always fail conditions. */ 
-	if (filt[0] == '\0' || filt[2] == '\0') { 
+	/* handle the simple "always match conditions. */ 
+	if (filt == NULL || filt[0] =='\0' || filt[2] == '\0') { 
 		return 1;	/* always return TRUE if the filter is an empty string */
-	} else if (filt[3] == '\0' && filt[1]=='*') {
-		return 0;   /* always return FALSE if the filter is "<delim>*<delim>" */
 	}
 
-	CHECK(re = pcre_get_compiled_regex(filt, NULL, NULL TSRMLS_CC));
+    /* note that pce points to a PCRE cache entry which is cleared when nec. by PCRE */
+	if( (pce = pcre_get_compiled_regex_cache(filt, strlen(filt) TSRMLS_CC)) == NULL) {
+		lpc_warning("Invalid lpc.filter expression '%s'.  Caching is disabled." TSRMLS_CC, filt);
+		LPCG(enabled) = 0;
+        return 0;
+    }
 
-	return (pcre_exec(re, NULL, (filename), strlen(filename), 0, 0, NULL, 0) >= 0) ? 1 : 0;
-		
-#else /* PHP_REXEP_OK */
+	INIT_ZVAL(retval);
+# ifdef ZEND_ENGINE_2_4
+    php_pcre_match_impl(pce, IS_STRING, filename, strlen(filename),
+# else
+    php_pcre_match_impl(pce, filename, strlen(filename),
+# endif
+                        &retval, 0, 0, 0, 0, 0 TSRMLS_CC);
 
-	return 1;  /* if PHP version < 5.2.2 then ignore filtering and always return TRUE */
+    return (Z_TYPE(retval) == IS_LONG && Z_LVAL(retval) > 0);
+}
+ 
+int lpc_generate_cache_name(lpc_request_context_t *rc TSRMLS_DC)
+{ENTER(lpc_generate_cache_name)
+	char *filt     = rc->cachedb_pattern;
+	char *repl     = rc->cachedb_replacement;
+    char *filename = rc->request_fullpath;
+	pcre_cache_entry *pce;
+	zval *retval,*subpats;
+   /*
+    * Only do replacement processing if the simple "always match" conditions don't apply. 
+    */ 
+	if (filt && filt[0] !='\0' && filt[2] != '\0' && repl[2] !='\0') { 
 
-#endif /* PHP_REXEP_OK */
+	    if( (pce = pcre_get_compiled_regex_cache(filt, strlen(filt) TSRMLS_CC)) == NULL) {
+           /*
+            * An invalid cache regexp pattern fails to disabling caching 
+            */
+		    lpc_warning("Invalid lpc.cache_pattern expression '%s'.  Caching is disabled." TSRMLS_CC, filt);
+		    LPCG(enabled) = 0;
+            return 0;
+        }
+       /*
+        * Once compiled, the regexp is used on the filename to generate the subpatterns
+        */
+	    MAKE_STD_ZVAL(retval);
+	    ALLOC_INIT_ZVAL(subpats);
+    #ifdef ZEND_ENGINE_2_4
+        php_pcre_match_impl(pce, IS_STRING, filename, strlen(filename),
+    #else
+        php_pcre_match_impl(pce, filename, strlen(filename),
+    #endif                           /*    not gbl, no flags   start offset */
+                            retval, subpats, 0,     0,0,        0          TSRMLS_CC);
+       /*
+        * if the match has generated a sub-pattern array do a simple scan of the replacement string 
+        * replacing $0..$9 by subpatterns 0..9 respectively
+        */ 
+        if (Z_LVAL_P(retval) || (Z_TYPE_P(subpats) == IS_ARRAY)) {
+		    HashTable *ht = Z_ARRVAL_P(subpats);
+            char cdb[MAXPATHLEN];
+            char *p = rc->cachedb_replacement, *q = cdb, *qend = &cdb[MAXPATHLEN];
+            int n = strlen(p);
+            int i;
+            zval **pzv;
+            int mode = 0;    /* 1 = last was \ escape; 2 last was $; 0 otherwise */
+            memset(cdb, 0, MAXPATHLEN);
 
-error:
-	lpc_warning("Invalid lpc.filter, '%s'" TSRMLS_CC, filt);
-	efree(LPCG(filter));
-	LPCG(filter)="";  /* set the filter to an empty string: no point in repeating error */ 
-    return 0;
-	
+		    for (i = 0; i<n && q<qend; i++, p++) {
+                if (*p == '\\') {
+                    if (mode==0) {
+                        mode = 1;
+                    } else {
+                        *q++ = '\\';
+                        mode = 0;
+                    }
+                } else if (*p == '$' && mode != 1 && p[1]>='0' && p[1]<= '9' ) {
+                    mode = 2;
+                } else if (mode == 2) {
+                    if (zend_hash_index_find(ht, (*p - '0'), (void **) &pzv) == SUCCESS && 
+                        Z_TYPE_PP(pzv) == IS_STRING) {
+                        int n = MIN( qend-q, Z_STRLEN_PP(pzv) );
+                        strncpy(q, Z_STRVAL_PP(pzv), n);
+                        q += n;
+                    }
+                    mode = 0;
+                } else {
+                    *q++ = *p;
+                    mode = 0;
+                }
+            }
+            rc->cachedb_fullpath = estrdup(cdb);
+		    zval_ptr_dtor(&subpats);
+		    zval_ptr_dtor(&retval);
+            return 1;
+        } else {
+		    zval_ptr_dtor(&subpats);
+		    FREE_ZVAL(subpats);
+		    FREE_ZVAL(retval);
+        }
+    }
+   /*
+    * Default to using default naming for the CacheDB 
+    */
+    rc->cachedb_fullpath = emalloc(strlen(rc->request_dir) + strlen(rc->request_basename) + sizeof("./.cache\0"));
+    sprintf(rc->cachedb_fullpath, "%s%c.%s.cache", 
+            rc->request_dir, DEFAULT_SLASH, rc->request_basename);
+    return 1;
+}
+/* }}} */
+
+/* {{{ proto long lpc_atol( string str, int str_len)
+	   Chain to zend_atol, except for PHP 5.2.x which doesn't handle [KMG], so in this case reimplement */
+long lpc_atol(const char *str, int str_len)
+{ENTER(lpc_atol)
+#if PHP_MAJOR_VERSION >= 6 || PHP_MAJOR_VERSION == 5 && PHP_MINOR_VERSION >= 3
+    return zend_atol(str, str_len);
+#else
+    /* Re-implement zend_atol() for 5.2.x */
+    long retval;
+
+    if (!str_len) {
+        str_len = strlen(str);
+    }
+
+    retval = strtol(str, NULL, 0);
+
+    if (str_len > 0) {
+        switch (str[str_len - 1]) {
+            case 'g': case 'G':
+                retval *= 1024;
+                /* break intentionally missing */
+            case 'm': case 'M':
+                retval *= 1024;
+                /* break intentionally missing */
+            case 'k': case 'K':
+                retval *= 1024;
+                break;
+        }
+    }
+    return retval;
+#endif
 }
 /* }}} */
 
