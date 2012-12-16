@@ -30,7 +30,8 @@
 #define LPC_OP_JMP_OP2       1<<2
 #define LPC_OP_FETCH_IN      1<<3
 #define LPC_OP_FETCH_OUT     1<<4
-#define LPC_OP_INVALID       1<<5
+#define LPC_OP_INCLUDE       1<<5
+#define LPC_OP_INVALID       1<<6
 
 #define LPC_MAX_OPCODE       155
 
@@ -116,7 +117,7 @@ static zend_uchar opcode_table [] = {
     LPC_OP_OK,                                      /* 70 = ZEND_FREE */
     LPC_OP_OK,                                      /* 71 = ZEND_INIT_ARRAY */
     LPC_OP_OK,                                      /* 72 = ZEND_ADD_ARRAY_ELEMENT */
-    LPC_OP_OK,                                      /* 73 = ZEND_INCLUDE_OR_EVAL */
+    LPC_OP_OK | LPC_OP_INCLUDE,                     /* 73 = ZEND_INCLUDE_OR_EVAL */
     LPC_OP_OK,                                      /* 74 = ZEND_UNSET_VAR */
     LPC_OP_OK,                                      /* 75 = ZEND_UNSET_DIM */
     LPC_OP_OK,                                      /* 76 = ZEND_UNSET_OBJ */

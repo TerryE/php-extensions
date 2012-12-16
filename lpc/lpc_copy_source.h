@@ -33,6 +33,7 @@
 #include "zend_compile.h"
 #include "lpc.h"
 #include "lpc_pool.h"
+#include "lpc_cache.h"
 #include "lpc_copy_function.h"
 #include "lpc_copy_class.h"
 
@@ -42,8 +43,8 @@ typedef struct _lpc_entry_block_t {
     zend_op_array* op_array;    /* op_array allocated in shared memory */
     lpc_function_t* functions;  /* array of lpc_function_t's */
     lpc_class_t* classes;       /* array of lpc_class_t's */
-	uint num_functions;
- 	uint num_classes;
+    uint num_functions;
+    uint num_classes;
     char *filename;             /* path to source file */
 } lpc_entry_block_t;
 

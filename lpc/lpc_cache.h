@@ -37,17 +37,17 @@
  
  LPC and APC use very different caching strategies which are optimised for their different usecases.
 
- *	APC maintains its cache in a SMA that is typically shared across all applications. Here cache
-	integrity must be mainted through tight lock management and extra logic layers to ensure the
-	transactional consistency of any updates to the cache. Cache entries are shared across
-	applications and hence there must be high confidence in their mapping to real files in the
-	filesystem to prevent cross application side effects. 
+ *  APC maintains its cache in a SMA that is typically shared across all applications. Here cache
+    integrity must be mainted through tight lock management and extra logic layers to ensure the
+    transactional consistency of any updates to the cache. Cache entries are shared across
+    applications and hence there must be high confidence in their mapping to real files in the
+    filesystem to prevent cross application side effects. 
 
- * 	LPC maintains its cache in the filesystem and it is specific to the application and even to the
-	request path. Any updates to a cache are only committed on (successful) completion of a request
-	by a file-move operation replacing the old version. So entries only need to be identified by a
-	convention that is internally consistent within the application, and a relaxed attitude to cache
-	consistency is adopted as any updates are discarded on error.
+ *  LPC maintains its cache in the filesystem and it is specific to the application and even to the
+    request path. Any updates to a cache are only committed on (successful) completion of a request
+    by a file-move operation replacing the old version. So entries only need to be identified by a
+    convention that is internally consistent within the application, and a relaxed attitude to cache
+    consistency is adopted as any updates are discarded on error.
 
  Whilst the public interface of LPC is aligned to that of APC to minimise unnecessary code changes in
  lpc_main.c, these architectural differences essentially mean that the caching implementation in LPC
@@ -65,10 +65,10 @@
 
  The cache is considered invalid if any of the following occur:
 
- *	The PHP version number has changed (as this might invalidate stored opcodes)
+ *  The PHP version number has changed (as this might invalidate stored opcodes)
  *  The filesize or mtime of the request script has changed
  *  The cookie/query parameter associated with INI directives lpc.clear_cookie or
-	lpc.clear_parameter is set
+    lpc.clear_parameter is set
  *  Any file fails stat validation based on filesize or mtime.  
 
  In this case the cacheDB file is closed and deleted, then caching is turned off for the remainder of
@@ -97,15 +97,15 @@ typedef struct _lpc_cache_t lpc_cache_t; /* opaque cache type */
 typedef enum {
     LPC_CACHE_MISS      = 0x0,  /* A key which doesn't map onto an LPC cache entry, */
     LPC_CACHE_LOOKUP    = 0x1,  /* A key which maps onto an LPC cache entry */
-	LPC_CACHE_MISMATCH  = 0x2   /* A key which maps onto an LPC cache entry, but the file details mismatch */
+    LPC_CACHE_MISMATCH  = 0x2   /* A key which maps onto an LPC cache entry, but the file details mismatch */
 } lpc_cache_type_t;
 
 typedef struct _lpc_cache_key_t {
     char            *filename;
     int              filename_length;
     time_t           mtime;                 /* the mtime of this cached entry */
-	size_t           filesize;
-	lpc_cache_type_t type;
+    size_t           filesize;
+    lpc_cache_type_t type;
     php_stream      *fp;
 } lpc_cache_key_t;
 /* }}} */
@@ -135,7 +135,7 @@ extern void lpc_cache_clear(TSRMLS_D);
  * filename and an optional list of auxillary paths to search. include_path is searched if
  * the filename cannot be found relative to the current working directory.
  */
-extern lpc_cache_key_t* lpc_cache_make_key(zend_file_handle* h TSRMLS_DC);
+extern lpc_cache_key_t* lpc_cache_make_key(zend_file_handle* h, const char* include_path TSRMLS_DC);
 extern void lpc_cache_free_key(lpc_cache_key_t* key TSRMLS_DC);
 
 /*
@@ -157,7 +157,7 @@ extern lpc_pool* lpc_cache_retrieve(lpc_cache_key_t *key TSRMLS_DC);
  * then the cache is considered to be invalidated.   
  */
 extern void lpc_cache_insert(lpc_cache_key_t *key,
-							lpc_pool* pool);
+                            lpc_pool* pool);
 
 /*
  * Give information on the cache content

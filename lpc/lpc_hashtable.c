@@ -105,7 +105,7 @@ void lpc_copy_hashtable(HashTable* dst, const HashTable* src, lpc_pool* pool,
             for (i=0; i<nNumOfElements; i++) {
                 void *new_pData;
                 Bucket *p = list[i];
-		        zend_hash_quick_update(dst, p->arKey, p->nKeyLength, 
+                zend_hash_quick_update(dst, p->arKey, p->nKeyLength, 
                                        p->h, p->pData, rec_size, &new_pData);
                 copy_fn(new_pData, p->pData, pool);
             }

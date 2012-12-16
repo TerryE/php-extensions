@@ -30,13 +30,13 @@
 void lpc_copy_function(zend_function* dst, zend_function* src, lpc_pool* pool)
 {ENTER(lpc_copy_function)
     assert(src != NULL);
-	BITWISE_COPY(src,dst);
-	/*
+    BITWISE_COPY(src,dst);
+    /*
      * The union zend_function is defined in zend_compile.h and the first group of fields is common 
      * to all. This includes a type selector with one of the following swithed values and the three
-	 * pointers: function_name, (ce) scope, prototype and arg_info.  In the internal/overloaded
+     * pointers: function_name, (ce) scope, prototype and arg_info.  In the internal/overloaded
      * functions a shallow copy can take place; otherwise they are deep copied by the copy_op_array. 
-	 */
+     */
     switch (src->type) {
     case ZEND_INTERNAL_FUNCTION:        
     case ZEND_OVERLOADED_FUNCTION:
@@ -52,21 +52,21 @@ void lpc_copy_function(zend_function* dst, zend_function* src, lpc_pool* pool)
         assert(0);
     }
     /*
-	 * If a method is flagged ZEND_ACC_IMPLEMENTED_ABSTRACT then it MUST have a prototype defined.
+     * If a method is flagged ZEND_ACC_IMPLEMENTED_ABSTRACT then it MUST have a prototype defined.
      * However, as zend_do_inheritance sets this property correctly, the flag can be cleared here
      * and the prototype nulled. 
-	 */
+     */
     dst->common.fn_flags = src->common.fn_flags & (~ZEND_ACC_IMPLEMENTED_ABSTRACT);
     dst->common.prototype = NULL;
 }
 /* }}} */
 
 /* {{{ lpc_copy_new_functions 
-	Deep copy the last set of functions added during the last compile from the CG(function_table) */
+    Deep copy the last set of functions added during the last compile from the CG(function_table) */
 void lpc_copy_new_functions(lpc_function_t* dst_array, uint count, lpc_pool* pool)
 {ENTER(lpc_copy_new_functions)
     uint i;
-	TSRMLS_FETCH_FROM_POOL();
+    TSRMLS_FETCH_FROM_POOL();
    /*
     * The functions table can typically have ~1K entries and the source only adds a few of these, so
     * it's better to count back count-1 functions from the end of the function table.
@@ -89,9 +89,9 @@ void lpc_copy_new_functions(lpc_function_t* dst_array, uint count, lpc_pool* poo
         pool_memcpy(dst_array[i].name, key, (int) key_length);
         dst_array[i].name_len = (int) key_length-1;
 
-		pool_alloc(dst_array[i].function, sizeof(zend_function));
+        pool_alloc(dst_array[i].function, sizeof(zend_function));
         lpc_copy_function(dst_array[i].function, fun, pool);
-    }																												
+    }                                                                                                               
 }
 /* }}} */
 
@@ -101,7 +101,7 @@ void lpc_install_functions(lpc_function_t* functions, uint num_functions, lpc_po
 {ENTER(lpc_install_functions)
     lpc_function_t *fn;
     uint i;
- 	TSRMLS_FETCH_FROM_POOL();
+    TSRMLS_FETCH_FROM_POOL();
     for (i = 0, fn = functions; i < num_functions; i++, fn++) {
        /*
        * Installed functions are maintained by value in the EG(function_table). However, all of the
@@ -109,12 +109,12 @@ void lpc_install_functions(lpc_function_t* functions, uint num_functions, lpc_po
         * destroyed) into exec pool (emalloc) storage. lpc_copy_function() does this deep copy. As
         * the function structure itelf is coped by value, it can be allocated on the stack. 
         */
-	    zend_function func;
-	    lpc_copy_function(&func, fn->function,  pool);
-	    if (zend_hash_add(EG(function_table), fn->name, fn->name_len+1,
-	                        &func, sizeof(*fn->function), NULL) == FAILURE) {
-	        lpc_error("Cannot redeclare %s()" TSRMLS_CC, fn->name);
-	    }
+        zend_function func;
+        lpc_copy_function(&func, fn->function,  pool);
+        if (zend_hash_add(EG(function_table), fn->name, fn->name_len+1,
+                            &func, sizeof(*fn->function), NULL) == FAILURE) {
+            lpc_error("Cannot redeclare %s()" TSRMLS_CC, fn->name);
+        }
     }
 }
 /*

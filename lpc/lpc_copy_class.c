@@ -57,14 +57,14 @@ void copy_property_info(zend_property_info* dst, zend_property_info* src, lpc_po
 #define TAG_SETPTR(dst,src) dst = src; pool_tag_ptr(dst);
 
 #ifdef ZEND_ENGINE_2_4
-# define CE_FILENAME(ce)			(ce)->info.user.filename
+# define CE_FILENAME(ce)            (ce)->info.user.filename
 # define CE_DOC_COMMENT(ce)        (ce)->info.user.doc_comment
-# define CE_DOC_COMMENT_LEN(ce)	(ce)->info.user.doc_comment_len
+# define CE_DOC_COMMENT_LEN(ce) (ce)->info.user.doc_comment_len
 # define CE_BUILTIN_FUNCTIONS(ce)  (ce)->info.internal.builtin_functions
 #else
-# define CE_FILENAME(ce)			(ce)->filename
+# define CE_FILENAME(ce)            (ce)->filename
 # define CE_DOC_COMMENT(ce)        (ce)->doc_comment
-# define CE_DOC_COMMENT_LEN(ce)	(ce)->doc_comment_len
+# define CE_DOC_COMMENT_LEN(ce) (ce)->doc_comment_len
 # define CE_BUILTIN_FUNCTIONS(ce)  (ce)->builtin_functions
 #endif
 
@@ -99,22 +99,22 @@ void lpc_copy_class_entry(zend_class_entry* dst, zend_class_entry* src, lpc_pool
  */
 {ENTER(lpc_copy_class_entry)
     uint i = 0;
-	int is_copyout = !is_exec_pool();
-	TSRMLS_FETCH_FROM_POOL();
+    int is_copyout = !is_exec_pool();
+    TSRMLS_FETCH_FROM_POOL();
 
-	BITWISE_COPY(src,dst);
+    BITWISE_COPY(src,dst);
    /*-
     * Set all fields that shouldn't be inherited on copy to 0/NULL 
     */
     dst->name = NULL;
-	memset(&dst->function_table, 0, sizeof(dst->function_table));
+    memset(&dst->function_table, 0, sizeof(dst->function_table));
     memset(&dst->properties_info, 0, sizeof(dst->properties_info));
     memset(&dst->constants_table, 0, sizeof(dst->constants_table));
    /*
-	* The interfaces are populated at runtime using ADD_INTERFACE 
-	*/
+    * The interfaces are populated at runtime using ADD_INTERFACE 
+    */
    /* 
-	* These will either be set inside lpc_fixup_hashtable or they will be copied
+    * These will either be set inside lpc_fixup_hashtable or they will be copied
     * out from parent inside zend_do_inheritance. 
     */
     dst->parent = NULL;
@@ -130,52 +130,53 @@ void lpc_copy_class_entry(zend_class_entry* dst, zend_class_entry* src, lpc_pool
     dst->__tostring = NULL;
 #endif
 #ifdef ZEND_ENGINE_2_3
-	dst->__callstatic = NULL;
+    dst->__callstatic = NULL;
 #endif
    /*
-	* Unset function proxies 
-	*/
+    * Unset function proxies 
+    */
     dst->serialize_func = NULL;
     dst->unserialize_func = NULL;
 
     if (src->name) {
         pool_strdup(dst->name, src->name);
     }
-	
- 	if (is_copyout) {
-	   /*
+    
+    if (is_copyout) {
+       /*
         * The compiler output count includes inherited interfaces as well, but the count
         * to be saved is count of first <n> real dynamic ones which were zero'd out in
         * zend_do_end_class_declaration
- 		*/
-		for(i = 0 ; (i < src->num_interfaces) && !src->interfaces[i]; i++) {}
-		dst->num_interfaces = (i < src->num_interfaces) ? i : 0;
-	    dst->interfaces = NULL;  
-	} else {
-		dst->num_interfaces = src->num_interfaces;
-		pool_alloc(dst->interfaces, sizeof(zend_class_entry*) * src->num_interfaces);
-        memset(dst->interfaces, 0,  sizeof(zend_class_entry*) * src->num_interfaces);
-  
-	} 
+        */
+        for(i = 0 ; (i < src->num_interfaces) && !src->interfaces[i]; i++) {}
+        dst->num_interfaces = (i < src->num_interfaces) ? i : 0;
+        dst->interfaces = src->interfaces ? ((void *) 1) : NULL;  
+    } else { /* is copyin */
+        dst->num_interfaces = src->num_interfaces;
+        if (src->interfaces) { /* Only alloc array if original was allocated */
+            pool_alloc(dst->interfaces, sizeof(zend_class_entry*) * src->num_interfaces);
+            memset(dst->interfaces, 0,  sizeof(zend_class_entry*) * src->num_interfaces);
+        }  
+    } 
    /*
-	* Copy and fixup the function table
+    * Copy and fixup the function table
     */
     COPY_HT(function_table, lpc_copy_function, zend_function, check_copy_method, NULL);
  
     lpc_fixup_hashtable(&dst->function_table, (lpc_ht_fixup_fun_t)fixup_method, src, dst, pool);
    /*
-	* Copy the default properties table. Unfortunately this is different for Zend 2.4 and previous versions 
+    * Copy the default properties table. Unfortunately this is different for Zend 2.4 and previous versions 
     */
 #ifdef ZEND_ENGINE_2_4
-	dst->default_properties_count = src->default_properties_count;
+    dst->default_properties_count = src->default_properties_count;
     if (src->default_properties_count) {
         pool_alloc(dst->default_properties_table, 
-		           sizeof(zval*) * src->default_properties_count);
+                   sizeof(zval*) * src->default_properties_count);
         for (i = 0; i < src->default_properties_count; i++) {
             if (src->default_properties_table[i]) {
                 lpc_copy_zval_ptr(&dst->default_properties_table[i], 
-				                  (const zval**) &src->default_properties_table[i], pool);
-				pool_tag_ptr(dst->default_properties_table[i]);
+                                  (const zval**) &src->default_properties_table[i], pool);
+                pool_tag_ptr(dst->default_properties_table[i]);
             } else {
                 dst->default_properties_table[i] = NULL;
             }
@@ -188,16 +189,16 @@ void lpc_copy_class_entry(zend_class_entry* dst, zend_class_entry* src, lpc_pool
 #endif
 
    /*
-	* Copy the properties info table and fixup scope attribute (introduced in Zend 2.2) 
+    * Copy the properties info table and fixup scope attribute (introduced in Zend 2.2) 
     */
     COPY_HT(properties_info, copy_property_info, zend_property_info, check_copy_property_info, NULL);
 #ifdef ZEND_ENGINE_2_2
     lpc_fixup_hashtable(&dst->properties_info, 
-	                   (lpc_ht_fixup_fun_t)fixup_property_info, 
-	                   src, dst, pool);
+                       (lpc_ht_fixup_fun_t)fixup_property_info, 
+                       src, dst, pool);
 #endif
    /*
-	* Copy the default static members table. Again this was changed at Zend 2.4 
+    * Copy the default static members table. Again this was changed at Zend 2.4 
     */
 #ifdef ZEND_ENGINE_2_4
     dst->default_static_members_count = src->default_static_members_count;
@@ -205,12 +206,12 @@ void lpc_copy_class_entry(zend_class_entry* dst, zend_class_entry* src, lpc_pool
     if (src->default_static_members_count) {
 
         pool_alloc(dst->default_static_members_table, 
-		           (sizeof(zval*) * src->default_static_members_count));
+                   (sizeof(zval*) * src->default_static_members_count));
 
         for (i = 0; i < src->default_static_members_count; i++) {
             if (src->default_static_members_table[i]) {
                lpc_copy_zval_ptr(&dst->default_static_members_table[i], 
-				                 (const zval**)&src->default_static_members_table[i], pool);
+                                 (const zval**)&src->default_static_members_table[i], pool);
             } else {
                 dst->default_static_members_table[i] = NULL;
             }
@@ -225,7 +226,7 @@ void lpc_copy_class_entry(zend_class_entry* dst, zend_class_entry* src, lpc_pool
 
     if (src->static_members != &src->default_static_members) {
         pool_alloc_ht(dst->static_members); 
-	    COPY_HT_P(static_members, lpc_copy_zval_ptr, zval *,
+        COPY_HT_P(static_members, lpc_copy_zval_ptr, zval *,
                   check_copy_static_member, src->static_members);
     } else {
         dst->static_members = &dst->default_static_members;
@@ -233,56 +234,66 @@ void lpc_copy_class_entry(zend_class_entry* dst, zend_class_entry* src, lpc_pool
     }
 #endif
    /*
-	* Copy the constants table 
+    * Copy the constants table 
     */
     COPY_HT(constants_table, lpc_copy_zval_ptr, zval *, check_copy_constant, NULL);
 
-	/* In the case of a user class dup the doc_comment if any */
+    /* In the case of a user class dup the doc_comment if any */
     if (src->type == ZEND_USER_CLASS && CE_DOC_COMMENT(src)) {
         pool_memcpy(CE_DOC_COMMENT(dst),
-		            CE_DOC_COMMENT(src), (CE_DOC_COMMENT_LEN(src) + 1));
+                    CE_DOC_COMMENT(src), (CE_DOC_COMMENT_LEN(src) + 1));
     } else {
-	    CE_DOC_COMMENT(dst) = NULL;
-	}
+        CE_DOC_COMMENT(dst) = NULL;
+    }
 
-	/* For an internal class dup the null terminated list of builtin functions */ 
+    /* For an internal class dup the null terminated list of builtin functions */ 
     if (src->type == ZEND_INTERNAL_CLASS && CE_BUILTIN_FUNCTIONS(src)) {
         int n;
 
         for (n = 0; CE_BUILTIN_FUNCTIONS(src)[n].fname != NULL; n++) {}
 
         pool_memcpy(CE_BUILTIN_FUNCTIONS(dst), 
-					CE_BUILTIN_FUNCTIONS(src), ((n + 1) * sizeof(zend_function_entry)));
+                    CE_BUILTIN_FUNCTIONS(src), ((n + 1) * sizeof(zend_function_entry)));
 
         for (i = 0; i < n; i++) {
-			zend_function_entry *fsrc = (zend_function_entry *) &CE_BUILTIN_FUNCTIONS(src)[i];
-			zend_function_entry *fdst = (zend_function_entry *) &CE_BUILTIN_FUNCTIONS(dst)[i];
+            zend_function_entry *fsrc = (zend_function_entry *) &CE_BUILTIN_FUNCTIONS(src)[i];
+            zend_function_entry *fdst = (zend_function_entry *) &CE_BUILTIN_FUNCTIONS(dst)[i];
 
-			if (fsrc->fname) {
-			   pool_strdup(fdst->fname, fsrc->fname);
-			}
+            if (fsrc->fname) {
+               pool_strdup(fdst->fname, fsrc->fname);
+            }
 
-			if (fsrc->arg_info) {
-				lpc_copy_arg_info_array((zend_arg_info **) &fdst->arg_info, fsrc->arg_info, fsrc->num_args, pool);
-			}
+            if (fsrc->arg_info) {
+                lpc_copy_arg_info_array((zend_arg_info **) &fdst->arg_info, fsrc->arg_info, fsrc->num_args, pool);
+            }
         }
         *(char**)&(CE_BUILTIN_FUNCTIONS(dst)[n].fname) = NULL;
     }
 
     if (src->type == ZEND_USER_CLASS && CE_FILENAME(src)) {
-        pool_strdup(CE_FILENAME(dst), CE_FILENAME(src));
+        /*
+         * is the class filename is the current source file name then the RTS doesn't free this as
+         * it also points to the op_array filename, so replicate this to avoid the memory leak.
+         */
+        if (is_copy_out() && !strcmp(LPCG(current_filename), CE_FILENAME(src))) {
+            CE_FILENAME(dst) = ((char *) 1);
+        } else if (is_copy_in() && CE_FILENAME(src) == ((char *) 1)) {
+            CE_FILENAME(dst) = LPCG(current_filename);
+        } else {
+            pool_strdup(CE_FILENAME(dst), CE_FILENAME(src));
+        }
     } else {
-	    CE_FILENAME(dst) = NULL;
-	}
+        CE_FILENAME(dst) = NULL;
+    }
 }
 /* }}} */
 
 /* {{{ lpc_copy_new_classes
-	Deep copy the last set of classes added during the last compile from the CG(function_table) */
+    Deep copy the last set of classes added during the last compile from the CG(function_table) */
 void lpc_copy_new_classes(lpc_class_t* cl_array, zend_uint count, lpc_pool* pool)
 {ENTER(lpc_copy_new_classes)
     zend_uint i;
-	TSRMLS_FETCH_FROM_POOL();
+    TSRMLS_FETCH_FROM_POOL();
 
     /* count back count-1 functions from the end of the class table */
     zend_hash_internal_pointer_end(CG(class_table));
@@ -295,16 +306,16 @@ void lpc_copy_new_classes(lpc_class_t* cl_array, zend_uint count, lpc_pool* pool
         char* key;
         uint key_length;
         zend_class_entry *class, **class_ptr;
-		lpc_class_t *cle = &cl_array[i];
+        lpc_class_t *cle = &cl_array[i];
 
         zend_hash_get_current_key_ex(CG(class_table), &key, &key_length, NULL, 0, NULL);
         zend_hash_get_current_data(CG(class_table), (void**) &class_ptr);
-		class= *class_ptr;
+        class= *class_ptr;
 
         pool_memcpy(cle->name, key, (int) key_length);
         cle->name_len = (int) key_length-1;
 
-		pool_alloc(cle->class_entry, sizeof(zend_class_entry));
+        pool_alloc(cle->class_entry, sizeof(zend_class_entry));
         lpc_copy_class_entry(cle->class_entry, class, pool);
 
         /*
@@ -326,67 +337,67 @@ void lpc_copy_new_classes(lpc_class_t* cl_array, zend_uint count, lpc_pool* pool
 zend_bool lpc_install_classes(lpc_class_t* classes, zend_uint num_classes, lpc_pool *pool)
 {ENTER(lpc_install_classes)
    /*
-	* There could be problems class inheritance problems during the module load, especially if
-	* autoloading is being employed as the loading of the child class triggers autoload of the
-	* parent. A missing parent will therefore forces explicit re-compile whether __autoload is
-	* enabled or not, because __autoload errors cause php to die.
+    * There could be problems class inheritance problems during the module load, especially if
+    * autoloading is being employed as the loading of the child class triggers autoload of the
+    * parent. A missing parent will therefore forces explicit re-compile whether __autoload is
+    * enabled or not, because __autoload errors cause php to die.
     *
-	* Failing back to a recompile requires the uninstalling any classes already loaded and aborting
-	* any function or opcode loads.  
+    * Failing back to a recompile requires the uninstalling any classes already loaded and aborting
+    * any function or opcode loads.  
     */
     zend_uint i;
     int i_fail = -1;
     TSRMLS_FETCH_FROM_POOL();
 
-	for (i = 0; i < num_classes; i++) {
-		lpc_class_t*       cl = classes + i;
-		zend_class_entry*  dst_cl;
+    for (i = 0; i < num_classes; i++) {
+        lpc_class_t*       cl = classes + i;
+        zend_class_entry*  dst_cl;
         zend_class_entry** parent = NULL;
 
-		if(cl->name_len != 0 && cl->name[0] == '\0') {
-		    if(zend_hash_exists(CG(class_table), cl->name, cl->name_len+1)) {
-		        continue;
-		    }
-		}
+        if(cl->name_len != 0 && cl->name[0] == '\0') {
+            if(zend_hash_exists(CG(class_table), cl->name, cl->name_len+1)) {
+                continue;
+            }
+        }
 
         if (cl->parent_name != NULL) {
-			if (zend_lookup_class_ex(cl->parent_name, strlen(cl->parent_name), 
+            if (zend_lookup_class_ex(cl->parent_name, strlen(cl->parent_name), 
 #ifdef ZEND_ENGINE_2_4  /* Adds an extra paramater which is NULL for this lookup */ 
                                      NULL,
 #endif
                                      0, &parent TSRMLS_PC) == FAILURE) {
-				i_fail = i;
-				break;
-			}
-		}	
-		pool_alloc(dst_cl, sizeof(zend_class_entry));
-		lpc_copy_class_entry(dst_cl, cl->class_entry,  pool);
+                i_fail = i;
+                break;
+            }
+        }   
+        pool_alloc(dst_cl, sizeof(zend_class_entry));
+        lpc_copy_class_entry(dst_cl, cl->class_entry,  pool);
 
-		if (parent) {
-	        dst_cl->parent = *parent;
-	        zend_do_inheritance(dst_cl, *parent TSRMLS_PC);
-	    }
-		if (zend_hash_add(EG(class_table), cl->name, cl->name_len+1,
-		                  &dst_cl, sizeof(zend_class_entry*), NULL) == FAILURE) {
-		    lpc_error("Cannot redeclare class %s" TSRMLS_CC, cl->name);
-			i_fail = i;
-			break;
-		}
-	}
+        if (parent) {
+            dst_cl->parent = *parent;
+            zend_do_inheritance(dst_cl, *parent TSRMLS_PC);
+        }
+        if (zend_hash_add(EG(class_table), cl->name, cl->name_len+1,
+                          &dst_cl, sizeof(zend_class_entry*), NULL) == FAILURE) {
+            lpc_error("Cannot redeclare class %s" TSRMLS_CC, cl->name);
+            i_fail = i;
+            break;
+        }
+    }
 
-	if (i_fail >= 0) {
+    if (i_fail >= 0) {
        /*
         * There has been a class inheritance failure, so remove installed classes in reverse order
         * and return. Note that this still leaves the class structures in memory so these WILL leak
         */
-		for (i = i_fail; i >= 0; i--) {
-			lpc_class_t* cl = classes + i;
-		    if (zend_hash_del(EG(class_table), cl->name, cl->name_len+1) == FAILURE) {
-       			 lpc_error("Cannot delete class %s" TSRMLS_CC, cl->name);
-			}
-		}
-		return FAILURE;
-	}
+        for (i = i_fail; i >= 0; i--) {
+            lpc_class_t* cl = classes + i;
+            if (zend_hash_del(EG(class_table), cl->name, cl->name_len+1) == FAILURE) {
+                 lpc_error("Cannot delete class %s" TSRMLS_CC, cl->name);
+            }
+        }
+        return FAILURE;
+    }
     return SUCCESS;
 }
 /* }}} */
@@ -394,7 +405,7 @@ zend_bool lpc_install_classes(lpc_class_t* classes, zend_uint num_classes, lpc_p
 /* {{{ copy_property_info */
 void copy_property_info(zend_property_info* dst, zend_property_info* src, lpc_pool* pool)
 {ENTER(copy_property_info)
-	BITWISE_COPY(src,dst);
+    BITWISE_COPY(src,dst);
 
    if (src->name) {
         /* private members are stored inside property_info as a mangled
@@ -423,7 +434,7 @@ static lpc_check_t check_copy_default_property(Bucket* p, const void *arg1, cons
 
     if (parent && zend_hash_quick_find(&parent->default_properties, p->arKey, 
                                        p->nKeyLength, p->h, (void **) &parent_prop)==SUCCESS &&
-		(parent_prop && child_prop) && (*parent_prop) == (*child_prop)) {
+        (parent_prop && child_prop) && (*parent_prop) == (*child_prop)) {
         return CHECK_SKIP_ELT;
     }
 
@@ -558,7 +569,7 @@ static lpc_check_t check_copy_constant(Bucket* p, const void *arg1, const void *
     #define SET_IF_SAME_NAME(member) \
         if(src->member && !strcmp(zf->common.function_name, src->member->common.function_name)) { \
             TAG_SETPTR(dst->member, zf); \
-		}
+        }
 void fixup_method(Bucket *p, zend_class_entry *src, zend_class_entry *dst, lpc_pool* pool)
 {ENTER(fixup_method)
     zend_function* zf = p->pData;
@@ -575,7 +586,7 @@ void fixup_method(Bucket *p, zend_class_entry *src, zend_class_entry *dst, lpc_p
             TAG_SETPTR(dst->constructor, zf);
         } else if (zf->common.fn_flags & ZEND_ACC_DTOR) {
             TAG_SETPTR(dst->destructor, zf);
-		} else if (zf->common.fn_flags & ZEND_ACC_CLONE) {
+        } else if (zf->common.fn_flags & ZEND_ACC_CLONE) {
             TAG_SETPTR(dst->clone, zf);
         } else {
             SET_IF_SAME_NAME(__get);

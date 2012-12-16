@@ -34,7 +34,6 @@
 #include "lpc_cache.h"
 #include "lpc_request.h"
 #include "lpc_copy_source.h"
-
 #include "php_globals.h"
 #include "php_ini.h"
 #include "SAPI.h"
@@ -75,7 +74,9 @@ perdir_ini_entry("max_file_size",          "1M")
 perdir_ini_entry("stat_percentage",         "0")
 perdir_ini_entry("clear_cookie",    (char*)NULL)
 perdir_ini_entry("clear_parameter", (char*)NULL)
-perdir_ini_entry("filter" ,                  "")
+perdir_ini_entry("filter",                   "")
+perdir_ini_entry("resolve_paths",           "1")
+perdir_ini_entry("debug_flags",             "0")
 PHP_INI_END()
 /* }}} */
 
@@ -83,37 +84,42 @@ PHP_INI_END()
 static PHP_MINFO_FUNCTION(lpc)
 {ENTER(PHP_MINFO_FUNCTION)
     lpc_request_context_t *rc=LPCG(request_context);
-   	char buf[100];
+    char buf[100];
 #define info_convert(f,v) snprintf(buf, sizeof(buf)-1, f, LPCG(v)) 
+#define info_convert_rc(f,v) snprintf(buf, sizeof(buf)-1, f, rc->v) 
     int i;
 
     php_info_print_table_start();
     php_info_print_table_header(2, "LPC Support", LPCG(enabled) ? "enabled" : "disabled");
     php_info_print_table_row(2, "Version", PHP_LPC_VERSION);
-#ifdef DEBUG_LPC
+#ifdef LPC_DEBUG
     php_info_print_table_row(2, "LPC Debugging", "Enabled");
 #else
     php_info_print_table_row(2, "LPC Debugging", "Disabled");
 #endif
     php_info_print_table_row(2, "LPC Revision", "$Revision: 307215 $");
     php_info_print_table_row(2, "LPC Build Date", __DATE__ " " __TIME__);
-	info_convert("%lu", cache_by_default);
-	php_info_print_table_row(2, "Cache by default", buf);    
-	php_info_print_table_row(2, "Filter", rc->filter);
-	php_info_print_table_row(2, "Cache pattern", rc->cachedb_pattern);
-	php_info_print_table_row(2, "Cache replacement", rc->cachedb_replacement);
-	info_convert("%lu", file_update_protection);
-	php_info_print_table_row(2, "File update protection",buf);
-	info_convert("%lu", enable_cli);
-	php_info_print_table_row(2, "Enable CLI",buf);
-	info_convert("%lu", max_file_size);
-	php_info_print_table_row(2, "Max file size",buf);
-	info_convert("%lu", fpstat);
-	php_info_print_table_row(2, "Stat percentage",buf);
-	info_convert("%lu", clear_cookie);
-	php_info_print_table_row(2, "Clear cookie",buf);
-	info_convert("%lu", clear_parameter);
-	php_info_print_table_row(2, "Clear parameter",buf);
+    info_convert("%lu", cache_by_default);
+    php_info_print_table_row(2, "Cache by default", buf);    
+    php_info_print_table_row(2, "Filter", rc->filter);
+    php_info_print_table_row(2, "Cache pattern", rc->cachedb_pattern);
+    php_info_print_table_row(2, "Cache replacement", rc->cachedb_replacement);
+    info_convert("%lu", file_update_protection);
+    php_info_print_table_row(2, "File update protection",buf);
+    info_convert("%lu", enable_cli);
+    php_info_print_table_row(2, "Enable CLI",buf);
+    info_convert("%lu", max_file_size);
+    php_info_print_table_row(2, "Max file size",buf);
+    info_convert("%lu", fpstat);
+    php_info_print_table_row(2, "Stat percentage",buf);
+    info_convert("%lu", clear_cookie);
+    php_info_print_table_row(2, "Clear cookie",buf);
+    info_convert("%lu", clear_parameter);
+    php_info_print_table_row(2, "Clear parameter",buf);
+    info_convert("%lu", resolve_paths);
+    php_info_print_table_row(2, "Resolve paths",buf);
+    info_convert("%u", debug_flags);
+    php_info_print_table_row(2, "Debug flags",buf);
     php_info_print_table_end();
     DISPLAY_INI_ENTRIES();
 }
@@ -127,7 +133,7 @@ static PHP_GINIT_FUNCTION(lpc)
     * zero-fills the global structure and any non-zero elements are assigned
     * in MINIT or RINIT as appropriate.
     */  
-	memset(lpc_globals, 0, sizeof(zend_lpc_globals));
+    memset(lpc_globals, 0, sizeof(zend_lpc_globals));
 }
 /* }}} */
 
@@ -140,12 +146,11 @@ static PHP_GSHUTDOWN_FUNCTION(lpc)
     * LPCG allocated elements */ 
 #if 0
     lpc_cache_t* lpc_cache;       /* the global compiler cache */
-    char *clear_cookie;	          /* Name of Cookie which will force a cache clear */
+    char *clear_cookie;           /* Name of Cookie which will force a cache clear */
     char *clear_parameter;        /* Name of Request parameter which will force a cache clear */
 #endif
 
     /* the rest of the globals are cleaned up in lpc_module_shutdown() */
-	if (1) { ENTER(DUMP) }
 }
 /* }}} */
 
@@ -187,7 +192,7 @@ static PHP_MSHUTDOWN_FUNCTION(lpc)
 static PHP_RINIT_FUNCTION(lpc)
 {ENTER(PHP_RINIT_FUNCTION)
 
-	LPCG(enabled) = lpc_request_init(TSRMLS_C);
+    LPCG(enabled) = lpc_request_init(TSRMLS_C);
 
     return SUCCESS;
 }
@@ -196,10 +201,14 @@ static PHP_RINIT_FUNCTION(lpc)
 /* {{{ PHP_RSHUTDOWN_FUNCTION(lpc) */
 static PHP_RSHUTDOWN_FUNCTION(lpc)
 {ENTER(PHP_RSHUTDOWN_FUNCTION)
+    if (LPCG(debug_flags)&LPC_DBG_COUNTS) { /* Print out function summary counts */
+        ENTER(DUMP);
+    }
+
     if(LPCG(enabled)) {
         lpc_request_shutdown(TSRMLS_C);
     }
-	lpc_dtor_request_context(TSRMLS_C);
+    lpc_dtor_request_context(TSRMLS_C);
     return SUCCESS;
 }
 /* }}} */
@@ -231,14 +240,13 @@ PHP_FUNCTION(lpc_cache_info)
 /* {{{ proto void lpc_clear_cache() */
 PHP_FUNCTION(lpc_clear_cache)
 {ENTER(PHP-lpc_clear_cache)
-	LPCG(force_cache_delete) = 1;
+    LPCG(force_cache_delete) = 1;
     RETURN_TRUE;
 }
 /* }}} */    
 
 /* {{{ proto mixed lpc_compile_file(mixed filenames [, bool atomic])
  */
-/////// TODO: question the entire raison d'etre for this?????????
 PHP_FUNCTION(lpc_compile_file) 
 {ENTER(PHP-lpc_compile_file) 
     zval *file;
@@ -370,11 +378,11 @@ zend_module_entry lpc_module_entry = {
     PHP_RSHUTDOWN(lpc),          /* request shutdown */
     PHP_MINFO(lpc),              /* extension info */
     NO_VERSION_YET,              /* extension version */
-	PHP_MODULE_GLOBALS(lpc),     /* globals descriptor */
-	PHP_GINIT(lpc),              /* globals ctor */
-	PHP_GSHUTDOWN(lpc),          /* globals dtor */
-	NULL,                        /* No post deactivate */
-	STANDARD_MODULE_PROPERTIES_EX
+    PHP_MODULE_GLOBALS(lpc),     /* globals descriptor */
+    PHP_GINIT(lpc),              /* globals ctor */
+    PHP_GSHUTDOWN(lpc),          /* globals dtor */
+    NULL,                        /* No post deactivate */
+    STANDARD_MODULE_PROPERTIES_EX
 };
 
 #ifdef COMPILE_DL_LPC

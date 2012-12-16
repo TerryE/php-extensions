@@ -72,7 +72,7 @@ static void        copy_opcodes_out(zend_op_array *dst, zend_op_array *src, lpc_
 #  define CONST_PZV(zo_op) zo_op.zv
 #  define ZO_EA_IS_FETCH_GLOBAL(zo_op) ((zo_op->extended_value & ZEND_FETCH_TYPE_MASK) == ZEND_FETCH_GLOBAL)
 #  define ZOP_TYPE_IS_CONSTANT_STRING(zo_op) \
-	(zo_op ## _type == IS_CONST) && (Z_TYPE_P(zo_op.zv) == IS_STRING)
+    (zo_op ## _type == IS_CONST) && (Z_TYPE_P(zo_op.zv) == IS_STRING)
 #  define IS_AUTOGLOBAL_SETFLAG(member) (!strcmp(Z_STRVAL_P(zo->op1.zv), #member)) {flags->member = 1;}
 #  define ZOP_TYPE_IS_CONSTANT_ARRAY(zo_op) \
     (zo_op ## _type == IS_CONST && Z_TYPE_P(zo_op.zv) == IS_CONSTANT_ARRAY)
@@ -81,16 +81,16 @@ static void        copy_opcodes_out(zend_op_array *dst, zend_op_array *src, lpc_
 #else
 
 #  define COPY_CONST_ZVAL_IN_IF_CONST(fld) if (dst_zo->fld.op_type == IS_CONST) \
-	{ copy_zval_in(&dst_zo->fld.u.constant, &src_zo->fld.u.constant, pool); }
+    { copy_zval_in(&dst_zo->fld.u.constant, &src_zo->fld.u.constant, pool); }
 #  define COPY_CONST_ZVAL_OUT_IF_CONST(fld) if (dst_zo->fld.op_type == IS_CONST) \
-	{ copy_zval_out(&dst_zo->fld.u.constant, &src_zo->fld.u.constant, pool); }
+    { copy_zval_out(&dst_zo->fld.u.constant, &src_zo->fld.u.constant, pool); }
 #  define CONST_PZV(zo_op) &(zo_op.u.constant)
 #  define ZO_EA_IS_FETCH_GLOBAL(zo_op) (zo_op->op2.u.EA.type == ZEND_FETCH_GLOBAL)
 #  define ZOP_TYPE_IS_CONSTANT_STRING(zo_op) \
-	(zo_op.op_type == IS_CONST) && (Z_TYPE(zo_op.u.constant) == IS_STRING)
+    (zo_op.op_type == IS_CONST) && (Z_TYPE(zo_op.u.constant) == IS_STRING)
 #  define IS_AUTOGLOBAL_SETFLAG(member) (!strcmp(Z_STRVAL_P(const_pzv), #member)) {flags->member = 1;}
 #  define ZOP_TYPE_IS_CONSTANT_ARRAY(zo_op) \
-	(zo_op.op_type == IS_CONST && Z_TYPE(zo_op.u.constant) == IS_CONSTANT_ARRAY)
+    (zo_op.op_type == IS_CONST && Z_TYPE(zo_op.u.constant) == IS_CONSTANT_ARRAY)
 #  define JUMP_ADDR(op) op.u.jmp_addr
 
 #endif
@@ -100,7 +100,7 @@ static void        copy_opcodes_out(zend_op_array *dst, zend_op_array *src, lpc_
 static void copy_zval_out(zval* dst, const zval* src, lpc_pool* pool)
 {ENTER(copy_zval_out)
 
-	memset(dst, 0, sizeof(zval));
+    memset(dst, 0, sizeof(zval));
    /*
     * APC uses a hashTable APCG(copied_zvals) area, and inserting each zval ref into this and 
     * exiting on repeat insert. This adds a hash insert to every zval copy.  LPC uses a more 
@@ -146,7 +146,7 @@ static void copy_zval_out(zval* dst, const zval* src, lpc_pool* pool)
 
         case IS_ARRAY:
         case IS_CONSTANT_ARRAY:
-		    pool_alloc_ht(Z_ARRVAL_P(dst));
+            pool_alloc_ht(Z_ARRVAL_P(dst));
             COPY_HT_P(value.ht, lpc_copy_zval_ptr, zval *, NULL, NULL);
             break;
 
@@ -178,7 +178,7 @@ static inline void copy_zval_in(zval* dst, const zval* src, lpc_pool* pool)
 
         case IS_ARRAY:
         case IS_CONSTANT_ARRAY:
-		    pool_alloc_ht(Z_ARRVAL_P(dst));
+            pool_alloc_ht(Z_ARRVAL_P(dst));
             COPY_HT_P(value.ht, lpc_copy_zval_ptr, zval *, NULL, NULL);
             break;
 
@@ -203,7 +203,7 @@ static void copy_opcodes_out(zend_op_array *dst, zend_op_array *src, lpc_pool* p
     * flags are kept in an op_array reserved field. lpc_zend_init() calls zend_get_resource_handle()
     * to allocate this field and set lpc_reserved_offset.  As this is the same offset for all LPC 
     * threads, this can be and is a true global.
- 	*/
+    */
     lpc_opflags_t flags = (lpc_opflags_t) ((size_t) dst->reserved[lpc_reserved_offset]);
     zend_op *src_zo, *dst_zo;
     zend_op *src_zo_last = src->opcodes + src->last;
@@ -216,13 +216,43 @@ static void copy_opcodes_out(zend_op_array *dst, zend_op_array *src, lpc_pool* p
          src_zo++, dst_zo++) {
         zend_uchar opcode_flags = opcode_table[src_zo->opcode];
         LPCGP(copied_zvals) = LPC_COPIED_ZVALS_COUNTDOWN;
+       /*
+        * Using constant relative paths generates a path search per include at runtime which is bad 
+        * news for performance so if lpc.resolve_paths is set, convert these to absolute paths by 
+        * resolving against the include_path. This is done to the SOURCE constant -- hence why it
+        * is done BEFORE the op1 copy.
+        */
 
-/*        COPY_ZNODE(result);
-        COPY_ZNODE(op1);
-        COPY_ZNODE(op2);
-*/
+        if ((LPCG(resolve_paths) && 
+            opcode_flags & LPC_OP_INCLUDE) && ZOP_TYPE_IS_CONSTANT_STRING(src_zo->op1)) {
+            zval *const_pzv = CONST_PZV(src_zo->op1);
+            char *resolved_path;
+            if(resolved_path = lpc_resolve_path(const_pzv TSRMLS_CC)) {
+               /*
+                * If the path is not absolute or explicitly current dir relative, then it is 
+                * resolved against the include_path, script path and current working directory. The
+                * op1 parameter is then overwritten with the new fullpath constant.  This leaves
+                * the old string dangling in the serial pool, but what the hell. 
+                */
 #ifdef ZEND_ENGINE_2_4
-////// TODO: APC treat this as a bitwise copy but need to check this.
+//////////// TODO: this all needs revisiting as part of 2.4 regression
+                pool_alloc(dst_zo->op1.literal, sizeof(zend_literal));
+                Z_STRLEN_P(const_pzv) = strlen(resolved_path);
+                pool_memcpy(Z_STRVAL_P(const_pzv), resolved_path, Z_STRLEN_P(const_pzv)+1);
+                Z_SET_REFCOUNT_P(const_pzv, 2);
+                Z_SET_ISREF_P(const_pzv);
+                dst_zo->op1.literal->hash_value = zend_hash_func(Z_STRVAL_P(const_pzv), 
+                                                                 Z_STRLEN_P(const_pzv) + 1);
+#else
+//////////// TODO:  may need more checking v.v. LVAL clone rather than overwrite
+                efree(Z_STRVAL_P(const_pzv));
+                Z_STRLEN_P(const_pzv) = strlen(resolved_path);
+                Z_STRVAL_P(const_pzv) = resolved_path;
+#endif
+            }
+        }
+#ifdef ZEND_ENGINE_2_4
+////// TODO: APC treat this as a bitwise copy but need to check this and add this code.
 #else
         COPY_CONST_ZVAL_OUT_IF_CONST(result);
         COPY_CONST_ZVAL_OUT_IF_CONST(op1);
@@ -245,7 +275,7 @@ static void copy_opcodes_out(zend_op_array *dst, zend_op_array *src, lpc_pool* p
            /*
             * Some extra functionality is needed to support the auto_globals_jit INI parameter. When
             * this is enabled, $_SERVER and related variables are JiT created when first referenced
-            * instead of at request initiation -- some extra complexity for a small performance
+         s   * instead of at request initiation -- some extra complexity for a small performance
             * gain. Loading an op array which refers to must trigger this process, hence the
             * appropriate flag bits are set during the copy-out scan to simplify this at copy-in. 
             */  
@@ -271,7 +301,7 @@ static void copy_opcodes_out(zend_op_array *dst, zend_op_array *src, lpc_pool* p
         } else {
             if(!(opcode_flags & LPC_OP_OK)) {
                 assert(0);   /* something is very wrong if we get here */
-            }	
+            }   
         }
     } /* for each zend_op */
 
@@ -285,7 +315,7 @@ static void copy_opcodes_out(zend_op_array *dst, zend_op_array *src, lpc_pool* p
 void lpc_copy_op_array(zend_op_array* dst, zend_op_array* src, lpc_pool* pool)
 {ENTER(lpc_copy_op_array)
     zend_uint i;
-	TSRMLS_FETCH_FROM_POOL();
+    TSRMLS_FETCH_FROM_POOL();
 /*
  * The op_array deep copy follows the usual pattern: bitwise copy the base record to copy all 
  * scalar fields, and handle all referenced fields on a case-by-case basis.  Most are pointers to
@@ -294,7 +324,7 @@ void lpc_copy_op_array(zend_op_array* dst, zend_op_array* src, lpc_pool* pool)
  * set by that class / function copy.  One of the reserved fields is used to hold the LPC flags. 
  * Here is the summary of the "rich" fields.
  *   
- *  char                   *function_name       pool_memcpy if not null      		 
+ *  char                   *function_name       pool_memcpy if not null              
  *  zend_class_entry       *scope               set by owning class copy if class op array 
  *  union _zend_function   *prototype           nulled as zend_do_inheritance will re-look this up               
  *  zend_arg_info          *arg_info            deep pool_memcpy if not nul                           
@@ -347,7 +377,7 @@ TODO: Add processing of literals and interned strings for Zend 2.4
 
     /* copy the table of static variables */
     if (src->static_variables) {
-		pool_alloc_ht(dst->static_variables);
+        pool_alloc_ht(dst->static_variables);
         COPY_HT_P(static_variables, lpc_copy_zval_ptr, 
                   zend_property_info *, NULL, NULL);
     }
@@ -364,7 +394,7 @@ TODO: Add processing of literals and interned strings for Zend 2.4
         end = dst->literals + ;
         for (i = 0; i < dst->last_literal; i++ ) {
             copy_zval_out(dst->literals[i].constant, src->literals[i].constant, pool);
-			pool_tag_ptr(dst->literals[i].constant);
+            pool_tag_ptr(dst->literals[i].constant);
         }
     }
 #endif
@@ -412,9 +442,9 @@ TODO: Add processing of literals and interned strings for Zend 2.4
            /*
             * The only type of pointer-based elements are in the zvals stored in the constant field
             * of constant znodes in the op_array for Zend Engine < 2.4 are constants. These need to
-		    * be deep-copied.  For Zend 2.4 these have been replaced by literals and immutable
+            * be deep-copied.  For Zend 2.4 these have been replaced by literals and immutable
             * strings
-		    */ 	
+            */  
 #ifdef ZEND_ENGINE_2_4
 ////// TODO: APC treat this as a bitwise copy but need to check this.
 #else

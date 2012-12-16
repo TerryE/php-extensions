@@ -44,40 +44,68 @@ application. It therefore discards:
 These discarded functions represent roughly two-thirds of the APC source code base, so as a
 side-effect the LPC code base is a lot smaller than APC. 
 
+LPC uses a file-based opcode cache DB. I had initially intended to use the core DBA (cdb and
+cdb_make) APIs, but cdb has quite poor performance for this usecase, so I implemented my own
+cachedb extension for this purpose. By default, there is a one to one relationship between the
+request script and the cache. (e.g. DOCUMENT_ROOT/index.php uses DOCUMENT_ROOT/.index.php.cache by
+default). This means that caches are specific to the script and is under the same ownership.
+However, the PER_DIR ini parameters lpc.cache_pattern and lpc.cache_replacement provide
+preg_replace-like functionality to allow the maintainer to move these caches into a separate
+directory or even to map multiple scripts onto the same cache file.
 
-2.  More on LPC differences from APC
+In scenarios where application scripts will not be pre-cached in the systems in-memory file cache 
+(and this is the typical one for LPC use), I/O which references such PHP files will require physical
+I/O and the avoidance of such is key to application performance. Unfortunately PHP's default 
+strategy for opening included relative path names is to do a path search for each file, which incurs
+a performance hit. By default LPC therefore resolves and converts all constant relative include 
+filenames to absolute canonical form on initial compile.  However this can fail for certain code 
+patterns, for example:
+
+    $app_root = dirname(__FILE__);
+    set_include_path("$app_root/includes_dir:$app_root/another_dir:$app_root');
+    ...
+    include ('some_module.php');
+
+will fail because the include path is set during execution and will therefore not be set at compile
+time.  But note that:
+
+    include ("$app_root/more_includes.php");
+     
+will work as expected since (i) more_includes.php is included via a variable (containing an 
+absolute path) and (ii) the include path will be correct for any files included within 
+more_includes.php.  Nonetheless, the PER_DIR INI flag lpc.resolve_path can be set to 0 to disable 
+this resolution function in cases where the application maintainer has this problem and can't 
+resolve it by code modification.
+
+2.  More on implementation differences between LPC and APC
 
 When I started the development of LPC, I used a standard triage strategy with the APC code base, 
 sentencing it into three categories: 
 
-*   Stuff which is no longer relevant to LPC (such as variable caching) and that could be removed;
-
+*   Stuff which is no longer relevant to LPC (such as variable caching) that could be removed;
 *   Stuff which needed rewriting, for example the cache and pool implementations;
+*   Code modules where I hoped to adopt a minimum change strategy (e.g. apc_cache.c.)
 
-*   Code modules where I hoped to adopt a minimum change strategy (e.g. apc_main.c and
-    apc_cache.c. 
+However as I started to develop / debug these core modules I found that LPC removed or changed so
+much of the APC functionality, and that it had got to the point where a complete re-implementation
+became the most practical approach. This also had the I could consistently adopt my own preference
+for minimum coding subject to clarity and functionality constraints. 
 
-However as I started to develop / debug these core modules I found that LPC removed so much
-functionality and change much of the remainder, and that it would really be easier to do a complete
-re-implementation for these modules as well. So I abandoned the minimum change policy; instead
-adopting my own preference for minimum coding subject to clarity and functionality constraints. I
-discuss examples in the remainder of this section. 
-
-The APC policy on error handling is difficult to understand as in general hard errors result in
-functions aborting with an error status or NULL pointer being returning up the call stack, and these
-are then sometimes ignored at the higher call levels, when not ignored there was extra functionality
-to protect the integrity of the SMA-base data structures. However, as LPC adopts an update-on-close
-strategy for its file-based opcode cache, there are no cache integrity issues associated application
-failure and it can therefore follow a simple strategy: lpc errors are treated as fatal, unless the
-upper tiers of application logic have functional code paths and rules to handle such failure
-returns.
+The APC policy on error handling is complicated by the need to protect the integrity of the shared
+memory data structures on all failure paths. This means that error handling is in general difficult
+to understand as most hard errors are handled by the function returning immediately with an error
+status or NULL pointer being returning up the call stack. In LPC, there are no cache integrity
+issues associated application failure as it adopts an update-on-close strategy for its file-based
+opcode cache. It can therefore follow a simple error strategy: errors are treated as fatal, except
+in specific cases where the application logic has functional code paths and rules to handle such
+failures.
  
-The APC concept of a context is also dropped as the destination pool defines the context in LPC:
-copying code out goes from an exec pool to a serial one, and copying code in v.v. Also as the
-pool is also thread-specific, it also contains the TSRMLS id (in the ZTS variant) so that functions
-which include a pool argument can still retain thread-safety, whilst allowing the TSRMLS_DC (et al)
-parameters to be dropped from those functions. lpc.h defines equivalent macros to allow calls to
-wider the PHP / Zend API to recover these. 
+LPC also drops the APC context layer as this contains the storage pool and the storage pool defines
+the context in LPC: copying code out goes from an exec pool to a serial one, and copying code in
+v.v. Also as the pool is also thread-specific in LPC, it also contains the TSRMLS id (in the ZTS
+variant) so that functions which include a pool argument can still retain thread-safety, whilst
+permitting the TSRMLS_DC (et al) parameters to be dropped from those functions. lpc.h defines
+equivalent macros to allow calls to wider the PHP / Zend API to recover these. 
 
 I have taken advantage of the rewrite to move to a move Zend style of programming by (where
 practical) using macros to encapsulate frequent code patterns and any Zend Engine variant coding. I

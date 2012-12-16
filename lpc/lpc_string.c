@@ -213,7 +213,7 @@ void lpc_interned_strings_init(TSRMLS_D)
 }
 
 void lpc_interned_strings_shutdown(TSRMLS_D)
-{ENTER(lpc_interned_strings_shutdown)	
+{ENTER(lpc_interned_strings_shutdown)   
     zend_hash_clean(CG(function_table));
     zend_hash_clean(CG(class_table));
     zend_hash_clean(EG(zend_constants));

@@ -25,19 +25,21 @@
 #ifndef LPC_REQUEST_H
 #define LPC_REQUEST_H
 
-typedef struct _lpc_request_context_t {
-	char         *request_fullpath;
-	char         *request_dir;
-	char         *request_basename;
+typedef struct _lpc_request_context_t lpc_request_context_t;
+
+struct _lpc_request_context_t {
+    char         *request_fullpath;
+    char         *request_dir;
+    char         *request_basename;
     char         *filter;
     char         *cachedb_pattern;
     char         *cachedb_replacement;
-	char         *cachedb_fullpath;
-	char         *PHP_version;
-	time_t        request_mtime;
-  	size_t        request_filesize;
-	int           clear_flag_set;
-} lpc_request_context_t;
+    char         *cachedb_fullpath;
+    char         *PHP_version;
+    time_t        request_mtime;
+    size_t        request_filesize;
+    int           clear_flag_set;
+};
 
 /*
  * This module provides the primary interface between PHP and LPC.

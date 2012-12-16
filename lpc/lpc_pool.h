@@ -45,8 +45,8 @@
  * two pool types, both of which are maintained in thread-local memory: */
 typedef enum {
     LPC_EXECPOOL      = 0x0,  /* The Zend execution environment handles memory recovery */
-	LPC_SERIALPOOL    = 0x1,  /* A pool in which all storage is in contiguous blocks */
-	LPC_RO_SERIALPOOL = 0x2   /* A pool in which all storage is in contiguous blocks */
+    LPC_SERIALPOOL    = 0x1,  /* A pool in which all storage is in contiguous blocks */
+    LPC_RO_SERIALPOOL = 0x2   /* A pool in which all storage is in contiguous blocks */
 } lpc_pool_type_t;
 /*
  * The public interface to the pool is encapsulated in the following macros.  Note that all 
@@ -85,27 +85,27 @@ typedef enum {
 typedef struct _lpc_pool_brick lpc_pool_brick;
 typedef struct _lpc_pool {
 #ifdef ZTS
-	void         ***tsrm_ls;		 /* the thread context in ZTS builds */
+    void         ***tsrm_ls;         /* the thread context in ZTS builds */
 #endif
-	lpc_pool_type_t type;           
+    lpc_pool_type_t type;           
     size_t          size;            /* sum of individual element sizes */
-	uint			count;           /* count of pool elements*/
+    uint            count;           /* count of pool elements*/
 #ifdef LPC_DEBUG
-	char           *orig_filename;   /* plus the file-line creator in debug builds */
-	uint            orig_lineno;
+    char           *orig_filename;   /* plus the file-line creator in debug builds */
+    uint            orig_lineno;
 #endif
-	/* The following fields are only used for serial pools */
-	uint			brick_count;
-	lpc_pool_brick *brickvec;		 /* array of allocated bricks (typically 1) */
-	lpc_pool_brick *brick;           /* current brick -- a simple optimization */
-	size_t          available;       /* bytes available in current brick -- ditto */
-	struct {                         /* tag hash */
-	size_t         *hash;
-	size_t          size;
-	ulong			mask;
-	uint			count;			
-	}               tag;
-	unsigned char  *reloc;			 /* byte relocation vector */
+    /* The following fields are only used for serial pools */
+    uint            brick_count;
+    lpc_pool_brick *brickvec;        /* array of allocated bricks (typically 1) */
+    lpc_pool_brick *brick;           /* current brick -- a simple optimization */
+    size_t          available;       /* bytes available in current brick -- ditto */
+    struct {                         /* tag hash */
+    size_t         *hash;
+    size_t          size;
+    ulong           mask;
+    uint            count;          
+    }               tag;
+    unsigned char  *reloc;           /* byte relocation vector */
 } lpc_pool;
 
 extern lpc_pool* _lpc_pool_create(lpc_pool_type_t type TSRMLS_DC ZEND_FILE_LINE_DC);

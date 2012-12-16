@@ -29,7 +29,6 @@
 #ifndef PHP_LPC_H
 #define PHP_LPC_H
 
-#include "lpc.h"
 #include "zend.h"
 #include "zend_API.h"
 #include "zend_compile.h"

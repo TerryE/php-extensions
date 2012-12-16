@@ -27,7 +27,8 @@ dotest() {
     sed -i -e "s!/home/terry/work/ext/lpc/tests/!!" \
            -e 's/0x[0-9a-f]\{2,\}/0xaaaaaaaa/' $baseOP/$t.sum1	
     sed -i -e "s!/home/terry/work/ext/lpc/tests/!!" \
-           -e 's/0x[0-9a-f]\{2,\}/0xaaaaaaaa/' $baseOP/$t.sum2
+           -e 's/0x[0-9a-f]\{2,\}/0xaaaaaaaa/'      \
+           -e 's! ./test! test!g'                   $baseOP/$t.sum2
 
     grep -P "===DONE===|^--TEST--|^PHP" $baseOP/$t.sum1 >/dev/null && diff $baseOP/$t.sum[12] > $baseOP/$t.diff
 

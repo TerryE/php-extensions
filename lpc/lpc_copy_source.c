@@ -37,7 +37,7 @@ static void           do_halt_compiler_register(const char *filename, long halt_
 extern zend_compile_t *lpc_old_compile_file;
 
 /* {{{ lpc_compile_file
-	LPC substitutes lpc_compile_file callback for the standard zend_compile_file.  It essentially
+    LPC substitutes lpc_compile_file callback for the standard zend_compile_file.  It essentially
     takes one of three execution paths:
 
     *  If a valid copy of the file is already cached in the opcode cache then cached_compile() is
@@ -54,35 +54,44 @@ zend_op_array* lpc_compile_file(zend_file_handle* h, int type TSRMLS_DC)
 {ENTER(lpc_compile_file)
     lpc_cache_key_t   *key = NULL;
     lpc_entry_block_t *cache_entry;
-	lpc_pool          *pool;
+    lpc_pool          *pool;
     zend_op_array     *op_array = NULL;
     time_t             t = LPCG(sapi_request_time);
     lpc_pool          *exec_pool = NULL;
     int                bailout = 0;
-	const char        *filename = NULL;
+    const char        *filename = NULL;
 
     filename = (h->opened_path) ? h->opened_path : h->filename;
    /*
     * Chain onto the old (zend) compile file function if the file isn't cacheable 
     */
     if (!LPCG(enabled) ||
-	    !lpc_valid_file_match((char *)filename TSRMLS_CC) ||
-        !(key = lpc_cache_make_key(h TSRMLS_CC))) { 
+        !lpc_valid_file_match((char *)filename TSRMLS_CC) ||
+        !(key = lpc_cache_make_key(h, INI_STR("include_path") TSRMLS_CC))) { 
         return lpc_old_compile_file(h, type TSRMLS_CC);
     }
-
-    lpc_debug("1. h->opened_path=[%s]  h->filename=[%s]" TSRMLS_CC, 
-              h->opened_path?h->opened_path:"null",h->filename);
+#ifdef LPC_DEBUG
+    if (LPCG(debug_flags)&LPC_DBG_FILES)  /* Load/Unload Info */
+        lpc_debug("1. h->opened_path=[%s]  h->filename=[%s]" TSRMLS_CC, 
+                  h->opened_path?h->opened_path:"null",h->filename);
+#endif
 
     LPCG(current_filename) = h->filename;
+   /*
+    * The PHP RTS opens some files (e.g. the script request), so add to the Zend open files list to
+    * ensure that the fds and any associated strings are garbage collected at request shutdown.
+    */
+    if (h->type == ZEND_HANDLE_FP) {
+        zend_llist_add_element(&CG(open_files), h); 
+    }
 
     /* If a valid cache entry exists then load the previously compiled module */
     if ( key->type == LPC_CACHE_LOOKUP &&
-	     (pool = lpc_cache_retrieve(key TSRMLS_CC)) != NULL) {
+         (pool = lpc_cache_retrieve(key TSRMLS_CC)) != NULL) {
         int dummy = 1;
         
-		/* The cache entry record was the first allocated in the pool */
-		cache_entry = (lpc_entry_block_t *)pool_get_entry_rec();
+        /* The cache entry record was the first allocated in the pool */
+        cache_entry = (lpc_entry_block_t *)pool_get_entry_rec();
 
         exec_pool = pool_create(LPC_EXECPOOL);
         
@@ -92,8 +101,8 @@ zend_op_array* lpc_compile_file(zend_file_handle* h, int type TSRMLS_DC)
 
         if ((op_array = cached_compile(cache_entry, exec_pool)) == NULL) {
 /////////// TODO: Decide on correct action if cached compile fails, but drop-through isn't the correct response
-		}
- 		lpc_cache_free_key(key TSRMLS_CC);
+        }
+        lpc_cache_free_key(key TSRMLS_CC);
         pool_destroy();
 
         LPCG(current_filename) = NULL;
@@ -102,15 +111,16 @@ zend_op_array* lpc_compile_file(zend_file_handle* h, int type TSRMLS_DC)
  
    } else if(key->type == LPC_CACHE_MISS) {
 
-		/* Compile the file and add it to the cache */
-		    if (compile_cache_entry(key, h, type, &op_array, &pool TSRMLS_CC) == SUCCESS) {
-		        lpc_cache_insert(key, pool);
-		    }
-		lpc_cache_free_key(key TSRMLS_CC);
+        /* Compile the file and add it to the cache */
+            if (compile_cache_entry(key, h, type, &op_array, &pool TSRMLS_CC) == SUCCESS) {
+                lpc_cache_insert(key, pool);
+            }
+        lpc_cache_free_key(key TSRMLS_CC);
         LPCG(current_filename) = NULL;
-		return op_array;
+        return op_array;
 
-	} else {
+    } else {
+        lpc_cache_free_key(key TSRMLS_CC);
         LPCG(current_filename) = NULL;
         return lpc_old_compile_file(h, type TSRMLS_CC);
     }
@@ -126,14 +136,14 @@ static zend_bool compile_cache_entry(lpc_cache_key_t *key, zend_file_handle* h,
     lpc_function_t* alloc_functions;
     zend_op_array* alloc_op_array;
     lpc_class_t* alloc_classes;
-	lpc_entry_block_t* entry;
-	lpc_pool* pool;
+    lpc_entry_block_t* entry;
+    lpc_pool* pool;
 
    /*
-	* The compilation process returns an op_array and adds any new functions and classes that were
+    * The compilation process returns an op_array and adds any new functions and classes that were
     * compiled onto the CG(function_table) and CG(class_table) HashTables. The op_array, function and
     * class entries must be deep copied into the destination pool. These last two sets of entries
-	* are determined by high-water marking the two hashs and copying any added entries.
+    * are determined by high-water marking the two hashs and copying any added entries.
     */ 
     num_functions   = zend_hash_num_elements(CG(function_table));
     num_classes     = zend_hash_num_elements(CG(class_table));
@@ -143,42 +153,45 @@ static zend_bool compile_cache_entry(lpc_cache_key_t *key, zend_file_handle* h,
     num_functions   = zend_hash_num_elements(CG(function_table)) - num_functions;
     num_classes     = zend_hash_num_elements(CG(class_table))    - num_classes;
    /*
-	* The compile has succeeded so create the pool and allocated the entry block as this is
+    * The compile has succeeded so create the pool and allocated the entry block as this is
     * alway the first block allocated in a serial pool, then fill the entry block.
-	*/
-	pool = pool_create(LPC_SERIALPOOL);
-	pool_alloc(entry, sizeof(lpc_entry_block_t));
-	pool_strdup(entry->filename, h->filename);
+    */
+    pool = pool_create(LPC_SERIALPOOL);
+    pool_alloc(entry, sizeof(lpc_entry_block_t));
+    pool_strdup(entry->filename, h->filename);
 
-	pool_alloc(entry->op_array, sizeof(zend_op_array));
-	lpc_copy_op_array(entry->op_array, *op_array,  pool);
+    pool_alloc(entry->op_array, sizeof(zend_op_array));
+    lpc_copy_op_array(entry->op_array, *op_array,  pool);
 
-	entry->num_functions = num_functions;
-	if (num_functions) {
-		pool_alloc(entry->functions, sizeof(lpc_function_t) * num_functions);
-	    lpc_copy_new_functions(entry->functions, num_functions, pool);
-	} else {
-		entry->functions = NULL;
-	}
+    entry->num_functions = num_functions;
+    if (num_functions) {
+        pool_alloc(entry->functions, sizeof(lpc_function_t) * num_functions);
+        lpc_copy_new_functions(entry->functions, num_functions, pool);
+    } else {
+        entry->functions = NULL;
+    }
 
-	entry->num_classes = num_classes;
-	if (num_classes) {
-		pool_alloc(entry->classes, sizeof(lpc_class_t) * num_classes);
+    entry->num_classes = num_classes;
+    if (num_classes) {
+        pool_alloc(entry->classes, sizeof(lpc_class_t) * num_classes);
 ///////// STATUS =
-	    lpc_copy_new_classes(entry->classes, num_classes, pool);
-	} else {
-		entry->classes = NULL;
-	}
+        lpc_copy_new_classes(entry->classes, num_classes, pool);
+    } else {
+        entry->classes = NULL;
+    }
 
-	entry->halt_offset = file_halt_offset(h->filename TSRMLS_PC);
+    entry->halt_offset = file_halt_offset(h->filename TSRMLS_PC);
 
-    lpc_debug("h->opened_path=[%s]  h->filename=[%s]" TSRMLS_CC, h->opened_path?h->opened_path:"null",h->filename);
-
-	*pool_ptr = pool; 
+#ifdef LPC_DEBUG
+    if (LPCG(debug_flags)&LPC_DBG_FILES)  /* Load/Unload Info */
+        lpc_debug("h->opened_path=[%s]  h->filename=[%s]" TSRMLS_CC, 
+                  h->opened_path?h->opened_path:"null",h->filename);
+#endif
+    *pool_ptr = pool; 
     return SUCCESS;
 
 error:
-	/* The old compile file module will have raised any errors, so just ... */
+    /* The old compile file module will have raised any errors, so just ... */
     return FAILURE;
 }
 /* }}} */
@@ -187,9 +200,9 @@ error:
 static zend_op_array* cached_compile(lpc_entry_block_t* cache_entry, lpc_pool* pool)
 {ENTER(cached_compile)
     int i, ii;
-	int i_fail = -1;
-	zend_op_array* op_array;
-	TSRMLS_FETCH_FROM_POOL();
+    int i_fail = -1;
+    zend_op_array* op_array;
+    TSRMLS_FETCH_FROM_POOL();
 
     assert(cache_entry != NULL);
 
@@ -202,10 +215,10 @@ static zend_op_array* cached_compile(lpc_entry_block_t* cache_entry, lpc_pool* p
 
     do_halt_compiler_register(cache_entry->filename, cache_entry->halt_offset TSRMLS_CC);
 
-	pool_alloc(op_array, sizeof(zend_op_array));
+    pool_alloc(op_array, sizeof(zend_op_array));
     lpc_copy_op_array(op_array, cache_entry->op_array,  pool);
 
-	return op_array;
+    return op_array;
 }
 /* }}} */
 
@@ -214,13 +227,13 @@ static long file_halt_offset(const char *filename TSRMLS_DC)
 {ENTER(file_halt_offset)
     zend_constant *c;
     char *name;
-	uint len;
-	char haltoff[] = "__COMPILER_HALT_OFFSET__";
+    uint len;
+    char haltoff[] = "__COMPILER_HALT_OFFSET__";
     long value = -1;
 
     zend_mangle_property_name(&name, &len, haltoff, sizeof(haltoff) - 1, filename, strlen(filename), 0);
     
-	if (zend_hash_find(EG(zend_constants), name, len+1, (void **) &c) == SUCCESS) {
+    if (zend_hash_find(EG(zend_constants), name, len+1, (void **) &c) == SUCCESS) {
         value = Z_LVAL(c->value);
     }
     

@@ -28,8 +28,9 @@
    All other licensing and usage conditions are those of the PHP Group.
 
 */
+#include "zend.h"
 #include "lpc.h"
-//#include "lpc_zend.h"
+#include "lpc_request.h"
 
 /* Only implement regexp filters for PHP versions >= 5.2.2 otherwise it acts as a Noop */
 #ifdef PHP_REXEP_OK
@@ -45,20 +46,20 @@
 # define LPC_PRINT_FUNCTION_PARAMETER format
 #endif
 
-#define LPC_PRINT_FUNCTION(name, verbosity)							\
-	void lpc_##name(const char *format TSRMLS_DC, ...)				\
-	{																\
-		va_list args;												\
-		va_start(args, LPC_PRINT_FUNCTION_PARAMETER);				\
-		php_verror(NULL, "", verbosity, format, args TSRMLS_CC);	\
-		va_end(args);												\
-	}
+#define LPC_PRINT_FUNCTION(name, verbosity)                         \
+    void lpc_##name(const char *format TSRMLS_DC, ...)              \
+    {                                                               \
+        va_list args;                                               \
+        va_start(args, LPC_PRINT_FUNCTION_PARAMETER);               \
+        php_verror(NULL, "", verbosity, format, args TSRMLS_CC);    \
+        va_end(args);                                               \
+    }
 
 LPC_PRINT_FUNCTION(error, E_ERROR)
 LPC_PRINT_FUNCTION(warning, E_WARNING)
 LPC_PRINT_FUNCTION(notice, E_NOTICE)
 
-#ifdef DEBUG_LPC
+#ifdef LPC_DEBUG
 LPC_PRINT_FUNCTION(debug, E_NOTICE)
 #else
 void lpc_debug(const char *format TSRMLS_DC, ...) {}
@@ -94,23 +95,23 @@ void lpc_debug(const char *format TSRMLS_DC, ...) {}
 */
 int lpc_valid_file_match(char *filename TSRMLS_DC)
 {ENTER(lpc_valid_file_match)
-	char *filt = LPCG(request_context)->filter;
-	pcre_cache_entry *pce;
-	zval retval;
+    char *filt = LPCG(request_context)->filter;
+    pcre_cache_entry *pce;
+    zval retval;
 
-	/* handle the simple "always match conditions. */ 
-	if (filt == NULL || filt[0] =='\0' || filt[2] == '\0') { 
-		return 1;	/* always return TRUE if the filter is an empty string */
-	}
+    /* handle the simple "always match conditions. */ 
+    if (filt == NULL || filt[0] =='\0' || filt[2] == '\0') { 
+        return 1;   /* always return TRUE if the filter is an empty string */
+    }
 
     /* note that pce points to a PCRE cache entry which is cleared when nec. by PCRE */
-	if( (pce = pcre_get_compiled_regex_cache(filt, strlen(filt) TSRMLS_CC)) == NULL) {
-		lpc_warning("Invalid lpc.filter expression '%s'.  Caching is disabled." TSRMLS_CC, filt);
-		LPCG(enabled) = 0;
+    if( (pce = pcre_get_compiled_regex_cache(filt, strlen(filt) TSRMLS_CC)) == NULL) {
+        lpc_warning("Invalid lpc.filter expression '%s'.  Caching is disabled." TSRMLS_CC, filt);
+        LPCG(enabled) = 0;
         return 0;
     }
 
-	INIT_ZVAL(retval);
+    INIT_ZVAL(retval);
 # ifdef ZEND_ENGINE_2_4
     php_pcre_match_impl(pce, IS_STRING, filename, strlen(filename),
 # else
@@ -123,29 +124,29 @@ int lpc_valid_file_match(char *filename TSRMLS_DC)
  
 int lpc_generate_cache_name(lpc_request_context_t *rc TSRMLS_DC)
 {ENTER(lpc_generate_cache_name)
-	char *filt     = rc->cachedb_pattern;
-	char *repl     = rc->cachedb_replacement;
+    char *filt     = rc->cachedb_pattern;
+    char *repl     = rc->cachedb_replacement;
     char *filename = rc->request_fullpath;
-	pcre_cache_entry *pce;
-	zval *retval,*subpats;
+    pcre_cache_entry *pce;
+    zval *retval,*subpats;
    /*
     * Only do replacement processing if the simple "always match" conditions don't apply. 
     */ 
-	if (filt && filt[0] !='\0' && filt[2] != '\0' && repl[2] !='\0') { 
+    if (filt && filt[0] !='\0' && filt[2] != '\0' && repl[2] !='\0') { 
 
-	    if( (pce = pcre_get_compiled_regex_cache(filt, strlen(filt) TSRMLS_CC)) == NULL) {
+        if( (pce = pcre_get_compiled_regex_cache(filt, strlen(filt) TSRMLS_CC)) == NULL) {
            /*
             * An invalid cache regexp pattern fails to disabling caching 
             */
-		    lpc_warning("Invalid lpc.cache_pattern expression '%s'.  Caching is disabled." TSRMLS_CC, filt);
-		    LPCG(enabled) = 0;
+            lpc_warning("Invalid lpc.cache_pattern expression '%s'.  Caching is disabled." TSRMLS_CC, filt);
+            LPCG(enabled) = 0;
             return 0;
         }
        /*
         * Once compiled, the regexp is used on the filename to generate the subpatterns
         */
-	    MAKE_STD_ZVAL(retval);
-	    ALLOC_INIT_ZVAL(subpats);
+        MAKE_STD_ZVAL(retval);
+        ALLOC_INIT_ZVAL(subpats);
     #ifdef ZEND_ENGINE_2_4
         php_pcre_match_impl(pce, IS_STRING, filename, strlen(filename),
     #else
@@ -157,7 +158,7 @@ int lpc_generate_cache_name(lpc_request_context_t *rc TSRMLS_DC)
         * replacing $0..$9 by subpatterns 0..9 respectively
         */ 
         if (Z_LVAL_P(retval) || (Z_TYPE_P(subpats) == IS_ARRAY)) {
-		    HashTable *ht = Z_ARRVAL_P(subpats);
+            HashTable *ht = Z_ARRVAL_P(subpats);
             char cdb[MAXPATHLEN];
             char *p = rc->cachedb_replacement, *q = cdb, *qend = &cdb[MAXPATHLEN];
             int n = strlen(p);
@@ -166,7 +167,7 @@ int lpc_generate_cache_name(lpc_request_context_t *rc TSRMLS_DC)
             int mode = 0;    /* 1 = last was \ escape; 2 last was $; 0 otherwise */
             memset(cdb, 0, MAXPATHLEN);
 
-		    for (i = 0; i<n && q<qend; i++, p++) {
+            for (i = 0; i<n && q<qend; i++, p++) {
                 if (*p == '\\') {
                     if (mode==0) {
                         mode = 1;
@@ -190,13 +191,13 @@ int lpc_generate_cache_name(lpc_request_context_t *rc TSRMLS_DC)
                 }
             }
             rc->cachedb_fullpath = estrdup(cdb);
-		    zval_ptr_dtor(&subpats);
-		    zval_ptr_dtor(&retval);
+            zval_ptr_dtor(&subpats);
+            zval_ptr_dtor(&retval);
             return 1;
         } else {
-		    zval_ptr_dtor(&subpats);
-		    FREE_ZVAL(subpats);
-		    FREE_ZVAL(retval);
+            zval_ptr_dtor(&subpats);
+            FREE_ZVAL(subpats);
+            FREE_ZVAL(retval);
         }
     }
    /*
@@ -210,7 +211,7 @@ int lpc_generate_cache_name(lpc_request_context_t *rc TSRMLS_DC)
 /* }}} */
 
 /* {{{ proto long lpc_atol( string str, int str_len)
-	   Chain to zend_atol, except for PHP 5.2.x which doesn't handle [KMG], so in this case reimplement */
+       Chain to zend_atol, except for PHP 5.2.x which doesn't handle [KMG], so in this case reimplement */
 long lpc_atol(const char *str, int str_len)
 {ENTER(lpc_atol)
 #if PHP_MAJOR_VERSION >= 6 || PHP_MAJOR_VERSION == 5 && PHP_MINOR_VERSION >= 3
@@ -243,6 +244,72 @@ long lpc_atol(const char *str, int str_len)
 }
 /* }}} */
 
+/* {{{ lpc_resolve_path */
+char *lpc_resolve_path(zval *pzv TSRMLS_DC)
+{ENTER(lpc_resolve_path)
+    char *resolved_path;
+    char  filename[MAXPATHLEN];
+    char *input_name = Z_STRVAL_P(pzv);
+    int   input_length = Z_STRLEN_P(pzv);
+    int   n;
+   /*
+    * Funnies such as NULL string and stream wrappers -- don't resolve
+    */
+    if (!input_name || !input_length || strchr(input_name, ':') ) {
+        return;
+    }
+   /*
+    * Absolute and explicit path relative names -- convert to realpath
+    */  
+    if ((*input_name == '.' && 
+            (IS_SLASH(input_name[1]) || 
+            ((input_name[1] == '.') && IS_SLASH(input_name[2])))) ||
+        IS_ABSOLUTE_PATH(input_name, input_length)) {
+        if (tsrm_realpath(input_name, filename TSRMLS_CC)) {
+            return estrdup(filename);
+        } else {
+            return NULL;
+        }
+    }
+   /*
+    * Now try the include path for remaining relative filenames
+    */
+    if(resolved_path = php_resolve_path(input_name, input_length, INI_STR("include_path") TSRMLS_CC)) {
+        return resolved_path;
+    }
+   /*
+    * Now the script directory
+    */  
+    if ((strlen(LPCG(request_context)->request_dir) + 1 + input_length) < MAXPATHLEN) { 
+        sprintf(filename, "%s%c%s", 
+                LPCG(request_context)->request_dir, DEFAULT_SLASH, input_name);
+        if (access( filename, R_OK ) != -1 ) {
+            return estrdup(filename);
+        }
+    }
+   /*
+    * And finally the CWD
+    */  
+#if HAVE_GETCWD
+    if (VCWD_GETCWD(filename, MAXPATHLEN)) {
+#elif HAVE_GETWD
+    if (VCWD_GETWD(filename)) {
+#endif
+        return NULL;
+    }
+
+    n = strlen(filename);
+
+    if ((n + 1 + input_length) < MAXPATHLEN) {
+        filename[n] = DEFAULT_SLASH;
+        strcpy(&filename[n+1], input_name);
+        if (access( filename, R_OK ) != -1 ) {
+            return estrdup(filename);
+        }
+    }
+    return NULL; 
+}
+/* }}} */
 /*
  * Local variables:
  * tab-width: 4

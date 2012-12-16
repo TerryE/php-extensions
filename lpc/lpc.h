@@ -28,20 +28,23 @@
    All other licensing and usage conditions are those of the PHP Group.
 */
 
-#include "config.h"
+#ifdef HAVE_CONFIG_H
+#include <config.h>
+#endif
+
 #ifndef LPC_H
 #define LPC_H
 #define PERSISTENT 1
 
 #ifdef __DEBUG_LPC__
-#define LPC_DEBUG 
+# define LPC_DEBUG 1
 #endif
 
 #ifdef LPC_DEBUG
-#  define ENTER(s) int dummy_to_be_ignored = lpc_debug_enter(#s);
+# define ENTER(s) int dummy_to_be_ignored = lpc_debug_enter(#s);
 extern int lpc_debug_enter(char *s);
 #else 
-#  define ENTER(s) 
+# define ENTER(s) 
 #endif
 #define NOENTER(s) 
 
@@ -62,19 +65,13 @@ extern int lpc_debug_enter(char *s);
 #include <sys/types.h>
 #include <sys/stat.h>
 #ifndef PHP_WIN32
-#include <unistd.h>
-#endif
-
-#ifdef HAVE_CONFIG_H
-#include <config.h>
+# include <unistd.h>
 #endif
 
 #include "php.h"
 #include "php_streams.h"
 
 #include "php_lpc.h"
-#include "lpc_cache.h"
-#include "lpc_request.h"
 
 /* console display functions */
 extern void lpc_error(const char *format TSRMLS_DC, ...);
@@ -94,8 +91,12 @@ typedef struct lpc_fileinfo_t
     php_stream_statbuf st_buf;
 } lpc_fileinfo_t;
 
+typedef struct _lpc_request_context_t lpc_request_context_t;
+typedef struct _lpc_cache_t lpc_cache_t; /* opaque cache type */
+
 extern int lpc_valid_file_match(char *filename TSRMLS_DC);
 extern long lpc_atol(const char *str, int str_len);
+extern char *lpc_resolve_path(zval *pzv TSRMLS_DC);
 
 #if defined(__GNUC__)
 # define LPC_UNUSED __attribute__((unused))
@@ -138,13 +139,16 @@ ZEND_BEGIN_MODULE_GLOBALS(lpc)
     long        shm_strings_buffer;
 #endif
     lpc_cache_t *lpc_cache;             /* the global compiler cache */
-	HashTable   pools;                  /* Table of created pools */
-	zend_bool   force_cache_delete;     /* Flag that the file D/B is to be deleted and further
+    HashTable   pools;                  /* Table of created pools */
+    zend_bool   force_cache_delete;     /* Flag that the file D/B is to be deleted and further
                                            loading disabbled */
-    char       *clear_cookie;	        /* Name of Cookie which will force a cache clear */
+    char       *clear_cookie;           /* Name of Cookie which will force a cache clear */
     char       *clear_parameter;        /* Name of Request parameter which will force a cache clear */
     char       *current_filename;       /* pointer to filename of file being currently compiled */
-    lpc_request_context_t *request_context;  /* pointer to SAPI derived context of the script being requested */
+    lpc_request_context_t *request_context;  /* pointer to SAPI derived context of the script being
+                                                requested */
+    zend_bool   resolve_paths;          /* all constant relative paths should be resovled to abdolute */
+    zend_uint   debug_flags;            /* flags to allow run-time selective dump output */
 ZEND_END_MODULE_GLOBALS(lpc)
 
 /* (the following declaration is defined in php_lpc.c) */
@@ -158,7 +162,7 @@ extern int lpc_reserved_offset;
 # define TSRMLS_P *((void ****)pool)
 # define TSRMLS_PC , TSRMLS_P
 # define LPCG(v) TSRMG(lpc_globals_id, zend_lpc_globals *, v)
-# define TSRMGP(id, type, element)	(((type) (*TSRMLS_P)[TSRM_UNSHUFFLE_RSRC_ID(id)])->element)
+# define TSRMGP(id, type, element)  (((type) (*TSRMLS_P)[TSRM_UNSHUFFLE_RSRC_ID(id)])->element)
 # define LPCGP(v) TSRMGP(lpc_globals_id, zend_lpc_globals *, v)
 # define TSRMLS_FETCH_FROM_POOL() void ***tsrm_ls = TSRMLS_P
 #else
@@ -171,8 +175,17 @@ extern int lpc_reserved_offset;
 
 #define LPC_COPIED_ZVALS_COUNTDOWN  1000
 
-#endif
+# define LPC_DBG_ALLOC  (1<<0)  /* Storage Allocation */
+# define LPC_DBG_RELO   (1<<1)  /* Relocation outside pool */
+# define LPC_DBG_RELC   (1<<2)  /* Relocation Address check */
+# define LPC_DBG_RELR   (1<<3)  /* Missed relocation report */
+# define LPC_DBG_RELD   (1<<4)  /* Duplicate relocation call */
+# define LPC_DBG_LOAD   (1<<5)  /* Load/Unload Info */
+# define LPC_DBG_ENTER  (1<<6)  /* Print out function enty audit */
+# define LPC_DBG_COUNTS (1<<7)  /* Print out function summary counts */
+# define LPC_DBG_FILES  (1<<8)  /* Print out any file requests */
 
+#endif /* LPC_H */
 /*
  * Local variables:
  * tab-width: 4

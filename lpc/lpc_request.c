@@ -69,9 +69,9 @@ int lpc_module_init(int module_number TSRMLS_DC)
 int lpc_module_shutdown(TSRMLS_D)
 {ENTER(lpc_module_shutdown)
     if (LPCG(initialized)) {
-		zend_compile_file = lpc_old_compile_file;
-		LPCG(initialized) = 0;
-	}
+        zend_compile_file = lpc_old_compile_file;
+        LPCG(initialized) = 0;
+    }
     return 0;
 }
 /* }}} */
@@ -100,35 +100,66 @@ static char* add_filter_delims(const char *filter TSRMLS_DC)
     int   i;
 #define DELIMS " \"',~@%#"
 #ifdef PHP_REXEP_OK
-	if (filter) {
+    if (filter) {
        /*
         * Pick a PCRE delimiter that isn't in the file string from one of non-alphanumeric 
-		* characters that isn't already used as meta character in REGEX, viz <#%,@~ '"> 
+        * characters that isn't already used as meta character in REGEX, viz <#%,@~ '"> 
         */
-		for( i=strlen(DELIMS+1), p=DELIMS; i>=0; i-- ) {
-			if (!strchr(filter, p[i])) break; /* scan DELIMS in reverse to pick one not in filter */
-		}
-		if (i >= 0) {
-		    regexp = emalloc(strlen(filter) + 3);
-		    sprintf(regexp,"%c%s%c",p[i],filter,p[i]);
+        for( i=strlen(DELIMS+1), p=DELIMS; i>=0; i-- ) {
+            if (!strchr(filter, p[i])) break; /* scan DELIMS in reverse to pick one not in filter */
+        }
+        if (i >= 0) {
+            regexp = emalloc(strlen(filter) + 3);
+            sprintf(regexp,"%c%s%c",p[i],filter,p[i]);
             return regexp;
         }
-		lpc_warning("Invalid filter expression '%s'.  Caching is disabled." TSRMLS_CC, filter);
-		LPCG(enabled) = 0;
-	}
+        lpc_warning("Invalid filter expression '%s'.  Caching is disabled." TSRMLS_CC, filter);
+        LPCG(enabled) = 0;
+    }
 #endif
-	return "";  /* An empty string disables filter processing */
+    return "";  /* An empty string disables filter processing */
 }
 /* }}} */
 
 /* {{{ request init */
 int lpc_request_init(TSRMLS_D)
 {ENTER(lpc_request_init)
-
-	lpc_request_context_t  *rc;
+    lpc_request_context_t  *rc;
     char                   *request_path = SG(request_info).path_translated;
-	struct stat            *sb = sapi_get_stat(TSRMLS_C);
-	size_t                  dir_length, basename_length;
+    struct stat            *sb = sapi_get_stat(TSRMLS_C);
+    size_t                  dir_length, basename_length;
+   /*
+    * fetch the "PER_DIR" scoped ini variables
+    */
+    LPCG(max_file_size)    = lpc_atol(INI_STR("lpc.max_file_size"),0);
+    LPCG(fpstat)           = INI_INT("lpc.stat_percentage");
+    LPCG(clear_cookie)     = INI_STR("lpc.clear_cookie");
+    LPCG(clear_parameter)  = INI_STR("lpc.clear_parameter");
+    LPCG(resolve_paths)    = (INI_BOOL("lpc.resolve_paths")!=0);
+    LPCG(debug_flags)      = INI_INT("lpc.debug_flags");
+
+   /*
+    * Allocate the request context block and fill in the fields based on the request path name
+    */
+    rc = ecalloc(1, sizeof(lpc_request_context_t));
+//// TODO: set clear_flag_set based on cookie and request parameter in the meantime default to false
+    rc->clear_flag_set     = 0;
+    rc->filter             = add_filter_delims(INI_STR("lpc.filter") TSRMLS_CC);
+    rc->cachedb_pattern    = add_filter_delims(INI_STR("lpc.cache_pattern") TSRMLS_CC);
+    rc->cachedb_replacement= INI_STR("lpc.cache_replacement");
+    LPCG(request_context)  = rc;
+    rc->PHP_version        = PHP_VERSION;
+
+    if (request_path) {
+        rc->request_fullpath   = request_path;
+        rc->request_dir        = estrdup(rc->request_fullpath);
+        dir_length             = zend_dirname(rc->request_dir, strlen(rc->request_fullpath));
+        rc->request_dir[dir_length] = '\0';
+        php_basename(rc->request_fullpath, strlen(rc->request_fullpath), NULL, 0, 
+                     &rc->request_basename, &basename_length TSRMLS_CC);
+        rc->request_mtime      = sb->st_mtime;
+        rc->request_filesize   = sb->st_size;
+    }
     /*
      * If the global LPC enabled flag is clear or the request path isn't a filename then
      * fail back to normal uncached operation
@@ -136,38 +167,11 @@ int lpc_request_init(TSRMLS_D)
     if (!LPCG(enabled) || !request_path) {
         return 0;
     }
-   /*
-    * fetch the "PER_DIR" scoped ini variables
-    */
- 	LPCG(max_file_size)    = lpc_atol(INI_STR("lpc.max_file_size"),0);
-	LPCG(fpstat)           = INI_INT("lpc.stat_percentage");
-	LPCG(clear_cookie)     = INI_STR("lpc.clear_cookie");
-	LPCG(clear_parameter)  = INI_STR("lpc.clear_parameter");
-   /*
-    * Allocate the request context block and fill in the fields based on the request path name
-    */
-    rc = ecalloc(1, sizeof(lpc_request_context_t));
-
-    rc->request_fullpath   = request_path;
-    rc->request_dir        = estrdup(rc->request_fullpath);
-    dir_length             = zend_dirname(rc->request_dir, strlen(rc->request_fullpath));
-    rc->request_dir[dir_length] = '\0';
-    php_basename(rc->request_fullpath, strlen(rc->request_fullpath), NULL, 0, 
-			     &rc->request_basename, &basename_length TSRMLS_CC);
-    rc->request_mtime      = sb->st_mtime;
-    rc->request_filesize   = sb->st_size;
-    rc->PHP_version        = PHP_VERSION;
-//// TODO: set clear_flag_set based on cookie and request parameter in the meantime default to false
-    rc->clear_flag_set     = 0;
-    rc->filter             = add_filter_delims(INI_STR("lpc.filter") TSRMLS_CC);
-    rc->cachedb_pattern    = add_filter_delims(INI_STR("lpc.cache_pattern") TSRMLS_CC);
-    rc->cachedb_replacement= INI_STR("lpc.cache_replacement");
-    LPCG(request_context)  = rc;
    /* 
     * Determine the cache name either from the cache pattern and replacement if set and
     * defaulting to one based on the dirname and basename of the request path 
     */
-	if (lpc_generate_cache_name(rc TSRMLS_CC) &&
+    if (lpc_generate_cache_name(rc TSRMLS_CC) &&
         lpc_cache_create(TSRMLS_C)==SUCCESS) {
 
             zend_hash_init(&LPCG(pools), 10, NULL, NULL, 0);
@@ -175,7 +179,7 @@ int lpc_request_init(TSRMLS_D)
 
         } else {
 
-	        lpc_dtor_request_context(TSRMLS_C);
+            lpc_dtor_request_context(TSRMLS_C);
     }
     return 0;
 }
@@ -184,22 +188,25 @@ int lpc_request_init(TSRMLS_D)
 /* {{{ request shutdown */
 int lpc_request_shutdown(TSRMLS_D)
 {ENTER(lpc_request_shutdown)
-	lpc_pool *pool;  int s;
-	HashTable *pools_ht = &LPCG(pools);
-	char *dummy;
+    lpc_pool *pool;  int s;
+    HashTable *pools_ht = &LPCG(pools);
+    char *dummy;
 
     lpc_deactivate(TSRMLS_C);
 
-	/* Loop over pools to destroy each pool. Note that pool_destroy removes the entry so 
+    /* Loop over pools to destroy each pool. Note that pool_destroy removes the entry so 
      * the loop repeatly resets the internal point at fetches the first element until empty */
-	zend_hash_internal_pointer_reset(pools_ht);
-	while(zend_hash_get_current_key(pools_ht, &dummy, (ulong *)&pool, 0) == HASH_KEY_IS_LONG) {
-/////////////////////////////////  Temp Patch for testing ///////////////////////
-		lpc_debug("Freeing dangling pool at 0x%lx" TSRMLS_CC, pool);
-		pool_destroy();
-	}
-	lpc_dtor_request_context(TSRMLS_C);
-	zend_hash_destroy(pools_ht);
+    zend_hash_internal_pointer_reset(pools_ht);
+    while(zend_hash_get_current_key(pools_ht, &dummy, (ulong *)&pool, 0) == HASH_KEY_IS_LONG) {
+#ifdef LPC_DEBUG
+        if (LPCG(debug_flags)&LPC_DBG_LOAD) { /* Load/Unload Info */
+            lpc_debug("Freeing dangling pool at 0x%lx" TSRMLS_CC, pool);
+        }
+#endif
+        pool_destroy();
+    }    
+    lpc_dtor_request_context(TSRMLS_C);
+    zend_hash_destroy(pools_ht);
     return 0;
 }
 /* }}} */
@@ -209,15 +216,15 @@ void lpc_dtor_request_context(TSRMLS_D)
 {ENTER(lpc_dtor_context)
 #define EFREE(v) if (v) efree(v);
     lpc_request_context_t  *rc = LPCG(request_context);
-	if (rc) {
-		EFREE(rc->request_dir);
-		EFREE(rc->request_basename);
-		EFREE(rc->cachedb_fullpath);
-		if (rc->filter&&rc->filter[0]) efree(rc->filter);
-		if (rc->cachedb_pattern && rc->cachedb_pattern[0]) efree(rc->cachedb_pattern);
-		efree(rc);
+    if (rc) {
+        EFREE(rc->request_dir);
+        EFREE(rc->request_basename);
+        EFREE(rc->cachedb_fullpath);
+        if (rc->filter&&rc->filter[0]) efree(rc->filter);
+        if (rc->cachedb_pattern && rc->cachedb_pattern[0]) efree(rc->cachedb_pattern);
+        efree(rc);
         LPCG(request_context) = NULL;
-	}
+    }
 }
 /* }}} */
 

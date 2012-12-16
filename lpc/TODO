@@ -1,3 +1,101 @@
+W/E review 14-16 Dec 2012
+=========================
+
+Track down code path where leakage of the exec pool clear-up is not done then junk the pools cleanup
+HT -- at most one copy-out and one copy-in pool is open, so if nec these can be tracked by a pool
+context regstered as a LPCG variable.
+
+Junk the pool brick concept and the fancy segmented compression code. Everything should assume
+single continuous serial pool storage.
+
+Implement RLE encoding, run-time selectable
+NM byte encoding scheme
+00 toggles between run 00 and run 40 (*)
+N number of run bytes
+M number of non-run bytes followed by bytes 0..M
+(*) Need to check to see if strings are URI encoded in which case encode for '+' not ' ' runs.
+
+Add lpc.compression parameter
+0 no compression
+1 run-length encoded compression
+2 gz compression
+4 allocate buffer for pool lifetime (default is to alloc buffer for request lifetime).  See below.
+
+Also use malloc, not emalloc here. 
+
+Add new PER_DIR lpc.storage_quantum parameter (default 128K).
+
+Add Zend try/throw/catch wrapper around the compile / copy-out process.
+
+Compression and decompression is done usng in-pool storage. In the case of copy-in, the compressed
+record is loaded at the end of the storage and expanded into the start. Similarly on copy-out, the
+uncompressed record is first relocated to the end of the pool and compressed to the start. The
+(de)compress routine needs to do overlap detecton.
+*  in the case of a copy-in collision, the pool size is increased to size_compressed +
+   size_uncompressed and the copy-in is restarted
+*  in the case of a copy-out collision, an overflow error is thrown.
+
+Serial pool overflow during copy-out is now handled by the compile process throwing an overflow
+error. If a compile throws an overflow error then the pool size is increased by lpc.storage_quantum
+and the compile restarted. Any other error results in that compile failing back to default and LPC
+being disabled.
+
+Review all initialisation / shutdown code to ensure that it is properly scoped -- that is per
+request bookends belong in lpc_request.c, per source bookends belong in lpc_source.c. So cache
+bookends are called from per request, pool bookends are called from per source -- except overall
+pool_init / pool_shutdown called from per request.
+
+The lpc.compression==4 option is handled privately within the pool modules and logic interlocks
+between pool_init / loop_create / pool_load in the case of allocation, etc. Also formalise the
+constraint that only a single serial pool can be create per thread, and this enables the same buffer
+to be used for all serial pool allocations for both copy-out and copy-in during the request lifetime
+allocation.
+
+Review logging categories. At the moment basically everything is low-level pool reporting. We need
+some extra reporting categories for overall per-source and per-request info, plus logging of hrow /
+catch events. Also how mant tag entries per pool as this may be a tippng point into moving the
+tagptr HT back to a std PHP HT. 
+
+Add extra logging option to log each opcode/op1.type/op2.type -- need to decide whether to log these
+to a separate debug file. Run against PHP test suite and use o/p to develop note on Opcode coverage 
+and Q on APC testing against the PHP test suite.   
+
+Formalize the LPC_REF_COPY ((void *) 1) and LPC_REF_AUTOGEN ((void *) 2) usage. Review source code
+references to (\->|\.)filename\b to see usage cases when the reference is reused.
+
+Add conditional opcode handler address replacement with LPC_REF_AUTOGEN. Note this not only
+increases the compression of the file-based record form, but move to another goal of removing all
+addressed based references from the cache format so that the cache file can be moved from php build
+to php build.
+
+Develop small reporter scipt to list off cache contents, e.g.
+   /opn/bin/php -d lpc.cache_pattern=".*" -d lpc.cache_replacement=".testNN.cache" \
+                -d lpc.filter="(?!.)" reporter.php
+
+Review regression test automation for php test suite. And how filtering of output records is done --
+e.g. how site-specfic (pathnames, etc.) error content is surpressed. 
+
+Adopt interning for serial pool strings on all zend engine versions. Split out pool_memcpy from
+pool_strncpy. The former is used for bitwise copy of possibly non-immutable memory (e.g. fixed
+format records) and these are tagged and any internal references PICed.
+
+The latter for constant strings etc. and here copy-out references are to the interned pseudo address
+(high byte 0xBB and low-end int is the interned string id. Copy-out zval lengths are zeroed. The
+interned string pool is o/p the serial pool as an append -- much like the rbvec. Strings are stored
+as <4-byte uint length><N string bytes>. Note that the length is NOT int aligned so must be memcpy'd
+in/out to allow LPC to work on ARM, etc. This serial pool form of the interned pseudo address is
+already PIC, so these address references are NOT tagged for relocation.
+
+Copy-in logic for interned strings is Zend version dependent. ZE<2.4, these are just converted to
+normally allocated strings. ZE>=2.4 these are mapped into Zend interned strings and the addresses
+converted to local Zend references. 
+
+(Long term) review how APC handles shallow copy references to SMA storage as a similar approach
+could enable aggregated object allocation at copy-in. Less emallocs. 
+
+Other Module Specific
+=====================
+
 lpc_cache.c:
 
     APC has a mininum file age that is cacheable to prevent the caching of a file that is fetched
@@ -73,6 +171,20 @@ php_lpc.c:
 2)  Add zero-byte run compression.  This will run slower than the current gz compression, but this
     is a trade-off.  Yes the cache files will be slightly largey, but the expand time is so fast for
     this algo to be neglible. 
+
+=== External Bugs Found ===
+
+APC Autoglobals will only work if the follow the leading _ convention (see above).
+
+APC uses PG(include_path) for the include path and it should use INI_STR(include_path) as these 
+    are'nt necessarily the same.
+
+5.4 Test54 exercises variant include paths.  As part of my test development, I check them out 
+    against production PHP 5.3 and 5.4 cli versions.   5.3 works as expected but 5.4 barfs when it
+    shouldn't.  I think that this is a Phar bug (Phar intercepts the zend canonicalize function, but
+    the Phar 5.4 version doesn't get this right.)  This is a prob with PHP 5.4 and not the test 
+    script.  I'll submit the bug when I've got a 5.4 dev build so that I can identify the error and 
+    suggest a fix.
 
 === Test Summaries ===
 
