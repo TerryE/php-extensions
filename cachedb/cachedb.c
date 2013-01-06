@@ -649,14 +649,30 @@ error:
    Fetch the current record */
 static int cachedb_read_var(php_stream *fp, int is_binary, zval *value, size_t zlen, size_t len TSRMLS_DC)
 {
-	char                  *buf        = NULL;
-	const unsigned char   *p;
-	char                   error_type  = ' ';
+	unsigned char   *buf        = NULL;
+	unsigned char   *p, *pend;
+	char             error_type = ' ';
+    size_t           ret;
 
 	/* Note that the value zval has been preallocated and initialised by the caller */ 
 
 	if (is_binary) {
-		CHECKA(len == php_stream_copy_to_mem(fp, &buf, len, 0));
+       /*
+        * For binary reads, the caller may also preassign the storage. Note that php_stream_copy_to_mem()
+        * is just an alloc plus a php_stream_read() loop, so this is no less efficient.
+        */
+        if (Z_TYPE_P(value) == IS_STRING && Z_STRLEN_P(value) == len && Z_STRVAL_P(value)) {
+            buf = Z_STRVAL_P(value);
+        } else {
+            buf = emalloc(len);
+        }
+        p    = buf;
+        pend = buf + len;
+		while(p < pend && ret && !php_stream_eof(fp)) {
+			ret = php_stream_read(fp, p, pend - p);
+            p += ret;
+		}
+        CHECKA(pend == p);
 		ZVAL_STRINGL(value, buf, len, 0);
 
 	} else {
@@ -675,9 +691,10 @@ static int cachedb_read_var(php_stream *fp, int is_binary, zval *value, size_t z
 		PEFREE(zbuf,0);
 
 		/* Unserialize the buffer into the returned zval value. */
-		p = (const unsigned char*) buf;
+		p = buf;
 		PHP_VAR_UNSERIALIZE_INIT(var_hash);
-	 	status = php_var_unserialize(&value, &p, p + buf_length, &var_hash TSRMLS_CC);
+	 	status = php_var_unserialize(&value, (const unsigned char**) &p, 
+                                     (const unsigned char*) (p + buf_length), &var_hash TSRMLS_CC);
 		EFREE(buf);
 		PHP_VAR_UNSERIALIZE_DESTROY(var_hash);
 		CHECKA(status);
