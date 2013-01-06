@@ -68,10 +68,12 @@ extern int lpc_debug_enter(char *s);
 # include <unistd.h>
 #endif
 
+#include "php_lpc.h"
+#include "lpc_pool.h"
+
 #include "php.h"
 #include "php_streams.h"
-
-#include "php_lpc.h"
+#include "zend_llist.h"
 
 /* console display functions */
 extern void lpc_error(const char *format TSRMLS_DC, ...);
@@ -84,8 +86,7 @@ extern char** lpc_tokenize(const char* s, char delim TSRMLS_DC);
 
 /* filesystem functions */
 
-typedef struct lpc_fileinfo_t 
-{
+typedef struct lpc_fileinfo_t {
     char *fullpath;
     char path_buf[MAXPATHLEN];
     php_stream_statbuf st_buf;
@@ -97,6 +98,7 @@ typedef struct _lpc_cache_t lpc_cache_t; /* opaque cache type */
 extern int lpc_valid_file_match(char *filename TSRMLS_DC);
 extern long lpc_atol(const char *str, int str_len);
 extern char *lpc_resolve_path(zval *pzv TSRMLS_DC);
+extern void *lpc_resolve_symbol(const char *symbol TSRMLS_DC);
 
 #if defined(__GNUC__)
 # define LPC_UNUSED __attribute__((unused))
@@ -139,7 +141,12 @@ ZEND_BEGIN_MODULE_GLOBALS(lpc)
     long        shm_strings_buffer;
 #endif
     lpc_cache_t *lpc_cache;             /* the global compiler cache */
-    HashTable   pools;                  /* Table of created pools */
+    lpc_pool    serial_pool;            /* Serial pool. Note that only one can be open at a time */
+    zend_uchar *pool_buffer;            /* Shared serial pool buffer */
+    zend_uint   pool_buffer_size;       /* Shared serial pool buffer size */
+    zend_uint   pool_buffer_rec_size;   /* Shared serial pool buffer record size */
+    zend_uint   pool_buffer_comp_size;  /* Shared serial pool buffer compressed record size */
+    zend_llist  exec_pools;             /* Linked list of created exec pools */
     zend_bool   force_cache_delete;     /* Flag that the file D/B is to be deleted and further
                                            loading disabbled */
     char       *clear_cookie;           /* Name of Cookie which will force a cache clear */
@@ -147,33 +154,47 @@ ZEND_BEGIN_MODULE_GLOBALS(lpc)
     char       *current_filename;       /* pointer to filename of file being currently compiled */
     lpc_request_context_t *request_context;  /* pointer to SAPI derived context of the script being
                                                 requested */
-    zend_bool   resolve_paths;          /* all constant relative paths should be resovled to abdolute */
+    zend_bool   resolve_paths;          /* all constant relative paths should be resolved to abdolute */
     zend_uint   debug_flags;            /* flags to allow run-time selective dump output */
+    zend_uint   storage_quantum;        /* quantum for pool buffer allocation */
+    zend_bool   reuse_serial_buffer;    /* if true then the serial buffer persists over the request */
+    zend_uint   compression_algo;       /* 0 = none; 1 = RLE; 2 = GZ */
+    zend_uchar  bailout_status;         /* used to sentence known throws from bailouts */
+    HashTable   intern_hash;            /* used to create interned strings */
+    zend_uchar **interns;               /* used on copy-in and out, array of LPC interns[]  */
+    uint        intern_cnt;             /* used on copy-in and out, count of LPC interns[]  */
+
+
 ZEND_END_MODULE_GLOBALS(lpc)
 
 /* (the following declaration is defined in php_lpc.c) */
 ZEND_EXTERN_MODULE_GLOBALS(lpc)
 
 extern int lpc_reserved_offset;
-
-/* The tsrm_ls pointer is carried in the pool header which is passes down many call chains so 
- * this avoids the need to pass the TSRML_D(C) pointers on a lot of routines */
+/*
+ * Because so many LPC calls are pool-related and pools are thread-specfic in the multi-thread 
+ * builds, the tsrm_ls and global vector pointers are copied into the pool header in these builds 
+ * thus maintaining thread reentrancy but avoiding the need to pass the TSRML_D(C) pointers through
+ * down many call chains and reducing the runtime cost of referencing the Global Vector. 
+ */
 #ifdef ZTS
-# define TSRMLS_P *((void ****)pool)
+# define TSRMLS_P pool->tsrm_ls
 # define TSRMLS_PC , TSRMLS_P
 # define LPCG(v) TSRMG(lpc_globals_id, zend_lpc_globals *, v)
-# define TSRMGP(id, type, element)  (((type) (*TSRMLS_P)[TSRM_UNSHUFFLE_RSRC_ID(id)])->element)
-# define LPCGP(v) TSRMGP(lpc_globals_id, zend_lpc_globals *, v)
-# define TSRMLS_FETCH_FROM_POOL() void ***tsrm_ls = TSRMLS_P
+# define LPCGP(v) (pool->gv->v)
+# define TSRMLS_FETCH_FROM_POOL() void ***tsrm_ls = TSRMLS_P;
+# define TSRMLS_FETCH_GLOBAL_VEC() zend_lpc_globals *gv = \
+    ((zend_lpc_globals *)(*((void ***)tsrm_ls))[TSRM_UNSHUFFLE_RSRC_ID(lpc_globals_id)]);
 #else
 # define TSRMLS_P
 # define TSRMLS_PC
 # define LPCG(v) (lpc_globals.v)
 # define LPCGP(v) (lpc_globals.v)
 # define TSRMLS_FETCH_FROM_POOL()
+# define TSRMLS_FETCH_GLOBAL_VEC() zend_lpc_globals *gv = &lpc_globals;
 #endif
 
-#define LPC_COPIED_ZVALS_COUNTDOWN  1000
+#define LPC_COPIED_ZVALS_COUNTDOWN  1000        
 
 # define LPC_DBG_ALLOC  (1<<0)  /* Storage Allocation */
 # define LPC_DBG_RELO   (1<<1)  /* Relocation outside pool */
@@ -184,6 +205,33 @@ extern int lpc_reserved_offset;
 # define LPC_DBG_ENTER  (1<<6)  /* Print out function enty audit */
 # define LPC_DBG_COUNTS (1<<7)  /* Print out function summary counts */
 # define LPC_DBG_FILES  (1<<8)  /* Print out any file requests */
+
+#define LPC_POOL_OVERFLOW 1
+
+#if SIZEOF_SHORT != 2
+# error "LPC only supports 2 byte shorts"
+#endif
+
+#if SIZEOF_SIZE_T == 8
+
+# define LPC_SERIAL_INTERNED_TEST ((unsigned short)0xbb00)
+# define LPC_SERIAL_INTERNED_VALUE ((size_t)0xbb00000000000000) 
+# define LPC_SERIAL_INTERNED_MASK ((size_t)0x000000000fffffff)
+# define LPC_IS_SERIAL_INTERNED(p) ((unsigned short)((size_t)(p)>>48) == LPC_SERIAL_INTERNED_TEST)
+
+#elif SIZEOF_SIZE_T == 4
+
+# define LPC_SERIAL_INTERNED_TEST ((unsigned short)0xbb00)
+# define LPC_SERIAL_INTERNED_VALUE ((size_t)0xbb0000000) 
+# define LPC_SERIAL_INTERNED_MASK  ((size_t)0x0000fffff)
+# define LPC_IS_SERIAL_INTERNED(p) ((unsigned short)((size_t)(p)>>16) == LPC_SERIAL_INTERNED_TEST)
+
+#else
+# error "LPC only supports 4 and 8 byte addressing"
+#endif
+
+# define LPC_SERIAL_INTERN(id) ((void *)(LPC_SERIAL_INTERNED_VALUE + id))
+# define LPC_SERIAL_INTERNED_ID(ip) ((uint) ((size_t)(ip)&LPC_SERIAL_INTERNED_MASK))
 
 #endif /* LPC_H */
 /*

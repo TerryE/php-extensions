@@ -1,4 +1,4 @@
-/*
+  /*
   +----------------------------------------------------------------------+
   | LPC                                                                  |
   +----------------------------------------------------------------------+
@@ -308,6 +308,27 @@ char *lpc_resolve_path(zval *pzv TSRMLS_DC)
         }
     }
     return NULL; 
+}
+/* }}} */
+
+/* {{{ lpc_resolve_symbol*/
+void *lpc_resolve_symbol(const char *symbol TSRMLS_DC)
+{ENTER(lpc_resolve_symbol)
+    void *addr = NULL;
+    DL_HANDLE handle = NULL;
+
+#ifdef PHP_WIN32
+    if ((handle = GetModuleHandle(NULL))==NULL) {
+        lpc_warning("unable to fetch current module handle." TSRMLS_CC);
+    } else {
+        addr = DL_FETCH_SYMBOL(handle, symbol);
+        DL_UNLOAD(handle);
+    }
+#else
+    addr = DL_FETCH_SYMBOL(handle, symbol);
+#endif
+
+    return addr;
 }
 /* }}} */
 /*

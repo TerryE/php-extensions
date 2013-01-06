@@ -25,9 +25,7 @@
 #ifndef LPC_REQUEST_H
 #define LPC_REQUEST_H
 
-typedef struct _lpc_request_context_t lpc_request_context_t;
-
-struct _lpc_request_context_t {
+typedef struct _lpc_request_context_t {
     char         *request_fullpath;
     char         *request_dir;
     char         *request_basename;
@@ -39,12 +37,10 @@ struct _lpc_request_context_t {
     time_t        request_mtime;
     size_t        request_filesize;
     int           clear_flag_set;
-};
-
+} lpc_request_context_t;
 /*
  * This module provides the primary interface between PHP and LPC.
  */
-
 extern int lpc_module_init(int module_number TSRMLS_DC);
 extern int lpc_module_shutdown(TSRMLS_D);
 extern int lpc_request_init(TSRMLS_D);

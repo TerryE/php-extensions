@@ -56,6 +56,9 @@ static void        copy_opcodes_out(zend_op_array *dst, zend_op_array *src, lpc_
 #define POOL_STRDUP_FLD(fld) if(src->fld) pool_strdup(dst->fld,src->fld)
 #define POOL_MEMCPY(dst,src,n) if(src) pool_memcpy(dst,src,n)
 #define POOL_MEMCPY_FLD(fld,n) POOL_MEMCPY(dst->fld,src->fld,n)
+#define POOL_STRDUP_FLD(fld) if(src->fld) pool_strdup(dst->fld,src->fld)
+#define POOL_NSTRDUP_FLD(fld) if (src->fld) \
+    pool_nstrdup(dst->fld, dst->fld##_len, src->fld, src->fld##_len);
 
 /*
  * Whereas the changes introduced in 2.1 to 2.3 Zend engines were mostly additional 
@@ -139,8 +142,7 @@ static void copy_zval_out(zval* dst, const zval* src, lpc_pool* pool)
         case IS_CONSTANT:
         case IS_STRING:
             if (Z_STRVAL_P(src)) {
-                pool_memcpy(Z_STRVAL_P(dst), Z_STRVAL_P(src), Z_STRLEN_P(src)+1);
-                Z_STRLEN_P(dst) = Z_STRLEN_P(src);
+                pool_nstrdup(Z_STRVAL_P(dst), Z_STRLEN_P(dst), Z_STRVAL_P(src), Z_STRLEN_P(src));
             }
             break;
 
@@ -173,7 +175,9 @@ static inline void copy_zval_in(zval* dst, const zval* src, lpc_pool* pool)
     switch (Z_TYPE_P(src) & IS_CONSTANT_TYPE_MASK) {
         case IS_CONSTANT:
         case IS_STRING:
-            if (Z_STRVAL_P(src)) pool_memcpy(Z_STRVAL_P(dst), Z_STRVAL_P(src), Z_STRLEN_P(src)+1);
+            if (Z_STRVAL_P(src)) {
+                pool_nstrdup(Z_STRVAL_P(dst), Z_STRLEN_P(dst), Z_STRVAL_P(src), Z_STRLEN_P(src));
+            }
             break;
 
         case IS_ARRAY:
@@ -382,9 +386,10 @@ TODO: Add processing of literals and interned strings for Zend 2.4
                   zend_property_info *, NULL, NULL);
     }
 
-    dst->filename = is_copy_in() ? LPCG(current_filename) : NULL;
+//    dst->filename = is_copy_in() ? LPCG(current_filename) : NULL;
 
-    POOL_MEMCPY_FLD(doc_comment, src->doc_comment_len + 1);
+    POOL_STRDUP_FLD(filename);
+    POOL_NSTRDUP_FLD(doc_comment);
 
 #ifdef ZEND_ENGINE_2_4                    /* Pooled literals introduced in Zend 2.4 */
     if (src->literals) {

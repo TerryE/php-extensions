@@ -28,12 +28,13 @@
 #include <zlib.h>
 
 #include "SAPI.h"
-#include "ext/cachedb/cachedb.h"
 
 #include "lpc.h"
 #include "lpc_cache.h"
 #include "lpc_pool.h"
 #include "lpc_request.h"
+
+typedef struct _cachedb_t cachedb_t, *cachedb_pt;
 
 /* {{{ private struct definitions: lpc_cache_t */
 struct _lpc_cache_t {
@@ -43,6 +44,27 @@ struct _lpc_cache_t {
     off_t                filesize;
     lpc_request_context_t *context;
 };
+/* }}} */
+
+/* {{{ private global references to cachedb extension */
+static struct _cachedb {
+    int (*_cachedb_open)(cachedb_t** pdb, char *file,   size_t file_len, char *mode TSRMLS_DC);
+    int (*_cachedb_close)(cachedb_t*  db, char mode TSRMLS_DC);
+    int (*_cachedb_find)(cachedb_t*  db,  char  *key,   size_t key_len, zval *metadata TSRMLS_DC);
+    int (*_cachedb_fetch)(cachedb_t*  db,  zval *value TSRMLS_DC);
+    int (*_cachedb_add)(cachedb_t*  db,  char  *key,   size_t key_len, 
+                       zval *value, zval *metadata TSRMLS_DC);
+    int (*_cachedb_info)(zval **info, cachedb_t* db TSRMLS_DC);
+} cdb;
+
+/* {{{ Public macros to make the calling code more readable */
+#define cachedb_open(p,f,fl,m)   cdb._cachedb_open(p,f,fl,m TSRMLS_CC)
+#define cachedb_close(db)        cdb._cachedb_close(db, '*' TSRMLS_CC)
+#define cachedb_close2(db,m)     cdb._cachedb_close(db, m TSRMLS_CC)
+#define cachedb_find(db,k,kl,m)  cdb._cachedb_find(db,k,kl, m TSRMLS_CC)
+#define cachedb_fetch(db,v)      cdb._cachedb_fetch(db,v TSRMLS_CC)
+#define cachedb_add(db,k,kl,v,m) cdb._cachedb_add(db,k,kl,v,m TSRMLS_CC)
+#define cachedb_info(rv,db)      cdb._cachedb_info(&rv,db TSRMLS_CC)
 /* }}} */
 
 /* {{{ Some application-friendly synonyms for some of the hash functions used. */
@@ -69,14 +91,28 @@ struct _lpc_cache_t {
 /* }}} */
 
 /* {{{ lpc_cache_create */
-zend_bool lpc_cache_create(TSRMLS_D)
+zend_bool lpc_cache_create(uint *max_module_len TSRMLS_DC)
 {ENTER(lpc_cache_create)
-    lpc_cache_t         *cache = (lpc_cache_t*) ecalloc(1, sizeof(lpc_cache_t));
-    struct stat         *sb;
+    lpc_cache_t           *cache = (lpc_cache_t*) ecalloc(1, sizeof(lpc_cache_t));
+    struct stat           *sb;
+    zend_uint              max_len = 0;
     lpc_request_context_t *r_cxt;
     zval         **zctxt, *zinfo, **zlist;
     HashTable    *hlist, *hindex;
     char         *dummy;
+
+    if (!cdb._cachedb_open) {
+        if ((cdb._cachedb_open  = lpc_resolve_symbol("_cachedb_open" TSRMLS_CC)) &&
+            (cdb._cachedb_close = lpc_resolve_symbol("_cachedb_close" TSRMLS_CC)) &&
+            (cdb._cachedb_find  = lpc_resolve_symbol("_cachedb_find" TSRMLS_CC)) &&
+            (cdb._cachedb_fetch = lpc_resolve_symbol("_cachedb_fetch" TSRMLS_CC)) &&
+            (cdb._cachedb_add   = lpc_resolve_symbol("_cachedb_add" TSRMLS_CC)) &&
+            (cdb._cachedb_info  = lpc_resolve_symbol("_cachedb_info" TSRMLS_CC))) {
+        } else {
+            lpc_warning("Cannot map CacheDB extension, falling back to default compile" TSRMLS_CC);
+            return FAILURE;
+        }
+    }
 
     cache->context = r_cxt = LPCG(request_context);
 
@@ -94,42 +130,50 @@ zend_bool lpc_cache_create(TSRMLS_D)
     hash_init(hindex, hash_count(hlist));
 
     if( hash_count(hlist) > 0 ) {
-        /* The cache files exists. Get the 1st entry, the cache context record and validate 
-         * that the cache context is still valid.  Note that this record is a funny in that
-         * the record payload is a dummy and all of the material content is in the metadata
-         * fields. */
+       /*
+        * The cache files exists. Get the 1st entry, the cache context record and validate that the
+        * cache context is still valid. Note that this record is a funny in that the record payload
+        * is a dummy and all of the material content is in the metadata fields. The compression algo
+        * is cached as this persists for the life of the cache.
+        */
         zval **zcontext, **zctxt_metadata, **zPHP_version, **zdir, **zbasename, **zmtime, 
-             **zfilesize, **zle, *zie; 
+             **zfilesize, **zcomp_algo, **zle, *zie; 
  
         hash_get_first_zv(hlist, zcontext);
-        hash_get_last_zv(Z_ARRVAL_PP(   zcontext),  zctxt_metadata);
+        hash_get_last_zv(Z_ARRVAL_PP(zcontext),  zctxt_metadata);
 
         hash_get_first_zv(Z_ARRVAL_PP(zctxt_metadata),zPHP_version);
         hash_get_next_zv(Z_ARRVAL_PP(zctxt_metadata),zdir);
         hash_get_next_zv(Z_ARRVAL_PP(zctxt_metadata),zbasename);
         hash_get_next_zv(Z_ARRVAL_PP(zctxt_metadata),zmtime);
         hash_get_next_zv(Z_ARRVAL_PP(zctxt_metadata),zfilesize);
+        hash_get_next_zv(Z_ARRVAL_PP(zctxt_metadata),zcomp_algo);
 
         if(!strcmp(Z_STRVAL_PP(zPHP_version), r_cxt->PHP_version) &&
            !strcmp(Z_STRVAL_PP(zdir), r_cxt->request_dir) &&
            !strcmp(Z_STRVAL_PP(zbasename), r_cxt->request_basename) &&
            Z_LVAL_PP(zmtime) == r_cxt->request_mtime &&
            Z_LVAL_PP(zfilesize) == r_cxt->request_filesize &&
-           !r_cxt->clear_flag_set) {    
-
-            /* The cache is OK to use so loop over the remaining list array setting up zle
-             * to enumerate the elements of: 
-             *     hlist = array( array(filename, zlen, len, metadata), ... ) 
-             * and creating a new 
-             *     index = array( filename=>array(len, mtime, filesize, pool_len), ... ) */
+           !r_cxt->clear_flag_set) {
+            LPCG(compression_algo) = Z_LVAL_PP(zcomp_algo); /* Use the DB ver of the omp algo */
+           /*
+            * The cache is OK to use so loop over the remaining list array setting up zle to
+            * enumerate the elements of: 
+            *     hlist = array( array(filename, zlen, len, metadata), ... ) 
+            * and creating a new 
+            *     index = array( filename=>array(len, mtime, filesize, pool_len), ... ) 
+            */
 
             for (hash_next(hlist); hash_get(hlist, zle) == SUCCESS; hash_next(hlist)) {
-                zval **zfilename, /* **zlen, */ **zlen, **zmetadata;
+                zval **zfilename, /* **zzlen, */ **zlen, **zmetadata;
 
                 /* Pick up the len and metadata from the list entry */
                 hash_get_first_zv(Z_ARRVAL_PP(zle), zfilename);
-                hash_next(Z_ARRVAL_PP(zle));                   /* skip zlen */ 
+                hash_next(Z_ARRVAL_PP(zle));                   /* skip zzlen */ 
                 hash_get_next_zv(Z_ARRVAL_PP(zle),  zlen);
+                if (Z_LVAL_PP(zlen) > max_len) {
+                    max_len = Z_LVAL_PP(zlen);
+                }
                 hash_get_next_zv(Z_ARRVAL_PP(zle),  zmetadata);
 
                 MAKE_STD_ZVAL(zie);
@@ -164,8 +208,10 @@ zend_bool lpc_cache_create(TSRMLS_D)
         add_next_index_string(zctxt_metadata, r_cxt->request_basename, 1);
         add_next_index_long(zctxt_metadata, r_cxt->request_mtime);
         add_next_index_long(zctxt_metadata, r_cxt->request_filesize);
+        add_next_index_long(zctxt_metadata, LPCG(compression_algo));
 
-        CHECK(cachedb_add(cache->db, context_key, sizeof(context_key)-1, zdummy, zctxt_metadata)==SUCCESS);
+        CHECK(cachedb_add(cache->db, context_key, sizeof(context_key)-1, 
+                          zdummy, zctxt_metadata)==SUCCESS);
         zval_dtor(zdummy);
         FREE_ZVAL(zdummy);
 
@@ -186,6 +232,7 @@ zend_bool lpc_cache_create(TSRMLS_D)
     cache->mtime    = sb->st_mtime;
     cache->filesize = sb->st_size;
 
+    *max_module_len = max_len;
     return SUCCESS;
 
 error:
@@ -214,7 +261,7 @@ void lpc_cache_destroy(TSRMLS_D)
 void lpc_cache_clear(TSRMLS_D)
 {ENTER(lpc_cache_clear)
     lpc_cache_t  *cache = LPCG(lpc_cache);
-    if (cache->db) _cachedb_close(cache->db, 'r' TSRMLS_CC);
+    if (cache->db) cachedb_close2(cache->db, 'r');
     cache->db = NULL;
     remove(cache->context->cachedb_fullpath);
     LPCG(enabled) = 0;
@@ -223,21 +270,14 @@ void lpc_cache_clear(TSRMLS_D)
 /* }}} */
 
 /* {{{ lpc_cache_insert */
-void lpc_cache_insert(lpc_cache_key_t *key, 
-                     lpc_pool *pool)
+void lpc_cache_insert(lpc_cache_key_t *key,  zend_uchar *compressed_buffer,
+                      zend_uint compressed_length, zend_uint pool_length TSRMLS_DC)
 {ENTER(lpc_cache_insert)
-    size_t        pool_length;
-    void         *compressed_buffer;
     lpc_cache_t  *cache;
     char         *zbuf;
-    size_t        compressed_length;
     zval          buffer, *metadata, *index_entry;
-    TSRMLS_FETCH_FROM_POOL();
-
-    assert (key && pool && !is_exec_pool());
 
     cache = LPCG(lpc_cache);
-    compressed_length = pool_unload(&compressed_buffer, &pool_length);  /* This also deletes the pool */ 
 
     INIT_ZVAL(buffer); ZVAL_STRINGL(&buffer, compressed_buffer, compressed_length, 0);
 
@@ -246,10 +286,12 @@ void lpc_cache_insert(lpc_cache_key_t *key,
     array_init_size(metadata, 3);
     add_next_index_long(metadata, key->mtime);
     add_next_index_long(metadata, key->filesize);
-    add_next_index_long(metadata, pool_length);
+    add_next_index_long(metadata, (ulong) pool_length);
 
-    CHECK(cachedb_add(cache->db, (char *) key->filename, key->filename_length, &buffer, metadata)==SUCCESS);
-    zval_dtor(&buffer);
+    CHECK(cachedb_add(cache->db, (char *) key->filename, 
+                      key->filename_length, &buffer, metadata)==SUCCESS);
+
+    /* No DTOR for the buffer zval as the compressed_buffer will be cleaned up by the pool DTOR */
 
     /* Update the cache index with the new entry */
     MAKE_STD_ZVAL(index_entry);
@@ -271,15 +313,12 @@ error:
 /* }}} */
 
 /* {{{ lpc_cache_retrieve */
-lpc_pool* lpc_cache_retrieve(lpc_cache_key_t *key TSRMLS_DC)
+lpc_pool* 	lpc_cache_retrieve(lpc_cache_key_t *key, void **entry_rec TSRMLS_DC)
 {ENTER(lpc_cache_retrieve)
     lpc_cache_t *cache = LPCG(lpc_cache);
-    time_t        mtime;                 /* the mtime of this cached entry */
-    size_t        filesize;
-    unsigned char type;
-    zval        **index_entry, **length, **pool_length, *db_rec;
-    char         *buf;
-    size_t        buf_length;
+    zval       **index_entry, **length, **pool_length, db_rec;
+    zend_uchar  *buffer;
+    zend_uint    compressed_length, uncompressed_length;
 
     if (hash_find(cache->index, key->filename, index_entry) == FAILURE) {
         return NULL;
@@ -289,23 +328,23 @@ lpc_pool* lpc_cache_retrieve(lpc_cache_key_t *key TSRMLS_DC)
     hash_get_first_zv(Z_ARRVAL_PP(index_entry), length);
     hash_get_last_zv(Z_ARRVAL_PP(index_entry), pool_length);
 
-    buf        = emalloc(Z_LVAL_PP(pool_length)+1);
-    buf_length = Z_LVAL_PP(pool_length);
-    buf[Z_LVAL_PP(length)] = '\0';      /* zero terminate buf to simply debugging */
+    compressed_length   = Z_LVAL_PP(length);
+    uncompressed_length = Z_LVAL_PP(pool_length);
+   /*
+    * cachedb_fetch() returns a string zval. It is layered over a php_stream_copy_to_mem() which 
+    * peamllocs the return buffer, so this must be pefreed after decompression.  The temporary zval
+    * db_rec is set up to accept the fetch.
+    */
+    lpc_pool_storage( uncompressed_length, compressed_length, &buffer TSRMLS_CC);
+    INIT_ZVAL(db_rec); ZVAL_STRINGL(&db_rec, buffer, compressed_length, 0);
 
-    MAKE_STD_ZVAL(db_rec);
-    CHECK(cachedb_fetch(cache->db, db_rec) == SUCCESS &&
-          Z_STRLEN_P(db_rec) == Z_LVAL_PP(length));
+    CHECK(cachedb_fetch(cache->db, &db_rec) == SUCCESS &&
+         Z_STRLEN(db_rec) == compressed_length);
 
-    CHECK(uncompress(buf, &buf_length, Z_STRVAL_P(db_rec), Z_STRLEN_P(db_rec)) == Z_OK &&
-          buf_length==Z_LVAL_PP(pool_length));
-
-    zval_dtor(db_rec); efree(db_rec);
-    return pool_load(buf, buf_length);
+    return lpc_pool_create(LPC_RO_SERIALPOOL, (void**) entry_rec TSRMLS_CC);
 
 error:
-    lpc_error("Intrenal failure during retrieval of cache entry for %s" TSRMLS_CC, key->filename);
-
+    lpc_error("Internal failure during retrieval of cache entry for %s" TSRMLS_CC, key->filename);
     return NULL;
 }
 /* }}} */

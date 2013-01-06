@@ -43,8 +43,8 @@ typedef struct _lpc_entry_block_t {
     zend_op_array* op_array;    /* op_array allocated in shared memory */
     lpc_function_t* functions;  /* array of lpc_function_t's */
     lpc_class_t* classes;       /* array of lpc_class_t's */
-    uint num_functions;
-    uint num_classes;
+    uint num_functions;         /* count of lpc_function_t's */
+    uint num_classes;           /* count of lpc_class_t's */
     char *filename;             /* path to source file */
 } lpc_entry_block_t;
 
@@ -55,7 +55,6 @@ typedef zend_op_array* (zend_compile_t)(zend_file_handle*, int TSRMLS_DC);
 /*
  * These are the top-level copy functions.
  */
-
 extern zend_op_array* lpc_compile_file(zend_file_handle* h, int type TSRMLS_DC);
 
 #endif

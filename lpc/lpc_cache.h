@@ -113,15 +113,15 @@ typedef struct _lpc_cache_key_t {
 /* {{{ Public functions */
 
 /*
- * lpc_cache_create creates the local memory compiler cache wrapper for the file-based
- * CacheDB cache.  The scope of this in-memory wrapper is the request, so this function 
- * should be called just once during RINIT.  Returns a pointer to the cache object.
+ * lpc_cache_create creates the local memory compiler cache wrapper for the file-based CacheDB
+ * cache. The scope of this in-memory wrapper is the request, so this function should be called
+ * just once during RINIT. Returns a status and the maximum module size as an out parameter.
  */
-extern zend_bool lpc_cache_create(TSRMLS_D);
+extern zend_bool lpc_cache_create(uint *max_module_len TSRMLS_DC);
 
 /*
- * lpc_cache_destroy is the DTOR for a cache object.  This function should be
- * called during RSHUTDOWN.
+ * lpc_cache_destroy is the DTOR for a cache object.  This function should be called during
+ * RSHUTDOWN.
  */
 extern void lpc_cache_destroy(TSRMLS_D);
 
@@ -144,7 +144,7 @@ extern void lpc_cache_free_key(lpc_cache_key_t* key TSRMLS_DC);
  * responsibiliy of the caller to call the pool DTOR when done with it.  Note that
  * executing this DTOR replaces the equivalent APC cache release function.
  */
-extern lpc_pool* lpc_cache_retrieve(lpc_cache_key_t *key TSRMLS_DC);
+extern lpc_pool* lpc_cache_retrieve(lpc_cache_key_t *key, void** first_entry TSRMLS_DC);
 
 /*
  * lpc_cache_insert adds an entry to the cache, using a filename as a key. Unlike APC, the
@@ -156,9 +156,8 @@ extern lpc_pool* lpc_cache_retrieve(lpc_cache_key_t *key TSRMLS_DC);
  * HOWEVER, note the path is revalidated during the find operation and if the path has changed
  * then the cache is considered to be invalidated.   
  */
-extern void lpc_cache_insert(lpc_cache_key_t *key,
-                            lpc_pool* pool);
-
+extern void lpc_cache_insert(lpc_cache_key_t *key, zend_uchar *compressed_buffer,
+                             zend_uint compressed_length, zend_uint pool_length TSRMLS_DC);
 /*
  * Give information on the cache content
  */

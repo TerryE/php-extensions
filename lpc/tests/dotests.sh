@@ -14,8 +14,8 @@ dotest() {
     t=${file%%.*}
 
     test -f $baseDir/.$t.cache && rm $baseDir/.$t.cache
-	SKIP_SLOW_TESTS=1 /opt/bin/php $baseDir/$file 1> $baseOP/$t.out1 2> $baseOP/$t.err1
-	SKIP_SLOW_TESTS=1 /opt/bin/php $baseDir/$file 1> $baseOP/$t.out2 2> $baseOP/$t.err2
+	SKIP_SLOW_TESTS=1 /opt/bin/php $OPT $baseDir/$file 1> $baseOP/$t.out1 2> $baseOP/$t.err1
+	SKIP_SLOW_TESTS=1 /opt/bin/php $OPT $baseDir/$file 1> $baseOP/$t.out2 2> $baseOP/$t.err2
 
     cat $baseOP/$t.{out,err}1 | grep -vP \
      '^PHP Notice:|^Error:\s\d| :  Freeing |  Script:  | : Actual location |memory leaks detected|Last leak repeated ' >> $baseOP/$t.sum1
@@ -62,6 +62,8 @@ php() {
     done
     popd
 }
+OPT=""
+test -n "$2" && OPT=" -d lpc.debug_flags=$2 "
 case "$1" in
 php)
     php

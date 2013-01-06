@@ -64,10 +64,9 @@ int lpc_reserved_offset;
 #define std_ini_entry(k,d,s,a,v) STD_PHP_INI_ENTRY("lpc." k,d,s,a,v,zend_lpc_globals, lpc_globals) 
 #define perdir_ini_entry(k,d) PHP_INI_ENTRY("lpc." k,d,PHP_INI_PERDIR,NULL) 
 PHP_INI_BEGIN()
-std_ini_bool( "enabled",                    "1", PHP_INI_SYSTEM, OnUpdateBool,   enabled)
 std_ini_bool( "cache_by_default",           "1", PHP_INI_ALL,    OnUpdateBool,   cache_by_default)
-std_ini_bool( "enable_cli",                 "0", PHP_INI_SYSTEM, OnUpdateBool,   enable_cli)
 std_ini_entry("file_update_protection",     "2", PHP_INI_SYSTEM, OnUpdateLong,   file_update_protection)
+perdir_ini_entry("enabled",                 "1")
 perdir_ini_entry("cache_pattern",            "")
 perdir_ini_entry("cache_replacement",        "")
 perdir_ini_entry("max_file_size",          "1M")
@@ -77,6 +76,9 @@ perdir_ini_entry("clear_parameter", (char*)NULL)
 perdir_ini_entry("filter",                   "")
 perdir_ini_entry("resolve_paths",           "1")
 perdir_ini_entry("debug_flags",             "0")
+perdir_ini_entry("compression",             "1")
+perdir_ini_entry("reuse_serial_buffer",     "1")
+perdir_ini_entry("storage_quantum",      "128K")
 PHP_INI_END()
 /* }}} */
 
@@ -120,6 +122,12 @@ static PHP_MINFO_FUNCTION(lpc)
     php_info_print_table_row(2, "Resolve paths",buf);
     info_convert("%u", debug_flags);
     php_info_print_table_row(2, "Debug flags",buf);
+    info_convert("%u", compression_algo);
+    php_info_print_table_row(2, "Compression",buf);
+    info_convert("%u", reuse_serial_buffer);
+    php_info_print_table_row(2, "Reuse serial buffer",buf);
+    info_convert("%u", storage_quantum);
+    php_info_print_table_row(2, "Storage quantum",buf);
     php_info_print_table_end();
     DISPLAY_INI_ENTRIES();
 }
@@ -161,16 +169,13 @@ static PHP_MINIT_FUNCTION(lpc)
     lpc_reserved_offset = zend_get_resource_handle(&dummy_ext); 
 
     LPCG(cache_by_default) = 1;
-    LPCG(fpstat) = 1;
     LPCG(canonicalize) = 1;
     LPCG(sapi_request_time) = (time_t) sapi_get_request_time(TSRMLS_C);
 
     REGISTER_INI_ENTRIES();
 
-    if (LPCG(enabled)) {
-        if(!LPCG(initialized)) {
-            lpc_module_init(module_number TSRMLS_CC);
-        } 
+    if (INI_INT("lpc.enabled") && (!LPCG(initialized))) {
+        lpc_module_init(module_number TSRMLS_CC);
     }
 
     return SUCCESS;

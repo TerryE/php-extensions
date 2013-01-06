@@ -36,9 +36,9 @@
 
 /* {{{ struct definition: lpc_class_t */
 typedef struct lpc_class_t {
-    char* name;                     /* the class name */
-    int name_len;                   /* length of name */
-    char* parent_name;              /* the parent class name */
+    char     *name;                  /* the class name */
+    zend_uint name_len;              /* length of name */
+    char     *parent_name;           /* the parent class name */
     zend_class_entry* class_entry;  /* the zend class data structure */
 } lpc_class_t;
 /* }}} */

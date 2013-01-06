@@ -54,7 +54,7 @@ static void        fixup_property_info(Bucket *p, zend_class_entry *src,
 #endif
 void copy_property_info(zend_property_info* dst, zend_property_info* src, lpc_pool* pool);
 
-#define TAG_SETPTR(dst,src) dst = src; pool_tag_ptr(dst);
+#define TAG_SETPTR(dst,src) dst = src; pool_tag_ptr(dst)
 
 #ifdef ZEND_ENGINE_2_4
 # define CE_FILENAME(ce)            (ce)->info.user.filename
@@ -99,7 +99,6 @@ void lpc_copy_class_entry(zend_class_entry* dst, zend_class_entry* src, lpc_pool
  */
 {ENTER(lpc_copy_class_entry)
     uint i = 0;
-    int is_copyout = !is_exec_pool();
     TSRMLS_FETCH_FROM_POOL();
 
     BITWISE_COPY(src,dst);
@@ -142,7 +141,7 @@ void lpc_copy_class_entry(zend_class_entry* dst, zend_class_entry* src, lpc_pool
         pool_strdup(dst->name, src->name);
     }
     
-    if (is_copyout) {
+    if (is_copy_out()) {
        /*
         * The compiler output count includes inherited interfaces as well, but the count
         * to be saved is count of first <n> real dynamic ones which were zero'd out in
@@ -311,11 +310,15 @@ void lpc_copy_new_classes(lpc_class_t* cl_array, zend_uint count, lpc_pool* pool
         zend_hash_get_current_key_ex(CG(class_table), &key, &key_length, NULL, 0, NULL);
         zend_hash_get_current_data(CG(class_table), (void**) &class_ptr);
         class= *class_ptr;
-
-        pool_memcpy(cle->name, key, (int) key_length);
-        cle->name_len = (int) key_length-1;
-
+       /*
+        * Note that the PHP convention for zvals and HT key lengths is inconsistent as the 
+        * former excludes the terminating \0 char and the latter includes it.  Also note that
+        * cle->name_len as the length of an interned string is 0 -- left in for historic reasons
+        * but compression removes this file-space overhead. 
+        */  
+        pool_nstrdup(cle->name, cle->name_len, key, key_length-1);
         pool_alloc(cle->class_entry, sizeof(zend_class_entry));
+
         lpc_copy_class_entry(cle->class_entry, class, pool);
 
         /*
@@ -353,22 +356,35 @@ zend_bool lpc_install_classes(lpc_class_t* classes, zend_uint num_classes, lpc_p
         lpc_class_t*       cl = classes + i;
         zend_class_entry*  dst_cl;
         zend_class_entry** parent = NULL;
-
-        if(cl->name_len != 0 && cl->name[0] == '\0') {
-            if(zend_hash_exists(CG(class_table), cl->name, cl->name_len+1)) {
+        char *cl_name;
+        zend_uint cl_name_len;
+        pool_nstrdup(cl_name, cl_name_len, cl->name, cl->name_len); /* de-intern */
+       /*
+        * Special case for mangled names (which start with a leading '\0'. These are unique, and can
+        * only occur if a source including the class is included twice. In this case LPC, like APC,
+        * ignores duplicates leaving detection to runtime when the class is attempted to be bound 
+        * with the multiple DECLARE_CLASS calls.
+        */
+        if(cl_name_len != 0 && cl_name[0] == '\0') {
+            if(zend_hash_exists(CG(class_table), cl_name, cl_name_len+1)) {
                 continue;
             }
         }
 
         if (cl->parent_name != NULL) {
-            if (zend_lookup_class_ex(cl->parent_name, strlen(cl->parent_name), 
+            /* note that parent classes can never be mangled so a pool_strcpy suffices */
+            char *parent_name;
+            pool_strdup(parent_name, cl->parent_name); /* de-intern */
+            if (zend_lookup_class_ex(parent_name, strlen(parent_name), 
 #ifdef ZEND_ENGINE_2_4  /* Adds an extra paramater which is NULL for this lookup */ 
                                      NULL,
 #endif
                                      0, &parent TSRMLS_PC) == FAILURE) {
                 i_fail = i;
+                efree(parent_name);
                 break;
             }
+            efree(parent_name);
         }   
         pool_alloc(dst_cl, sizeof(zend_class_entry));
         lpc_copy_class_entry(dst_cl, cl->class_entry,  pool);
@@ -377,12 +393,15 @@ zend_bool lpc_install_classes(lpc_class_t* classes, zend_uint num_classes, lpc_p
             dst_cl->parent = *parent;
             zend_do_inheritance(dst_cl, *parent TSRMLS_PC);
         }
-        if (zend_hash_add(EG(class_table), cl->name, cl->name_len+1,
+
+        if (zend_hash_add(EG(class_table), cl_name, cl_name_len+1,
                           &dst_cl, sizeof(zend_class_entry*), NULL) == FAILURE) {
-            lpc_error("Cannot redeclare class %s" TSRMLS_CC, cl->name);
+            lpc_error("Cannot redeclare class %s" TSRMLS_CC, dst_cl->name);
             i_fail = i;
             break;
         }
+
+        efree(cl_name);
     }
 
     if (i_fail >= 0) {
@@ -392,9 +411,13 @@ zend_bool lpc_install_classes(lpc_class_t* classes, zend_uint num_classes, lpc_p
         */
         for (i = i_fail; i >= 0; i--) {
             lpc_class_t* cl = classes + i;
-            if (zend_hash_del(EG(class_table), cl->name, cl->name_len+1) == FAILURE) {
-                 lpc_error("Cannot delete class %s" TSRMLS_CC, cl->name);
+            char *cl_name;
+            zend_uint cl_name_len;
+            pool_nstrdup(cl_name, cl_name_len, cl->name, 0); /* de-intern poss mangled */
+             if (zend_hash_del(EG(class_table), cl_name, cl_name_len+1) == FAILURE) {
+                 lpc_error("Cannot delete class %s" TSRMLS_CC, cl_name);
             }
+            efree(cl_name);
         }
         return FAILURE;
     }
@@ -567,7 +590,7 @@ static lpc_check_t check_copy_constant(Bucket* p, const void *arg1, const void *
 
 /* {{{ fixup_method */
     #define SET_IF_SAME_NAME(member) \
-        if(src->member && !strcmp(zf->common.function_name, src->member->common.function_name)) { \
+        if(src->member && !pool_strcmp(zf->common.function_name, src->member->common.function_name)) { \
             TAG_SETPTR(dst->member, zf); \
         }
 void fixup_method(Bucket *p, zend_class_entry *src, zend_class_entry *dst, lpc_pool* pool)
@@ -589,16 +612,27 @@ void fixup_method(Bucket *p, zend_class_entry *src, zend_class_entry *dst, lpc_p
         } else if (zf->common.fn_flags & ZEND_ACC_CLONE) {
             TAG_SETPTR(dst->clone, zf);
         } else {
-            SET_IF_SAME_NAME(__get);
-            SET_IF_SAME_NAME(__set);
-            SET_IF_SAME_NAME(__unset);
-            SET_IF_SAME_NAME(__isset);
-            SET_IF_SAME_NAME(__call);
+            SET_IF_SAME_NAME(__get)
+            SET_IF_SAME_NAME(__set)
+            SET_IF_SAME_NAME(__unset)
+            SET_IF_SAME_NAME(__isset)
+            SET_IF_SAME_NAME(__call)
+
 #ifdef ZEND_ENGINE_2_2
-            SET_IF_SAME_NAME(__tostring);
+//            SET_IF_SAME_NAME(__tostring)
+// macro expansion of above
+        if (src->__tostring) { 
+            if (!_lpc_pool_strcmp((zf->common.function_name), 
+                                  (src->__tostring->common.function_name), 
+                                  pool , "lpc_copy_class.c", 622)) {
+                dst->__tostring = zf; 
+                _lpc_pool_tag_ptr((void **)&(dst->__tostring), pool , "lpc_copy_class.c", 622); 
+            }
+        }
+
 #endif
 #ifdef ZEND_ENGINE_2_3
-            SET_IF_SAME_NAME(__callstatic);
+            SET_IF_SAME_NAME(__callstatic)
 #endif
         }
         TAG_SETPTR(zf->common.scope, dst);

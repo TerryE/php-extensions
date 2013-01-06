@@ -1,97 +1,47 @@
+Overview
+========
+
+The major rework arising from the 14-16 Dec review has now largely been implemented and is working:
+excluding memory leak reports, only 4 of the tests fail and all of these with subtle variations on 
+error path handling.  However, this leakage is still a major issue and since the intro of interning 
+in the serial pools, this has grown from a small trickle in a few tests to some fairly large 
+reports (e.g test47 has 89 leaks reported).  I need to do a full review of de-interning reuse.  
+
 W/E review 14-16 Dec 2012
 =========================
 
-Track down code path where leakage of the exec pool clear-up is not done then junk the pools cleanup
-HT -- at most one copy-out and one copy-in pool is open, so if nec these can be tracked by a pool
-context regstered as a LPCG variable.
+This has pretty much been implemented. The following items are still to do:
 
-Junk the pool brick concept and the fancy segmented compression code. Everything should assume
-single continuous serial pool storage.
+*   Review all initialisation / shutdown code to ensure that it is properly scoped -- that is per
+    request bookends belong in lpc_request.c, per source bookends belong in lpc_source.c. So cache
+    bookends are called from per request, pool bookends are called from per source -- except overall
+    pool_init / pool_shutdown called from per request.
 
-Implement RLE encoding, run-time selectable
-NM byte encoding scheme
-00 toggles between run 00 and run 40 (*)
-N number of run bytes
-M number of non-run bytes followed by bytes 0..M
-(*) Need to check to see if strings are URI encoded in which case encode for '+' not ' ' runs.
+*   Review logging categories. At the moment basically everything is low-level pool reporting. We
+    need some extra reporting categories for overall per-source and per-request info, plus logging
+    of hrow / catch events.  
 
-Add lpc.compression parameter
-0 no compression
-1 run-length encoded compression
-2 gz compression
-4 allocate buffer for pool lifetime (default is to alloc buffer for request lifetime).  See below.
+*   Add extra logging option to log each opcode/op1.type/op2.type -- need to decide whether to log
+    these to a separate debug file. Run against PHP test suite and use o/p to develop note on Opcode
+    coverage and Q on APC testing against the PHP test suite.   
 
-Also use malloc, not emalloc here. 
+*   Formalize the LPC_REF_COPY ((void *) 1) and LPC_REF_AUTOGEN ((void *) 2) usage. Review source
+    code references to (\->|\.)filename\b to see usage cases when the reference is reused.
 
-Add new PER_DIR lpc.storage_quantum parameter (default 128K).
+*   Add conditional opcode handler address replacement with LPC_REF_AUTOGEN. Note this not only
+    increases the compression of the file-based record form, but move to another goal of removing
+    all addressed based references from the cache format so that the cache file can be moved from
+    php build to php build.
 
-Add Zend try/throw/catch wrapper around the compile / copy-out process.
+*   Develop small reporter scipt to list off cache contents, e.g.
+       /opn/bin/php -d lpc.cache_pattern=".*" -d lpc.cache_replacement=".testNN.cache" \
+                    -d lpc.filter="(?!.)" reporter.php
 
-Compression and decompression is done usng in-pool storage. In the case of copy-in, the compressed
-record is loaded at the end of the storage and expanded into the start. Similarly on copy-out, the
-uncompressed record is first relocated to the end of the pool and compressed to the start. The
-(de)compress routine needs to do overlap detecton.
-*  in the case of a copy-in collision, the pool size is increased to size_compressed +
-   size_uncompressed and the copy-in is restarted
-*  in the case of a copy-out collision, an overflow error is thrown.
+*   Review regression test automation for php test suite. And how filtering of output records is
+    done -- e.g. how site-specfic (pathnames, etc.) error content is surpressed. 
 
-Serial pool overflow during copy-out is now handled by the compile process throwing an overflow
-error. If a compile throws an overflow error then the pool size is increased by lpc.storage_quantum
-and the compile restarted. Any other error results in that compile failing back to default and LPC
-being disabled.
-
-Review all initialisation / shutdown code to ensure that it is properly scoped -- that is per
-request bookends belong in lpc_request.c, per source bookends belong in lpc_source.c. So cache
-bookends are called from per request, pool bookends are called from per source -- except overall
-pool_init / pool_shutdown called from per request.
-
-The lpc.compression==4 option is handled privately within the pool modules and logic interlocks
-between pool_init / loop_create / pool_load in the case of allocation, etc. Also formalise the
-constraint that only a single serial pool can be create per thread, and this enables the same buffer
-to be used for all serial pool allocations for both copy-out and copy-in during the request lifetime
-allocation.
-
-Review logging categories. At the moment basically everything is low-level pool reporting. We need
-some extra reporting categories for overall per-source and per-request info, plus logging of hrow /
-catch events. Also how mant tag entries per pool as this may be a tippng point into moving the
-tagptr HT back to a std PHP HT. 
-
-Add extra logging option to log each opcode/op1.type/op2.type -- need to decide whether to log these
-to a separate debug file. Run against PHP test suite and use o/p to develop note on Opcode coverage 
-and Q on APC testing against the PHP test suite.   
-
-Formalize the LPC_REF_COPY ((void *) 1) and LPC_REF_AUTOGEN ((void *) 2) usage. Review source code
-references to (\->|\.)filename\b to see usage cases when the reference is reused.
-
-Add conditional opcode handler address replacement with LPC_REF_AUTOGEN. Note this not only
-increases the compression of the file-based record form, but move to another goal of removing all
-addressed based references from the cache format so that the cache file can be moved from php build
-to php build.
-
-Develop small reporter scipt to list off cache contents, e.g.
-   /opn/bin/php -d lpc.cache_pattern=".*" -d lpc.cache_replacement=".testNN.cache" \
-                -d lpc.filter="(?!.)" reporter.php
-
-Review regression test automation for php test suite. And how filtering of output records is done --
-e.g. how site-specfic (pathnames, etc.) error content is surpressed. 
-
-Adopt interning for serial pool strings on all zend engine versions. Split out pool_memcpy from
-pool_strncpy. The former is used for bitwise copy of possibly non-immutable memory (e.g. fixed
-format records) and these are tagged and any internal references PICed.
-
-The latter for constant strings etc. and here copy-out references are to the interned pseudo address
-(high byte 0xBB and low-end int is the interned string id. Copy-out zval lengths are zeroed. The
-interned string pool is o/p the serial pool as an append -- much like the rbvec. Strings are stored
-as <4-byte uint length><N string bytes>. Note that the length is NOT int aligned so must be memcpy'd
-in/out to allow LPC to work on ARM, etc. This serial pool form of the interned pseudo address is
-already PIC, so these address references are NOT tagged for relocation.
-
-Copy-in logic for interned strings is Zend version dependent. ZE<2.4, these are just converted to
-normally allocated strings. ZE>=2.4 these are mapped into Zend interned strings and the addresses
-converted to local Zend references. 
-
-(Long term) review how APC handles shallow copy references to SMA storage as a similar approach
-could enable aggregated object allocation at copy-in. Less emallocs. 
+*   (Long term) review how APC handles shallow copy references to SMA storage as a similar approach
+    could enable aggregated object allocation at copy-in. Less emallocs. 
 
 Other Module Specific
 =====================
@@ -101,24 +51,20 @@ lpc_cache.c:
     APC has a mininum file age that is cacheable to prevent the caching of a file that is fetched
     which being stored.  It's proably worth disabling the LPC cache if the age is less than 2s say.
 
-    lpc_cache_make_key(() has a silent error path.  Need to raise an error notice here.    
-
-    Need to set clear_flag_set based on cookie and request parameter. In the meantime I am
-    defaulting to false. The whole date detection algo is a bit bumpy in that the first detection
-    disables LPC and deletes the cache, the next creates the new cache, so you need two executions
-    to prime the cache. Maybe need to rethink. 
+    The whole detection algo is a bit bumpy in that the script cache is validated on the basis of
+    the PHP version, script directory, basename, mtime and filesize. On change of any of these, the
+    cache is disabled for this request and the cache deleted. The next request creates the new
+    cache, so you need two executions to prime the cache. It would be better to include inline retry
+    logic so that the cache can be rebuilt on a single request. Also at the moment I am not setting 
+    the cookie and request parameters to set the clear_flag_set boolean.
 
 lpc_copy_op_array.c:
-    The Zend Engine 2.4 macros haven't been debugged yet.  Need to be done.
 
     Work out the interpretation and treatment of the scope field which should point back to the
     parent class in the case of a method.
 
-    Review the treatment of relative constant path files on the include path. We should convert
-    these to absolute on copy-out. See discusion below.
-
     Need to add the new 2,4 functionality for interned strings etc as per "Performance Improvements"
-    RFC.
+    RFC.  These and the associated Zend Engine 2.4 macros haven't been debugged yet.
  
     Raise a bugrep for APC -- It assumes that unknown autoglobals must begin with _. However, this 
     is only a convention and there is nothing to stop another extensino declaring an autoglobal 
@@ -129,12 +75,13 @@ lpc_copy_op_array.c:
     backwards N-Nold+1 entries -- faster in general. 
 
 lpc_copy_source.c:
+
+    Cf. lpc_cache.c comment on filename sustitution.
+
     If the source includes classes with parents then this inheritance is validate using
     zend_do_inheritance(). This path needs testing.
 
     This still leaves the class structures in memory so these WILL leak.
-
-    Decide on correct action if cached compile fails, but drop-through isn't the correct response
 
 lpc_hashtable.c:
     add Zend 2.4 insert interned strings for keys, etc.
@@ -144,6 +91,8 @@ lpc_hashtable.c:
     Copy out a new bucket with the deinterred key or inplace key
 
 lpc_request.c:
+    At the moment this fails if the request is stdin (request_fullpath == "-") as sb = NULL. 
+
     unwind code from MSHUTDOWN needs to be folded in RSHUTDOWN now that caches and stacks only have
     a request lifetime
 
@@ -168,10 +117,6 @@ php_lpc.c:
     this redundant field will (i) improve serial format compression, and (ii) mean that the serial
     format is no longer link version dependent.
 
-2)  Add zero-byte run compression.  This will run slower than the current gz compression, but this
-    is a trade-off.  Yes the cache files will be slightly largey, but the expand time is so fast for
-    this algo to be neglible. 
-
 === External Bugs Found ===
 
 APC Autoglobals will only work if the follow the leading _ convention (see above).
@@ -188,119 +133,14 @@ APC uses PG(include_path) for the include path and it should use INI_STR(include
 
 === Test Summaries ===
 
+Tests that currently fail 
+=========================
+
+Tests 32 42 42b 43 and 47 fail
+
 What I've done is to run LPC against the PHP test suites running each test twice -- once to prime
 the cache and once to use it to load the op arrays, etc. I have copied any that fail -- by abending
 or by producing different output or unexplained errors -- into my own LPC suite then cutting the
 test down further until I've reached a threshold where I am toggling the errors. This is then used
 to analyse and debug the problem. 
 
-What's left so far are largely niggles, rather than show stoppers.
-
-Tests 25, 32, 40, 43, 44, 46, 47 and 48 failed due to differences in script file names (e.g. 
-test25.php ./test25.php) and informational errors leaking through the pre diff filters.  However 
-the following two tests still show up material difference.  
-
-Test50 and test51 Failed due to corruption of literals in nested includes.  The correct filename 
-(e.g. 'echo.inc' in the case of Test50, but stepping through the PHP RTS, this call is intercepted 
-by Phar which does a realpath on this and is somehow screwing up the path search across the include
-path.  It's also doing various stat's in the process.  However the following:
-
-    require_once dirname(__FILE__) . '/echo.inc';
-    require_once './' . '/echo.inc';
-    require_once '/home/terry/work/ext/lpc/tests/include_files/echo.inc';
-    
-all	work fine.   I've realised that I need to adopt the APC strategy of resolving any constant 
-relative paths at compile time.  This will remove these unnecessary stats and (largely) remove
-the changes in reported filenames in the uncached and cached versions.
-
-Test25  (classes/abstract_inherit -- A class that inherits an abstract method is abstract) succeeds 
-        but the error refers to different filename variant. 
-Test32  succeeds but compiler warnings are only emitted on the compile cycle 
-Test44  (lang/038 -- Convert warnings to exceptions) 
-        Succeeds but reported line numbers are crazy and errors are being listed to stdout 
-Test45  (lang/039 -- Catch Interfaces)
-        Succeeds but generates PHP Fatal error:  Uncaught exception with silly (e.g. 40035984) 
-        line numbers for my LPC generated debug notices emitted during the error path.
-Test46  (lang/bug22592 -- cascading assignments to strings with curly braces broken)
-        Succeeds
-Test47  (lang/bug28213 -- crash in debug_print_backtrace in static methods) 
-        Intercepts stderr so diffs on devt diag error reporting.  This is another case of different
-        filenames (being embeded in traceback info) causing a false difference in outputs.
-Test48  (lang/catchable_error_002 -- Catchable fatal error [2]. Need to investigate.
-Test50  (lang/include_variation2 -- Including a file in the current script directory from an 
-        included function generates garbage strings e.g. 
-> PHP Warning:  require_once(echo.inc): failed to open stream: No such file or directory in ZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZ... on line 2
-        This is because Phar is resolving a relative address and barfing to give a bad directory 
-        path.
-Test51  (lang/include_variation3 -- Including a file in the current script directory from eval'd code)
-        Ditto 
-
-
-Known Memory leaks:
-
-The request handle filename leaks is the file is loaded from the cache and not openned
-   ...//php5/main/main.c(2279) :  Freeing 0x02893320 (<length of filename> bytes)
-
-test08  1  lpc_cache.c(318)                          0x02035C08 (48 bytes)
-test08  1                               1 leaks
-test08  2  lpc_cache.c(318)                          0x0280FC08 (48 bytes)
-test08  2                               2 leaks
-test21  2  lpc_copy_class.c(155)                     0x02739360 (0 bytes)
-test21  2  lpc_copy_class.c(272)                     0x02739998 (42 bytes)
-test21  2                               3 leaks
-test22  2  lpc_copy_class.c(155)                     0x026558C0 (0 bytes)
-test22  2  lpc_copy_class.c(272)                     0x026575E0 (42 bytes)
-test22  2                               3 leaks
-test23  2  lpc_copy_class.c(155)                     0x01357848 (0 bytes)
-test23  2  lpc_copy_class.c(272)                     0x0135C9C0 (38 bytes)
-test23  2                               3 leaks
-test24  2  lpc_copy_class.c(155)                     0x01918728 (0 bytes)
-test24  2  lpc_copy_class.c(272)                     0x01919408 (42 bytes)
-test24  2                               5 leaks
-test31  2  lpc_pool.c(248)                           0x02E8E568 (32 bytes)
-test31  2  php5/Zend/zend_hash.c(315)                0x02E8F3A0 (78 bytes)
-test31  2  lpc_copy_class.c(155)                     0x02E923E0 (0 bytes)
-test31  2  lpc_pool.c(265)                           0x02E92630 (72 bytes)
-test31  2  lpc_hashtable.c(102)                      0x02E926D8 (64 bytes)
-test31  2  lpc_copy_op_array.c(176)                  0x02E92828 (11 bytes)
-test31  2  lpc_copy_class.c(272)                     0x02E92D38 (42 bytes)
-test31  2                              14 leaks
-test32  2  lpc_copy_class.c(155)                     0x01CBEDD8 (0 bytes)
-test32  2  lpc_copy_op_array.c(328)                  0x01CBEED8 (80 bytes)
-test32  2  lpc_copy_op_array.c(326)                  0x01CBEF88 (7 bytes)
-test32  2  lpc_copy_op_array.c(332)                  0x01CBF1E8 (10 bytes)
-test32  2  lpc_copy_op_array.c(336)                  0x01CBF2B8 (4 bytes)
-test32  2  lpc_copy_op_array.c(339)                  0x01CBF318 (72 bytes)
-test32  2  lpc_copy_op_array.c(341)                  0x01CBF3C0 (10 bytes)
-test32  2  lpc_copy_op_array.c(406)                  0x01CBF4F8 (1560 bytes)
-test32  2  lpc_copy_op_array.c(176)                  0x01CBFB70 (5 bytes)
-test32  2  lpc_copy_class.c(272)                     0x01CC0660 (42 bytes)
-test32  2                              19 leaks
-test40a 2  lpc_copy_class.c(155)                     0x013152B8 (0 bytes)
-test40a 2  lpc_copy_class.c(272)                     0x013157F0 (43 bytes)
-test40a 2                               3 leaks
-test41  2  lpc_pool.c(248)                           0x025D05E8 (32 bytes)
-test41  2  php5/Zend/zend_constants.c(403)           0x025D1F10 (6 bytes)
-test41  2  lpc_copy_class.c(155)                     0x025D4220 (0 bytes)
-test41  2  lpc_pool.c(265)                           0x025D4748 (72 bytes)
-test41  2  lpc_hashtable.c(102)                      0x025D47F0 (64 bytes)
-test41  2  php5/Zend/zend_hash.c(1312)               0x025D49A0 (77 bytes)
-test41  2  lpc_copy_op_array.c(176)                  0x025D4DA8 (5 bytes)
-test41  2  lpc_copy_class.c(272)                     0x025D4E10 (42 bytes)
-test41  2                              15 leaks
-test42  2  lpc_copy_class.c(155)                     0x01AD6C90 (0 bytes)
-test42  2  lpc_copy_class.c(272)                     0x01AD7420 (42 bytes)
-test42  2                               3 leaks
-test47  1  lpc_cache.c(318)                          0x01FAEC08 (48 bytes)
-test47  1                               1 leaks
-test47  2  lpc_cache.c(318)                          0x02532C08 (48 bytes)
-test47  2  lpc_copy_class.c(155)                     0x025415E0 (0 bytes)
-test47  2  lpc_copy_class.c(272)                     0x02541DE8 (42 bytes)
-test47  2                               4 leaks
-test48  2  lpc_copy_class.c(155)                     0x0304AD38 (0 bytes)
-test48  2  lpc_copy_class.c(272)                     0x0304B0B8 (42 bytes)
-test48  2                               3 leaks
-test52  2  lpc_copy_class.c(155)                     0x0190F970 (0 bytes)
-test52  2  lpc_copy_class.c(272)                     0x01910170 (42 bytes)
-test52  2                               5 leaks
-		
