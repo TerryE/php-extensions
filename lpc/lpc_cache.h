@@ -101,12 +101,12 @@ typedef enum {
 } lpc_cache_type_t;
 
 typedef struct _lpc_cache_key_t {
-    char            *filename;
-    int              filename_length;
+    char            *filename;              /* This is whatever the execution env passed to the */
+                                            /* compile request and NOT a fully resolved name    */
+    int              filename_length;       /* length for above */
     time_t           mtime;                 /* the mtime of this cached entry */
     size_t           filesize;
     lpc_cache_type_t type;
-    php_stream      *fp;
 } lpc_cache_key_t;
 /* }}} */
 

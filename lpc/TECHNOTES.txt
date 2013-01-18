@@ -1,7 +1,7 @@
 LPC Quick-Start Braindump
 
-This is a quick braindump of how LPC (a Lite Progam Cache) currently works in the form of a quick-
-start guide to start hacking LPC. It assumes that you are already familiar with the corresponding
+This is a short overview of how LPC (a Light Program Cache) currently works in the form of a quick-
+start guide to start hacking LPC.  It assumes that you are already familiar with the corresponding
 guide to APC, so doesn't include the intro sections on how to get, install, build and debug it.
 
 
@@ -10,13 +10,13 @@ guide to APC, so doesn't include the intro sections on how to get, install, buil
 PHP installations are broadly divided into two categories: (i) application-optimised systems which
 host a single application or a set of mutually trusted applications on a dedicated server or VM; and
 (ii) shared hosting environments where a hosting provider provides the infrastructure and a managed
-service the hosts a (large number of) number of independent account. Accelerators such as APC
+service the hosts a (large number of) number of independent account.  Accelerators such as APC
 effectively address the first of these. LPC is designed to address the second category.
 
 In a shared hosting environment, UID based access control is used to enable account separation.
 Individual web-requests which require PHP script execution are executed in an account-specific UID
 process: either on a per-request PHP activation (using suEXEC or suPHP), or sometimes using
-per-account persistent PHP threads (using FastGCI). LPC aims to generate a comparable performance
+per-account persistent PHP threads (using FastGCI).  LPC aims to generate a comparable performance
 acceleration to APC for shared hosting environments which are at a fundamentally different scaling
 optimization point and infrastructure template to the dedicated server / VM.
 
@@ -34,92 +34,102 @@ application. It therefore discards:
 
 *   The bulk of the API including the APC iterator class
 
-*   Various tuning and reporting INI parameters
-
 *   Lazy function and class loading (which was introduced in 2009 to support mega-applications such
     as Facebook -- see http://www.serverphorums.com/read.php?7,11145. It produces marginal if any
     performance gains for applications such as Wordpress or MediaWiki which at the upper end of the
     size range that LPC targets.
 
+*   Various tuning and reporting INI parameters related to the above.
+
 These discarded functions represent roughly two-thirds of the APC source code base, so as a
 side-effect the LPC code base is a lot smaller than APC. 
 
-LPC uses a file-based opcode cache DB. I had initially intended to use the core DBA (cdb and
-cdb_make) APIs, but cdb has quite poor performance for this usecase, so I implemented my own
-cachedb extension for this purpose. By default, there is a one to one relationship between the
-request script and the cache. (e.g. DOCUMENT_ROOT/index.php uses DOCUMENT_ROOT/.index.php.cache by
-default). This means that caches are specific to the script and is under the same ownership.
-However, the PER_DIR ini parameters lpc.cache_pattern and lpc.cache_replacement provide
+LPC uses a file-based opcode cache DB, with the aim of replacing the assembly and compilation of 
+dozens of source files with the largely serial access to a single cache file.  (I had initially 
+intended to use the core DBA (cdb and cdb_make) APIs, but cdb has quite poor performance for this
+usecase, so I implemented my own cachedb extension for this purpose.)  By default, each request
+script has its own file cache (e.g. DOCUMENT_ROOT/index.php uses DOCUMENT_ROOT/.index.php.cache by
+default).  This means that caches are specific to the script and each is under the same ownership.
+Nonetheless, the PER_DIR ini parameters lpc.cache_pattern and lpc.cache_replacement provide
 preg_replace-like functionality to allow the maintainer to move these caches into a separate
 directory or even to map multiple scripts onto the same cache file.
 
 In scenarios where application scripts will not be pre-cached in the systems in-memory file cache 
-(and this is the typical one for LPC use), I/O which references such PHP files will require physical
-I/O and the avoidance of such is key to application performance. Unfortunately PHP's default 
-strategy for opening included relative path names is to do a path search for each file, which incurs
-a performance hit. By default LPC therefore resolves and converts all constant relative include 
-filenames to absolute form on initial compile. (See further notes on this below).  
+(and this is the typical one for LPC use), I/O which references PHP source files will require
+physical I/O and the avoidance of such I/O is key to application performance.  Unfortunately PHP's
+default strategy for opening included relative path names is to do a path search for each file,
+which incurs a performance hit.  By default LPC therefore resolves and converts all constant 
+relative include file names to absolute form on initial compile. (See further notes on this below).  
 
 
 2.  More on implementation differences between LPC and APC
 
 When I started the development of LPC, I used a standard triage strategy with the APC code base, 
 sentencing it into three categories: 
+
 *   No longer relevant to LPC (such as variable caching) that could be removed;
 *   Needing rewriting, for example the cache and pool implementations;
 *   Code modules where I hoped to adopt a minimum change strategy (e.g. apc_cache.c.)
 
-However as development progressed, I realised that LPC removed or changed so much of the APC
-functionality and that it had passed the point where a full re-implementation became the most
-practical approach. This also had benefit that I could consistently adopt my own preference for
-minimum coding subject to clarity and functionality constraints. 
+However as development progressed, LPC had removed or changed so much of the APC functionality that
+it had passed the point where a full re-implementation became the most practical approach. This also
+had benefit that I could consistently adopt a single and consistent coding style which minimises 
+code length, of course subject to clarity and functionality constraints. 
+
+I have taken advantage of the rewrite to move to a move Zend style of programming by using macros 
+(where practical) to encapsulate frequent code patterns and any Zend Engine variant coding.  I have
+also added extra documentation into the source, so hopefully other developers will find it easier 
+to get to grips with.  The net result of this is that at the current git version, the line counts
+are 5.4K source lines for LPC against 16.1K for APC with the corresponding comments:code percentages
+are 41%:59% and 34%:66%.
 
 The APC policy on error handling is complicated by the need to protect the integrity of the shared
-memory data structures on all failure paths. This means that error handling is in general difficult
-to understand as most hard errors are handled by the function returning immediately with an error
-status or NULL pointer being returning up the call stack. In LPC, there are no cache integrity
-issues associated application failure as it adopts an update-on-close strategy for its file-based
-opcode cache. It can therefore follow a simple error strategy: errors are treated as fatal, except
-in specific cases where the application logic has functional code paths and rules to handle such
-failures.
+memory data structures on all failure paths.  This means that error handling is, in general, 
+difficult to understand as most hard errors are handled by the function returning immediately with 
+an error status or NULL pointer being returning up the call stack.  In LPC, there are no cache
+integrity issues associated with application failure as it adopts an update-on-close strategy for
+its file-based opcode cache.  It can therefore follow a simple error strategy: errors are treated as
+fatal, except in specific cases where the application logic has functional code paths and rules to
+handle such failures.
  
-LPC also drops the APC context layer as this contains the storage pool and the storage pool defines
-the context in LPC: copying code out goes from an exec pool to a serial one, and copying code in
-v.v. Also as the pool is also thread-specific in LPC, it also contains the TSRMLS id (in the ZTS
-variant) so that functions which include a pool argument can still retain thread-safety, whilst
-permitting the TSRMLS_DC (et al) parameters to be dropped from those functions. lpc.h defines
-equivalent macros to allow calls to wider the PHP / Zend API to recover these. 
-
-I have taken advantage of the rewrite to move to a move Zend style of programming by (where
-practical) using macros to encapsulate frequent code patterns and any Zend Engine variant coding. I
-have also added extra documentation into the source, so hopefully other developers will find it
-easier to get to grips with. The net result of this is that at the current git version, the line
-counts are 5.4K source lines for LPC against 16.1K for APC with the corresponding comments:code
-percentages are 41%:59% and 34%:66%.
+LPC also drops the APC context layer which contains the storage pool as the storage pool itself
+defines the context in LPC: copying code out goes from an exec pool to a serial one, and copying
+code in v.v.  Also as the pool is also thread-specific in LPC, it also contains the TSRMLS id (in 
+the ZTS variant) so that functions which include a pool argument can still retain thread-safety,
+whilst permitting the TSRMLS_DC (et al) parameters to be dropped from those functions. lpc.h 
+defines equivalent macros to allow calls to wider the PHP / Zend API to recover these. 
 
 
 3.  Opcode caching at 20,000 ft
 
-The PHP Zend engine is a compile and go system which compiles down to an intermediate form that is
-build largely on the PHP storage mechanisms (zvals, hashtables, etc) and its emalloc memory
-management subsystem to a format which is then interpreted by the Zend RTS. On request completion,
-the RTS runs a destructor to enumerate and destroy these intermediate forms for each function,
-class, etc. 
+The PHP Zend engine is a compile-and-go system which compiles to an intermediate form that is build
+largely on the PHP storage mechanisms (zvals, hash tables, etc) and its emalloc memory management
+subsystem to a format which is then interpreted by the "go" element, the Zend execution engine 
+(ZendEE).  The ZendEE executes blocks of instructions known as opcode arrays (or op_array for 
+short), with each function and source file having an associated op_array.  It executes the current
+op_array one instruction (also known as a zend_op) at a time, and when this instruction is an
+include, eval, etc., then the Zend compiler is invoked to compile that source into into an internal
+binary format (one or more op_arrays, etc.) and then execution proceeds with the next instruction.  
 
-PHP processes each request by using the Zend compiler to compile one or more source files into an
-internal binary format. This is then executed by the Zend execution engine. LPC hooks into this
-compile subsystem intercepting the compile request. If no copy of the module exists in its cache,
-then it calls the underlying PHP compiler to do its business, but then does a copy of the compiled
-out to a serial format before passing control back to the execution system to run the code. 
+The overall execution process is initiated by PHP receiving a request in one of various ways, such
+as a php parameter in the case of a php-cli script or as a URI scriptname as a webserver request.
+This resolves to the first source to be compiled, boot-strapping the execution cycle.  The execution
+hierarchy is then built up over the execution of the request, and on completion, the Zend runs a
+destructor to enumerate and destroy these execution structures for each function, class, etc. 
 
-A PHP request can be initiated in various ways, such as a php parameter in the case of a php-cli
-script or as a URI scriptname as a webserver request. This resolves to the first source which is
-then compiled and loaded. Each compiled source has an associated op_array which contains the
-compiled version of the top-level source lines, and generates a function and class hierarchy for
-each function or class in the source. Likewise each function has an associated op_array, and each
-class contains a function entry for each static or object method within the class, and an op_array
-which is executed on loading to initiate any static methods.  This record structure hierarchy can
-be represented as follows:
+    [As an aside, this is true even for the create_function() built-in which compiles and registers
+    a function called "\0lamda_{$func_count}" in the EG(function_table) and returns this name as a
+    return value.  This leads to the killer that some PHP novices fall into of putting a create
+    function inside a for loop, adding performance thousands of copies of the same function into the
+    function table.]
+
+More specifically, each compiled source has an associated op_array which contains the compiled
+version of the top-level source lines, and generates a function and class hierarchy for each
+function or class in the source.  Likewise each function has an associated op_array, and each class
+contains a function entry for each static or object method within the class, and an op_array which
+is executed on loading to initiate any static methods.  This record structure hierarchy can be
+represented as follows:
+
     PHP request comprises:
     *   A set of source objects (either file or PHP string)
         *   An op_array of op lines
@@ -127,47 +137,53 @@ be represented as follows:
             *   An op_array of op lines
 	    *   An array of classes
             *   An op_array of op lines
-            *   An array of functions.
+            *   An array of functions (one per class method).
 
-Each of these hierarchies for source, function, class and op_array have a further internal structure 
-which is documented in its relevant lpc_copy implementation (e.g. lpc_copy_class.c for classes).
+    [Note that each of these hierarchies for source, function, class and op_array have a further
+    internal structure which is discussed and documented in its relevant lpc_copy implementation
+    (e.g. lpc_copy_class.c for classes).]
 
-Note that PHP implements conditional compilation of functions and classes, for example:
+LPC hooks into PHP compile subsystem by intercepting the compile request for file-based sources.  
+If no copy of the module exists in the LPC cache, then LPC calls the underlying PHP compiler to do
+its business, but then does a copy of the compiled out to a serial format before passing control
+back to the execution system to run the code.  Other sources, such as eval strings as passed 
+directly to the PHP compiler.
+
+Just to reiterate: any source in PHP is fully compiled as a single atomic instruction from the
+ZendEE perspective.  This means that zend_op execution cannot occur within compilation, and this in
+turn has various architectural implications.  For example, PHP implements conditional compilation of
+functions and classes by statically compiling the conditional functions / classes and assigning a
+unique "mangled" name that is not directly callable.  The in-line declaration is then substituted by
+a ZEND_DECLARE_FUNCTION opcode which establishes a synonym "mass" for the relevant mangled name at
+run-time when executed. In the following code fragment:
+
     if ($flag) {
         function mass($x) { return $x; }
     } else {
         function mass($x) { return 2.20462*$x; }
     }        
-by statically compiling the two mass functions, each assigned a unique "mangled" name that is not
-directly callable, and then substituting the declaration inline with a ZEND_DECLARE_FUNCTION
-instruction which establishes a synonym "mass" for the relevant mangled name. This means that the
-compilation process is not recursive or conditional.  Any individual source compilation is triggered
-by execution of one of the compilation request statements (the request initiator, include,
-include_once, require, require_once, eval, create_function).  This source is then completely 
-compiled and control passed back to the execution system.
 
-Hence the compilation unit is the source object and the Zend compiler is invoked per source and
-generating a set of elements which represent an in-memory data hierarchy reflecting the above
-structure.  In LPC, this compilation step is intercepted for FILE-BASED sources; e.g. a dynamic
-compile of a string with eval() or create_function() is effectively bypassed by LPC. 
+defines two mass functions, each with is own mangled name, and the if / then / else logic will 
+execute the "declare function" opcode to bind the appropriate one to the function "mass".  
+As discussed below, other opcodes implement runtime class binding and inheritance. 
 
-A "pool" interface is used to manage the allocation of this set of storage elements and their
-internal references to facilitate compile caching. Pools exists in one of two formats:
+In LPC, a "pool" interface is used to manage the allocation of this set of storage elements and their
+internal references to facilitate compile caching. Such pools exists in one of two formats:
 
 -   An exec pool is a pure in-memory structure where each element is associated with a fixed
     allocated memory location and references are simply the size_t address pointers to the
-    referenced elements. This is the format that is generated by the compiler and executed by the
-    execution environment.
+    referenced elements. This is really the format that is generated by the compiler and executed
+    by the execution environment.
 
 -   A serial pool is a non-executable form of the same that is written out to the Cache DB and can
     then be subsequently reloaded into a different memory allocation. Hence it must be in a position
-    independent form -- that is all internal reference are now size_t offsets of the referenced
-    element from the start of the pool. This pool format can be simply treated as a single binary
-    block for I/O purposes.
+    independent form -- that is by converting all internal references into size_t offsets of the
+    referenced element from the start of the pool. This pool format can be simply treated as a
+    single binary block for I/O purposes.
 
-A cacheable source compilation involves two pools, one in each format, with the LPC "copying out"
-from exec to serial format during initial compile, and "copying in" from serial to exec format for
-subsequent cached reloads.
+A cacheable source compilation involves two pools, one exec and one serial, with the LPC "copying
+out" from exec to serial format during initial compile, and "copying in" from serial to exec 
+format for subsequent cached reloads.
 
     COMPILATION
 	source -> [compiler] -> exec pool         ->   [execution environment]
@@ -183,33 +199,34 @@ subsequent cached reloads.
                           [LPC copy (in)]
                                 |
                                 V
-	                        exec pool         ->   [execution environment]
+	                        exec pool         ->   ZendEE
  
-Since the pool content from initial compile is written to disk prior to subsequent reload, it leaves
-no residual in-memory content.  Hence all copies from one pool format to another must be deep
-copies.  Also in copy-out from exec to serial pool format, the copy function must explicitly or
+Since the pool content from initial compile is written to disk prior to subsequent reload, it can't
+leave any residual in-memory content.  Hence all copies from one pool format to another must be deep
+copies.  Also during copy-out from exec to serial pool format, the copy function must explicitly or
 implicitly tag any intra-pool references so that they can be converted to and from offset form
-during the copy. External-to-pool references either need to be explicitly overwritten by the copy-in
+during the copy.  External-to-pool references either need to be explicitly overwritten by the copy-in
 code, or they must refer to invariant addresses, e.g. function address within the PHP executable. 
 
 When LPC receives a request to compile a source, it first checks to see if a copy of the compiled
 source exists in the request cache.  The normal situation is that a copy of the compiled source
-already exists in its cache, and in this case it does a deep copy from the serial format back into
-exec format, in effect recreating the compiler output but without invoking the compiler, and again
-passing control back to the execution system to run the code.  This is LPC in a nutshell.  
+already exists in the cache, and in this case LPC does a deep copy from the serial format back into
+exec format, in effect recreating the compiler output, but without invoking the compiler.  Control 
+is then again passed back to the execution system to run the code.  This is LPC in a nutshell.  
 
 In terms of its implementation, wherever practical the LPC source code is unified into a single code
-set for both copy in and copy out variants.  However, the Zend engine has made various changes to
-the layout of internal data structures across its version, so where practical define macros and
+set for both copy in and copy out variants.  However, the ZendEE has made various changes to the
+layout of internal data structures across its versions, so where practical define macros and
 conditional compilation have been used to allow a single code base to be used for all supported
 variants (Zend 2.0 or later).  The main exception to this arises from the fact that the copy-out /
 unload process only occurs once per version of a given PHP source configuration, but the reload /
 copy-in process occurs once-per source file per request: write-once, read-many.  So whilst in 
-general the emphasis is on simplicity and clarity in coding, in certain circumstances (especially
-when functional differences exist between copy-in and copy-out) a second two variant exists for
-copy-in, with this optimized for performance.
+general the emphasis is on simplicity and clarity in coding, in certain circumstances (especially 
+when functional differences exist between copy-in and copy-out) a second variant exists for copy-in,
+with copy-in optimized for performance.
 
-The structure of the code is now aligned to the hierarchy with the following modules:
+The structure of the LPC code within its own source files is now aligned to the hierarchy with the
+following modules:
 
     Module                  Scope / Description
     php_lpc.c               Standard PHP extension module for LPC
@@ -225,17 +242,116 @@ The structure of the code is now aligned to the hierarchy with the following mod
     lpc_string.c            String utilities
     lpc_debug.c             Debug utilities
 
-Each has its own header file exporting the public view of the modules, and there is one additional
-header lpc_op_table.h used to drive the opcode copy process.
+Each C file has its own header file exporting the public view of the modules, and there is one
+additional header, lpc_op_table.h, used to drive the opcode copy process.
 
-4.  Pools and Caches
+
+5.  The handling of class inheritance
+
+Moving from a pure compile-and-go environment -- as PHP implicitly assumes -- to a cached-compile 
+environment such as APC or LPC's adds some complexities as the following PHP examples show:
+
+    <?php
+    class A { public $a = array('foo1', 'foo2'), $b = 12; }
+    class B extends A {public $c="a"; }
+    print_r(new B);
+    ?>
+
+This is valid PHP and generates the PHP output as expected.  Class inheritance is done during
+compilation, making access to the child class straightforward; the opcodes for the key print_r() 
+portion are:
+
+    ZEND_FETCH_CLASS              :3,'B'
+    NEW                           $4,:3
+    DO_FCALL_BY_NAME
+    SEND_VAR_NO_REF               $4
+    DO_FCALL                      'print_r'
+
+But consider what happens if the class A declaration is replaced by the conditional code:
+
+    if (isset($argv[1])) {
+        class A { public $a = array('foo1', 'foo2'), $b = 12; }
+    } else {
+        class A { public $a = array('bar1', 'bar2'); }
+    }
+
+This is again perfectly valid PHP and produces different object listings dependent on whether the
+optional argument is specified on the command line.  However, the compiler has now switched to
+mangled class names and runtime binding:
+
+    ZEND_ISSET_ISEMPTY_DIM_OBJ    $argv, 1
+    JMPZ                          ~0, ->4      
+    ZEND_DECLARE_CLASS            $1,'\0a/path/test15a.php0x7f1c93d86029', 'a'  (Note 1)
+    JMP                           ->5          
+4:  ZEND_DECLARE_CLASS            $2,'\0a/path/test15a.php0x7f1c93d8606e', 'a'  (Note 1)
+5:  ZEND_FETCH_CLASS              :3,'A'  
+    ZEND_DECLARE_INHERITED_CLASS  '\0b/path/test15a.php0x7f1c93d860a9', 'b'     (Note 2)
+    ZEND_FETCH_CLASS              :5,'B'  
+    NEW                           $6,:5   
+    DO_FCALL_BY_NAME
+    SEND_VAR_NO_REF               $6
+    DO_FCALL                      'print_r'    
+    RETURN                        1            
+
+The two versions of A and B are compiled and assigned the mangled class names as (at lines noted
+1 and 2).  At execution time only one of the two ZEND_DECLARE_CLASS instructions (note 1) is 
+executed to bind the appropriate class to A.  Then the subsequent ZEND_DECLARE_INHERITED_CLASS 
+instruction (note 2) binds to class to C and does any inheritance from bound A -- now at runtime -- 
+so this all works fine.
+
+The PHP compiler processes classes which extend an base class in one of two ways: if the base class 
+hasn't already been compiled and registered in the EG(class_table), then the child class is bound to
+its parent with the ZEND_FETCH_CLASS / ZEND_DECLARE_INHERITED_CLASS instruction sequence as in the 
+above example; alternatively if it has been then inheritance binding is done at compile time by the
+zend_do_early_binding() function, and NOPs substituted for these instructions. (Note that abstract 
+classes, final classes and interfaces are just validation variants from this perspective; though the
+Zend 2.4 traits are a different issue.)  In either case, whether at runtime or compile time, the 
+child class is bound to its parent by execution of the zend_do_inheritance() function. 
+
+This introduces a significant compilation for LPC to handle as child classes may or may not have
+been bound to their parent class depending one whether or not the parent class has been previously
+registered.  Detecting the bound/not bound variant is straightforward, but the complication lies in 
+the treatment of child classes bound at compile time, as the following code fragments show:
+
+    require("$root_path/includes/dba/$dbms.$phpEx");
+    class cached_table extends dba {
+       ...
+    }
+
+At the point that the cached_table class is compiled, the previous require (though compiled) has 
+yet to be executed.  Hence cached_table is compiled with the ZEND_DECLARE_INHERITED_CLASS variant,
+enabling the $dbms parameter to be changed at runtime without invalidating the cache.  However, 
+consider what happens if this replaced by:  
+
+    require("$root_path/includes/dba/$dbms.$phpEx");
+    require("$root_path/includes/cached_table.$phpEx");
+
+Both the requires are now deferred to execution of this code, and on caching one dba class will have
+been registered when the cached_table is compiled, so that specific dba class will be bound to the 
+the cached_table class at compile.  If this class were cached as-is then what should be a runtime
+parameter is now bound into cached code, meaning that the only way that this would work as expected 
+would be if the cache was cleared on change of this parameter.  This sort of constraint would
+effectively break many complex PHP applications such as MediaWiki and WordPress. 
+
+Hence LPC (like APC) adopts the strategy of detecting compile-time bound child classes and in effect
+backing out the class binding carried out by zend_do_inheritance() if executed at compile time (by 
+removing references to inherited methods, properties, etc.), so that only unbound classes are
+cached.  And when such a class is retrieved from the cache if it is rebound to its parent on
+retrieval.  Note that this is only done for child classes that have been stripped of parent binding,
+because the op_array codes for runtime bound classes will already include the appropriate
+ZEND_DECLARE_INHERITED_CLASS zend_op.
+
+This back-out logic adds quite a lot of complexity to the lpc_copy_class.c code. 
+
+
+5.  Pools and Caches
 
 The LPC pool and cache implementations are a complete rewrite compared to APC. This is because the
 requirements driving their design are very different.
 
 The cache itself is a fairly simple wrapper around a CacheDB cache file, with the file index loaded
-into a hashtable as part of request initiation. It contains one record per compiled module in
-initial creation order. As most scripts follow the same programmatic path (as far as module loading
+into a hashtable as part of request initiation.  It contains one record per compiled module in
+initial creation order.  As most scripts follow the same programmatic path (as far as module loading
 is concerned) -- or at least one of a relatively small number of variants -- this means that in
 practice the cache file is then read essentially sequentially during the execution process to load
 all remaining modules.
@@ -252,64 +368,101 @@ ephemeral in that this pool type is created, used and destroyed during the life 
 or reload of a source. The serial pool DTOR implicitly acts as the DTOR for all pool elements. The
 exec pool type is a container for a set of emalloced objects that are passed to the PHP execution
 system, so disposal / freeing of these resources is outside scope of LPC and is handled by the PHP
-execution system.  Also note that the pool API includes allocator variants pool_alloc_zval() and
-pool_alloc_ht exist() and these use the Zend fast allocator macros for zval and HashTable structures
-for exec pools. 
+execution system, though this is discuss in more detail below.  Also note that the pool API includes 
+allocator variants pool_alloc_zval() and pool_alloc_ht exist() and these use the Zend fast allocator
+macros for zval and HashTable structures for exec pools. 
 
 The serial pool is unique to LPC, and is used to encapsulate and morph the deep copy of the record
-hierarchy associated with each compilation source. There are a number of drivers of the serial pool
-design:
+hierarchy associated with each compilation source. There are a number issues which act as drivers 
+of the serial pool design:
 
-    4.1 Serial pool storage sizing and persistence 
+
+    5.1 Position independence
+
+    The deep copy process tags any putative internal pointers (that is referring to other addresses
+    with the pool) in a hash table of relocation tags.  This is converted into a relocation vector
+    (typically one byte per pointer) which is appended to the serial pool as part of the pool
+    unload.  The storage base address is then subtracted from any tagged pointers at unload
+    converting them to convert them to a position independent pool offset form.  On subsequent 
+    reload of the cached source, the relocation vector is again used to add the (potentially
+    different) storage base address to each pointer offset generating the correct absolute memory
+    address for copy-in.
+
+    As all string references are already in PIC interned format, these aren't tagged or relocated.
+
+
+    5.2 Handover to the Zend RTS, memory management and leakage
+
+    The ZendEE as part of request rundown will execute the necessary DTORs to clean up the dynamic 
+    memory allocations associated with the op_array record hierarchies.  What is essential here is 
+    that LPC maintains the correct line by ensuring that any dynamic storage elements passed to the 
+    ZendEE must be released once and only once, as double efree's will crash the ZendEE with an 
+    invalid memory allocation failure, and those elements which aren't efreed by the ZendEE must be 
+    separately tracked and freed as part of the exec pool cleanup to avoid memory leakage reporting.
+
+    The key DTOR routines are in Zend/zend_opcode.c: destroy_op_array, destroy_zend_function and
+    destroy_zend_class.  Unfortunately the opline constant ZVAL strings are assumed to be emalloced
+    and are therefore passed directly to zval_dtor() for cleanup.  Hence LPC's copy_zval_in() sets
+    the dynamic flag true on the corresponding lpc_nstrdup() calls to back-to-back emalloc these 
+    data.  Yes, this is unavoidable without a small code change in the PHP Zend/zend_opcode.c: 
+    destroy_op_array() function.  (There is also a TODO wish-list item re using bumped refcounts 
+    to bypass these three DTORS and use pooled forms.)  A key area of complexity here related to 
+    property inheritance as discussed further in the lpc_copy_class.c inline documentation. 
+
+
+    5.3 Serial pool storage sizing and persistence 
 
     The compilation process in PHP is serial, and therefore only one serial pool can be in existence
-    in any PHP thread. In an application which contains 100s of source files, the repeated dynamic
-    allocation and freeing such large pools can lead to dynamic storage fragmentation. Therefore by
+    in any PHP thread.  In an application which contains 100s of source files, the repeated dynamic
+    allocation and freeing such large pools can lead to dynamic storage fragmentation.  Therefore by
     default LPC uses a persistent serial pool storage which is created during request startup and
-    sized to contain the largest module in the file cache. It bypasses the PHP allocator and
+    sized to contain the largest module in the file cache.  It bypasses the PHP allocator and
     directly mallocs this storage, and then frees it during request shutdown.
 
     Rather than complicate the pool storage design (by say moving to a brick allocation scheme), a
     single contiguous memory area is used for serial pool storage, and an optimistic strategy is
     used for compiling new (and potentially larger) sources: the copy-out process assumes that the
     pool will be large enough, but detects pool memory overflow and bails out with a pool overflow
-    error. The copy_source function then reallocates a larger pool storage and restarts the copy.
+    error.  The copy_source function then reallocates a larger pool storage and restarts the copy.
 
     This strategy avoids most of the additional alloc / free overheads of module caching and the
     coding overheads and complexities of a non-contiguous brick-based allocation scheme, at the
     run-time cost of a few aborted copy-outs during initial compilation. 
 
-    4.2 Removing redundant content from serial pool records
+
+    5.4 Removing redundant content from serial pool records
 
     The PHP compiler output data structures are denormalised to optimized per executed instruction
-    performance. They therefore contain a lot of logically redundant content. The performance
+    performance.  They therefore contain a lot of logically redundant content. The performance
     improvements introduced in the Zend 2.4 (see https://wiki.php.net/rfc/performanceimprovements)
     were largely as a result of a review of these and backing out some denormalization that in fact
-    added to overall runtime. However these clearly don't applied to Zend 2.3 and earlier. LPC
-    removes some redundant content on copy-out and regenerates this on copy-in. This is a relatively
-    cheap operation which reduces the size of compressed cache file records, and has a net-benefit
-    on copy-in.  This content includes:
-        *   Interning of strings (see 4.3)
-        *   The zend_op->handler fields
-        *   Unused link fields in HashTables (see 6)
+    added to overall runtime.  However these clearly don't applied to Zend 2.3 and earlier.  LPC
+    removes some redundant content on copy-out and regenerates this on copy-in.  This is a
+    relatively cheap operation which reduces the size of compressed cache file records, and this 
+    has a net-benefit on copy-in.  This content includes:
 
-    4.3 String Interning and C vs PHP strings
+        *   Interning of strings (see 5.5)
+        *   The zend_op->handler fields
+        *   Unused link fields in HashTables (see 6).
+
+
+    5.5 String Interning and C vs PHP strings
 
     (Note and health warning).  Cstrings adopt the convention of zero-byte termination of a (non-
-    zero) byte string.  PHP somewhat idiosyncratically allows embedded zero-bytes in its strings but
-    still retains the zero-byte termination convention. The Zend zval includes an explicit string 
-    length field which excludes the terminating zero-byte, even though this is allocated and 
+    zero) byte string. PHP somewhat idiosyncratically allows embedded zero-bytes in its strings, but
+    still retains the zero-byte termination convention.  The Zend zval includes an explicit string
+    length field which excludes the terminating zero-byte, even though this is allocated and
     assigned.  The runtime system also uses embedded zero string (e.g. for magic class and function
     names).  On the other hand, string lengths in HashTable keys include the zero-byte termination. 
 
     The Zend 2.4 engine introduced string interning for all strings embedded as compile-time
-    constants and literals. However, LPC uses string interning for ALL Zend 2.x engine variants for
-    all string constants and literals copied to serial pool storage. Whilst the Zend scheme is based
-    on the address of the string in the interned pool, LPC generates a unique PIC address (high byte
-    0xBB) plus the string number within the intern list. (This will typically only have 2 or 3
-    non-zero bytes.) Any string copied to the serial pool is assigned an LPC interned address, and
-    associated zval lengths are set to 0. Any string copied from a serial pool is de-interned (in
-    Zend 2.4 reinterned in the Zend scheme).
+    constants and literals.  However, LPC uses string interning for ALL Zend 2.x engine variants for
+    all string constants and literals copied to serial pool storage.  Whilst the Zend scheme is 
+    based on the address of the string in the interned pool, LPC generates a unique PIC address
+    (high byte 0xBB) plus the string number within the intern list.  (This will typically only have
+    2 or 3 non-zero bytes.) Any string copied to the serial pool is assigned an LPC interned
+    address, and associated zval lengths are set to 0. Any string copied from a serial pool is
+    de-interned (in Zend 2.4 reinterned in the Zend scheme).
 
     Compare routines allow meaningful comparison of normal, LPC and Zend interned strings. In order
     to simplify copy coding, these work on both copy-in and copy-out.
@@ -318,34 +471,22 @@ design:
     of <4 byte length> <string bytes>.
 
 
-    4.4 Position independence
-
-    The deep copy process tags any putative internal pointers (that is referring to other addresses
-    with the pool) in a hash table of relocation tags. This is converted into a relocation vector
-    (typically one byte per pointer) which is appended to the serial pool as part of the pool
-    unload. The storage base address is then subtracted from any tagged pointers at unload
-    converting them to convert them to a position independent pool offset form. On subsequent reload
-    of the cached source, the relocation vector is again used to add the (potentially different)
-    storage base address to each pointer offset generating the correct absolute memory address for
-    copy-in.
-
-    As all string references are already in PIC interned format, these aren't tagged or relocated.
-
-    4.5 Record compression
+    5.6 Record compression
 
     The PHP compiled forms are very sparse (especially in 64bit builds) especially after copy-out
-    has substitutes zero-fill for redundant fields. Compression therefore typically yields a 4-8x
+    has substituted zero-fill for redundant fields. Compression therefore typically yields a ~4x
     reduction in the DB filesize. This can in turn generate performance gains at reload, either in
-    the memory footprint in the case of the file system VFAT-cached records and inodes, or in I/O
-    latencies reading in data that is not in the VFAT cache.  The compression cost is relatively
-    high, but this is only done once during initial compilation.  The expansion overhead on reload 
-    is relatively cheap compared to the compilation load. 
+    the memory footprint in the case of the file system VFAT-cached records and inodes, or in 
+    avoiding I/O latencies reading in data that is not in the VFAT cache.  The compression cost is
+    relatively high, but this is only done once during initial compilation.  The expansion overhead 
+    on reload is relatively cheap compared to the compilation load. 
 
     Three compression algorithms are selectable through the PER_DIR lpc.compression INI setting read
     prior to cache file creation. (The compression algorithm is then fixed for a created cache
     file.) These are (=0) no compression; (=1) zero RLE encoding; (=2) standard zlib compression.
     Option 1 is the default as this gives comparable record sizes to option 2 for PHP compiler
     output but has minimal CPU overhead for loading.
+
 
 To simplify coded use of the pool API:
 
@@ -373,7 +514,7 @@ To simplify coded use of the pool API:
     this is caught programmatically by copy source function as discussed above. 
 
 
-6.  Record Formats and Hash Tables
+7.  Record Formats and Hash Tables
 
 APC copies the standard PHP structures for classes, etc., into serial pools. However, as such
 serialised structures are never directly referenced by the Zend runtime access routines, many fields
@@ -435,7 +576,7 @@ will fail because the include path is set during execution and will therefore no
 time.  However
 
     include ("$app_root/more_includes.php");
-     
+     -
 will work as expected since (i) more_includes.php is included via a variable (containing an absolute
 path) and (ii) the include path will be correct for any files included within more_includes.php. The
 PER_DIR INI flag lpc.resolve_path can be set to 0 to disable this resolution function in cases where

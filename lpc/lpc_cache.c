@@ -149,13 +149,16 @@ zend_bool lpc_cache_create(uint *max_module_len TSRMLS_DC)
         hash_get_next_zv(Z_ARRVAL_PP(zctxt_metadata),zfilesize);
         hash_get_next_zv(Z_ARRVAL_PP(zctxt_metadata),zcomp_algo);
 
-        if(!strcmp(Z_STRVAL_PP(zPHP_version), r_cxt->PHP_version) &&
-           !strcmp(Z_STRVAL_PP(zdir), r_cxt->request_dir) &&
-           !strcmp(Z_STRVAL_PP(zbasename), r_cxt->request_basename) &&
-           Z_LVAL_PP(zmtime) == r_cxt->request_mtime &&
-           Z_LVAL_PP(zfilesize) == r_cxt->request_filesize &&
-           !r_cxt->clear_flag_set) {
-            LPCG(compression_algo) = Z_LVAL_PP(zcomp_algo); /* Use the DB ver of the omp algo */
+        if (!strcmp(Z_STRVAL_PP(zPHP_version), r_cxt->PHP_version) &&
+            !strcmp(Z_STRVAL_PP(zdir), r_cxt->request_dir) &&
+            !strcmp(Z_STRVAL_PP(zbasename), r_cxt->request_basename) &&
+            Z_LVAL_PP(zmtime) == r_cxt->request_mtime &&
+            Z_LVAL_PP(zfilesize) == r_cxt->request_filesize &&
+            !r_cxt->clear_flag_set) {
+
+            if (zcomp_algo) {
+                LPCG(compression_algo) = Z_LVAL_PP(zcomp_algo); /* Use the DB ver of the comp algo */
+            }
            /*
             * The cache is OK to use so loop over the remaining list array setting up zle to
             * enumerate the elements of: 
@@ -246,14 +249,22 @@ error:
 void lpc_cache_destroy(TSRMLS_D)
 {ENTER(lpc_cache_destroy)
     lpc_cache_t  *cache = LPCG(lpc_cache);
-    if (cache->index) {
-        zend_hash_destroy(cache->index);
-        efree(cache->index);
+    if (cache) {
+        if (cache->index) {
+            zend_hash_destroy(cache->index);
+            efree(cache->index);
+        }
+            
+        if (cache->db) {
+           /*
+            * If the cache exists but LPC is disabled, this means that something has gone wrong
+            * so as a safety measure, the cache is close in mode 'r' to discard any changes
+            */ 
+            cachedb_close2(cache->db, (LPCG(enabled) ? '*' : 'r'));
+        }
+        efree(cache);
+        LPCG(lpc_cache) = NULL;
     }
-        
-    if (cache->db) cachedb_close(cache->db);
-
-    efree(cache);
 }
 /* }}} */
 
@@ -390,7 +401,7 @@ lpc_cache_key_t* lpc_cache_make_key(zend_file_handle* handle, const char* includ
         key->filesize        = Z_LVAL_PP(filesize);
         key->type            = LPC_CACHE_LOOKUP;
     } else { 
-        struct stat *sb      = emalloc(sizeof*sb);
+        struct stat sb = {0,};
         
         /* If this is a cache miss or the stat value requires a file check then open the file
          * using the standard zend fixup utility.  If the fixup fails then  the simplest thing
@@ -399,19 +410,17 @@ lpc_cache_key_t* lpc_cache_make_key(zend_file_handle* handle, const char* includ
          * be acceptable to the application.  */
 
         if ((zend_stream_fixup(handle, &buf, &buf_length TSRMLS_CC) == FAILURE) ||
-            stat(filename, sb) != 0) {
+            stat(filename, &sb) != 0) {
             efree(key);
-            efree(sb);
             return NULL;
             }
 
         if (stat_file) { 
-            if ((Z_LVAL_PP(mtime) != sb->st_mtime) || (Z_LVAL_PP(filesize) != sb->st_size)) {
+            if ((Z_LVAL_PP(mtime) != sb.st_mtime) || (Z_LVAL_PP(filesize) != sb.st_size)) {
                 /* There is a mismatch between the cached and on filesystem versions. Something is wrong !! */
                 lpc_cache_clear(TSRMLS_C);
-                efree(sb);
                 efree(key);
-                zend_llist_add_element(&CG(open_files), handle);
+ /////// TODO:  check: this isn't needed -- zend_llist_add_element(&CG(open_files), handle);
                 return NULL;
             } else { 
                 /* stat was consistent with the cache so close the file and use the cache version */
@@ -422,10 +431,9 @@ lpc_cache_key_t* lpc_cache_make_key(zend_file_handle* handle, const char* includ
             }
         } else { /* its a new file to compile*/
 
-            key->mtime     = sb->st_mtime;
-            key->filesize  = sb->st_size;
+            key->mtime     = sb.st_mtime;
+            key->filesize  = sb.st_size;
             key->type      = index_entry ? LPC_CACHE_LOOKUP : LPC_CACHE_MISS;
-            efree(sb);
         }
     }
 
@@ -445,7 +453,6 @@ lpc_cache_key_t* lpc_cache_make_key(zend_file_handle* handle, const char* includ
 void lpc_cache_free_key(lpc_cache_key_t* key TSRMLS_DC)
 {ENTER(lpc_cache_free_key);
     efree(key->filename);
-    if (key->fp) php_stream_close(key->fp);
     efree(key);
 }
 /* }}} */

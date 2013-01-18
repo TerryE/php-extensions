@@ -76,18 +76,6 @@ int lpc_module_shutdown(TSRMLS_D)
 }
 /* }}} */
 
-/* {{{ lpc_deactivate */
-static void lpc_deactivate(TSRMLS_D)
-{ENTER(lpc_deactivate)
-
-    lpc_cache_destroy(TSRMLS_C);
-
-#ifdef ZEND_ENGINE_2_4
-    lpc_interned_strings_shutdown(TSRMLS_C);
-#endif
-}
-/* }}} */
-
 /* {{{ add_filter_delims */
 static char* add_filter_delims(const char *filter TSRMLS_DC)
 {ENTER(add_filter_delims)
@@ -123,15 +111,13 @@ int lpc_request_init(TSRMLS_D)
     char                   *request_path = SG(request_info).path_translated;
     struct stat            *sb = sapi_get_stat(TSRMLS_C);
     size_t                  dir_length, basename_length;
+    uint                    max_module_len;
     TSRMLS_FETCH_GLOBAL_VEC()
 
    /*
-    * fetch the "PER_DIR" scoped ini variables
+    * To enable phpinfo() and php -i to return meaning parameter listings for LPC, the "PER_DIR
+    * scoped ini variables are fetched whether or not LPC is enabled.  
     */
-    if (INI_BOOL("lpc.enabled") == 0) {
-        return 0;
-    }
-
     gv->enabled          = 1;
     gv->max_file_size    = lpc_atol(INI_STR("lpc.max_file_size"),0);
     gv->fpstat           = INI_INT("lpc.stat_percentage");
@@ -148,52 +134,60 @@ int lpc_request_init(TSRMLS_D)
         return 0;
     }
     
-   /*
-    * Allocate the request context block and fill in the fields based on the request path name
-    */
-    rc = ecalloc(1, sizeof(lpc_request_context_t));
-//// TODO: set clear_flag_set based on cookie and request parameter in the meantime default to false
+    rc                     = ecalloc(1, sizeof(lpc_request_context_t));
+    gv->request_context    = rc;
     rc->clear_flag_set     = 0;
     rc->filter             = add_filter_delims(INI_STR("lpc.filter") TSRMLS_CC);
     rc->cachedb_pattern    = add_filter_delims(INI_STR("lpc.cache_pattern") TSRMLS_CC);
     rc->cachedb_replacement= INI_STR("lpc.cache_replacement");
-    rc->PHP_version        = PHP_VERSION;
-
-    if (request_path) {
-        rc->request_fullpath   = request_path;
-        rc->request_dir        = estrdup(rc->request_fullpath);
-        dir_length             = zend_dirname(rc->request_dir, strlen(rc->request_fullpath));
-        rc->request_dir[dir_length] = '\0';
-        php_basename(rc->request_fullpath, strlen(rc->request_fullpath), NULL, 0, 
-                     &rc->request_basename, &basename_length TSRMLS_CC);
-////TODO: if the request is stdin (request_fullpath == "-") then sb = NULL. 
-        rc->request_mtime      = sb->st_mtime;
-        rc->request_filesize   = sb->st_size;
+   /*
+    * If LPC disabled or the request path isn't set or not stat'able then return, otherwise process 
+    * the request_path
+    */
+    if (INI_BOOL("lpc.enabled") == 0 || !request_path || !sb) {
+        return 0;
     }
 
-    gv->request_context    = rc;
+    rc->PHP_version        = PHP_VERSION;
+    rc->request_fullpath   = request_path;
+    rc->request_dir        = estrdup(rc->request_fullpath);
+    dir_length             = zend_dirname(rc->request_dir, strlen(rc->request_fullpath));
+    rc->request_dir[dir_length] = '\0';
+    php_basename(rc->request_fullpath, strlen(rc->request_fullpath), NULL, 0, 
+                 &rc->request_basename, &basename_length TSRMLS_CC);
+    rc->request_mtime      = sb->st_mtime;
+    rc->request_filesize   = sb->st_size;
 
+#ifdef LPC_DEBUG
+    if (gv->debug_flags&LPC_DBG_LOG_OPCODES) 
+        LPCG(opcode_logger) = php_stream_open_wrapper("/tmp/opcodes.log", "a+", 0, NULL);
+#endif
    /* 
     * Generate the cache name and create the cache.  Disable caching if any probs.  
     */
-    if (gv->enabled && request_path && lpc_generate_cache_name(rc TSRMLS_CC)) {
-        uint max_module_len;
-        if (lpc_cache_create(&max_module_len TSRMLS_CC)==SUCCESS) {
-            return lpc_pool_init(max_module_len TSRMLS_CC);
-        }
+    if (gv->enabled && request_path && lpc_generate_cache_name(rc TSRMLS_CC) &&
+        (lpc_cache_create(&max_module_len TSRMLS_CC)==SUCCESS)) {
+        return lpc_pool_init(max_module_len TSRMLS_CC);
+    } else {
+        return 0;
     }
-    /*
-     * Fail back to normal uncached operation
-     */
-    return 0;
 }
 /* }}} */
 
 /* {{{ request shutdown */
 int lpc_request_shutdown(TSRMLS_D)
 {ENTER(lpc_request_shutdown)
+#ifdef LPC_DEBUG
+    if ((LPCG(debug_flags)&LPC_DBG_LOG_OPCODES) && LPCG(opcode_logger)) {
+        php_stream_close(LPCG(opcode_logger));
+        LPCG(opcode_logger) = NULL;
+    }
+#endif
     lpc_pool_shutdown(TSRMLS_C);
-    lpc_deactivate(TSRMLS_C);
+    lpc_cache_destroy(TSRMLS_C);
+#ifdef ZEND_ENGINE_2_4
+    lpc_interned_strings_shutdown(TSRMLS_C);
+#endif
     lpc_dtor_request_context(TSRMLS_C);
     return 0;
 }

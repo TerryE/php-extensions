@@ -102,10 +102,12 @@ static PHP_MINFO_FUNCTION(lpc)
     php_info_print_table_row(2, "LPC Revision", "$Revision: 307215 $");
     php_info_print_table_row(2, "LPC Build Date", __DATE__ " " __TIME__);
     info_convert("%lu", cache_by_default);
-    php_info_print_table_row(2, "Cache by default", buf);    
-    php_info_print_table_row(2, "Filter", rc->filter);
-    php_info_print_table_row(2, "Cache pattern", rc->cachedb_pattern);
-    php_info_print_table_row(2, "Cache replacement", rc->cachedb_replacement);
+    php_info_print_table_row(2, "Cache by default", buf);
+    if (rc) {   
+        php_info_print_table_row(2, "Filter", rc->filter);
+        php_info_print_table_row(2, "Cache pattern", rc->cachedb_pattern);
+        php_info_print_table_row(2, "Cache replacement", rc->cachedb_replacement);
+    }
     info_convert("%lu", file_update_protection);
     php_info_print_table_row(2, "File update protection",buf);
     info_convert("%lu", enable_cli);
@@ -209,11 +211,12 @@ static PHP_RSHUTDOWN_FUNCTION(lpc)
     if (LPCG(debug_flags)&LPC_DBG_COUNTS) { /* Print out function summary counts */
         ENTER(DUMP);
     }
-
-    if(LPCG(enabled)) {
-        lpc_request_shutdown(TSRMLS_C);
-    }
-    lpc_dtor_request_context(TSRMLS_C);
+   /*
+    * Since errors can flip the enabled state off, the request shutdown is always executed whether
+    * or not LPC is enabled.  Since all relevant pointers are initialised to NULL, a simple non-zero
+    * test prevents cleanup actions being taken when not needed.
+    */
+    lpc_request_shutdown(TSRMLS_C);
     return SUCCESS;
 }
 /* }}} */

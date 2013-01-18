@@ -5,7 +5,7 @@ function with many parameters
 // the stack size + some random constant
 $boundary = 64*1024;
 $limit    = $boundary+42;
-exit;             ///////////////////// Temp 'cos this is a dog to run
+echo "===DONE===\n";exit;             ///////////////////// Temp 'cos this is a dog to run
 
 function test($a,$b)
 {

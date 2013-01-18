@@ -313,7 +313,7 @@ char *lpc_resolve_path(zval *pzv TSRMLS_DC)
 
 /* {{{ lpc_resolve_symbol*/
 void *lpc_resolve_symbol(const char *symbol TSRMLS_DC)
-{ENTER(lpc_resolve_symbol)
+{
     void *addr = NULL;
     DL_HANDLE handle = NULL;
 

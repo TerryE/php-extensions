@@ -73,6 +73,8 @@ typedef struct _lpc_pool {
     zend_uint       available;       /* bytes available in current brick -- ditto */
     zend_uint       allocated;       /* bytes available in current brick -- ditto */
     HashTable       tags;            /* tag hash */
+    /* The following fields are only used for exec pools */
+    zend_uchar     *intern_copy;
 } lpc_pool;
 /* }}} */
 
@@ -92,9 +94,12 @@ typedef struct _lpc_pool {
 #define pool_alloc(dest, size)  _lpc_pool_alloc((void **)&(dest), pool, size ZEND_FILE_LINE_CC)
 #define pool_alloc_zval(dest) _lpc_pool_alloc_zval((void **)&(dest), pool ZEND_FILE_LINE_CC)
 #define pool_alloc_ht(dest) _lpc_pool_alloc_ht((void **)&(dest), pool ZEND_FILE_LINE_CC)
-#define pool_alloc_unaligned(dest,size) _lpc_pool_alloc_unaligned((void **)&(dest), size, pool ZEND_FILE_LINE_CC)
-#define pool_strdup(dst,src)  _lpc_pool_strdup((const char **)&(dst), (src), pool ZEND_FILE_LINE_CC)
-#define pool_nstrdup(dst,dstn,src,srcn)  _lpc_pool_nstrdup((const char **)&(dst),(uint *)&(dstn), (src), (srcn), pool ZEND_FILE_LINE_CC)
+#define pool_alloc_unaligned(dest,size) \
+    _lpc_pool_alloc_unaligned((void **)&(dest), size, pool ZEND_FILE_LINE_CC)
+#define pool_strdup(dst,src,type) \
+    _lpc_pool_strdup((const char **)&(dst), (src), type, pool ZEND_FILE_LINE_CC)
+#define pool_nstrdup(dst,dstn,src,srcn,type) \
+    _lpc_pool_nstrdup((const char **)&(dst),(uint *)&(dstn), (src), (srcn), type, pool ZEND_FILE_LINE_CC)
 #define pool_strcmp(dst,src)  _lpc_pool_strcmp((dst), (src), pool ZEND_FILE_LINE_CC)
 #define pool_strncmp(dst,src,n)  _lpc_pool_strncmp((dst),(src),(n), pool ZEND_FILE_LINE_CC)
 #define pool_memcpy(dst,src,n) _lpc_pool_memcpy((void **)&(dst),src,n,pool ZEND_FILE_LINE_CC)
@@ -111,9 +116,9 @@ typedef struct _lpc_pool {
  * refer back to the originating upper level call. Their use is macro-wrapped to hide this hassle
  * at a source level. 
  *
- * Note that pool_memcpy and pool_nstrcpy are functionally different.  pool_nstrcpy returns an
+ * Note that pool_memcpy and pool_nstrdup are functionally different.  pool_nstrdup returns an
  * interned reference on copy-out, whereas memcpy does a bitwise copy and the destination reference
- * is always size_t aligned.  Also note that pool_nstrcpy is deliberately NOT pool_strncpy because 
+ * is always size_t aligned.  Also note that pool_nstrdup is deliberately NOT pool_strndup because 
  * it has an important functional difference from strndup() in that n bytes are always copied 
  * because the Zend engine supports zero-embedded strings, and uses them in mangled function and
  * class names.
@@ -122,9 +127,10 @@ extern void _lpc_pool_alloc(void **dest, lpc_pool* pool, uint size ZEND_FILE_LIN
 extern void _lpc_pool_alloc_zval(void **dest, lpc_pool* pool ZEND_FILE_LINE_DC);
 extern void _lpc_pool_alloc_ht(void **dest, lpc_pool* pool ZEND_FILE_LINE_DC);
 extern void _lpc_pool_memcpy(void **dest, const void* p, uint n, lpc_pool* pool ZEND_FILE_LINE_DC);
-extern void _lpc_pool_strdup(const char **d, const char* s, lpc_pool* pool ZEND_FILE_LINE_DC);
+extern void _lpc_pool_strdup(const char **d, const char* s, 
+                             zend_bool type, lpc_pool* pool ZEND_FILE_LINE_DC);
 extern void _lpc_pool_nstrdup(const char **d, uint *dn, const char* s, uint sn, 
-                              lpc_pool* pool ZEND_FILE_LINE_DC);
+                              zend_bool type, lpc_pool* pool ZEND_FILE_LINE_DC);
 extern int  _lpc_pool_strcmp(const char* s1, const char* s2, lpc_pool* pool ZEND_FILE_LINE_DC);
 extern int  _lpc_pool_strncmp(const char* s1, const char* s2, uint sn, 
                               lpc_pool* pool ZEND_FILE_LINE_DC);
@@ -150,7 +156,7 @@ extern void lpc_pool_shutdown(TSRMLS_D);
  *                       NULL                                         OUT compressed_buffer
  *    N/A                                          <readin compressed buffer> 
  *    lpc_pool_create    IN  type                  lpc_pool_create    IN  type  
- *                       OUT *first_rec                               OUT *first_rec
+ *                       -   [not used]                               OUT *first_rec
  *                       RTN *pool                                    RTN *pool          
  *    <copy out source using alloc rtns>           <access source> 
  *    lpc_pool_serialize IN  *pool                 N/A

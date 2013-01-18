@@ -37,7 +37,6 @@
 /* {{{ struct definition: lpc_function_t */
 typedef struct lpc_function_t {
     char* name;                 /* the function name */
-    int name_len;               /* length of name */
     zend_function* function;    /* the zend function data structure */
 } lpc_function_t;
 

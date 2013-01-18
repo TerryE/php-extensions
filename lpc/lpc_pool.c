@@ -113,7 +113,10 @@ int lpc_pool_init(uint max_module_len TSRMLS_DC)
 /* {{{ lpc_pool_shutdown*/
 void lpc_pool_shutdown(TSRMLS_D)
 {ENTER(lpc_pool_shutdown)
-    zend_llist_destroy(&LPCG(exec_pools));
+    if (zend_llist_count(&LPCG(exec_pools))) {
+        zend_llist_destroy(&LPCG(exec_pools));
+        memset(&LPCG(exec_pools),0, sizeof(zend_llist));
+        }
     if (LPCG(reuse_serial_buffer) && LPCG(pool_buffer)) {
         free(LPCG(pool_buffer));
         LPCG(pool_buffer) = NULL;
@@ -215,61 +218,79 @@ void _lpc_pool_alloc_ht(void **dest, lpc_pool* pool ZEND_FILE_LINE_DC)
 /* }}} */
 
 /* {{{ _lpc_pool_strdup */
-void _lpc_pool_strdup(const char **d, const char* s, lpc_pool* pool ZEND_FILE_LINE_DC)
+void _lpc_pool_strdup(const char **d, const char* s, 
+                      zend_bool dynamic, lpc_pool* pool ZEND_FILE_LINE_DC)
 {ENTER(_lpc_pool_strdup)
-    if (s) {
         uint sn = 0, dummy;
-        if (is_copy_out()) {
-            if(LPC_IS_SERIAL_INTERNED(s)) {  /* this might be a dup from the pool */
-                *d = s;
-                return;
-            }
+        if (s && is_copy_out() && !LPC_IS_SERIAL_INTERNED(s)) { 
             sn = strlen(s);
         } 
-        _lpc_pool_nstrdup(d, &dummy, s, sn, pool ZEND_FILE_LINE_RELAY_CC);
-    } else {
-        *d  = NULL;
-    }
+        _lpc_pool_nstrdup(d, &dummy, s, sn, dynamic, pool ZEND_FILE_LINE_RELAY_CC);
 }
 /* }}} */
 
 /* {{{ _lpc_pool_strndup 
-    Note that the length, sn, is only used on copy_out(). This follows the PHPstring convention of
-    excluding the terminating zero (which is still copied).   On copy in, the length is that of the
-    interned string */
+    Note: (1) length fields:  sn is only used on copy_out(). This follows the PHPstring convention
+              of excluding the terminating zero (which is still copied).   On copy in, the length
+              is that of the interned string.
+          (2) If the dynamic flag is true then the string is estrdup'ed.  If false then a direct
+              reference is made into the string in the interned table. */
 void _lpc_pool_nstrdup(const char **d, uint *dn, 
-                       const char *s,  uint sn, lpc_pool* pool ZEND_FILE_LINE_DC)
+                       const char *s,  uint sn, zend_bool dynamic, lpc_pool* pool ZEND_FILE_LINE_DC)
 {ENTER(_lpc_pool_nstrdup)
-    if (s) {
+    if (s && d) {
         void *intern_d;
         if (is_copy_out()) {
-
             if (LPC_IS_SERIAL_INTERNED(s)) { /* this might be a dup from the pool */
                 *d = s;
                 *dn = 0;
-                return;
+#ifdef LPC_DEBUG
+                if (LPCGP(debug_flags)&LPC_DBG_INTN)  /* Intern tracking */
+                    lpc_debug("strndup: dup of copy-out intern:%u at %s:%u" TSRMLS_PC, 
+                               LPC_SERIAL_INTERNED_ID(s) ZEND_FILE_LINE_RELAY_CC);
+#endif
+            } else { /* copy out of non-interned string */
+                ulong h =  zend_inline_hash_func(s, sn+1);
+                if (zend_hash_quick_find(&LPCGP(intern_hash), s, sn+1, h, &intern_d)==SUCCESS) {
+                    *d = *(void**)intern_d; /*find returns a ptr to the previously stored intern */
+#ifdef LPC_DEBUG
+                    if (LPCGP(debug_flags)&LPC_DBG_INTN)  /* Intern tracking */
+                        lpc_debug("strndup: Rep copy-out of %08lx:\"%s\" to intern:%u at %s:%u" 
+                                  TSRMLS_PC, s, s, LPC_SERIAL_INTERNED_ID(*(void**)intern_d) 
+                                  ZEND_FILE_LINE_RELAY_CC);
+#endif
+                } else {
+                    *d = intern_d = LPC_SERIAL_INTERN(zend_hash_num_elements(&LPCGP(intern_hash)));
+                    zend_hash_quick_add(&LPCGP(intern_hash), s, sn+1, h, 
+                                        &intern_d, sizeof(void *), NULL);
+#ifdef LPC_DEBUG
+                    if (LPCGP(debug_flags)&LPC_DBG_INTN)  /* Intern tracking */
+                        lpc_debug("strndup: New copy-out of %08lx:\"%s\" to intern:%u at %s:%u" 
+                                  TSRMLS_PC, s, s, LPC_SERIAL_INTERNED_ID(intern_d) 
+                                  ZEND_FILE_LINE_RELAY_CC);
+#endif
+                }
+                *dn = 0;
             }
-
-            ulong h =  zend_inline_hash_func(s, sn);
-            if (zend_hash_quick_find(&LPCGP(intern_hash), s, sn+1, h, &intern_d)==SUCCESS) {
-                *d = *(void**)intern_d; /*find returns a ptr to the previously stored intern */
-            } else {
-                *d = intern_d = LPC_SERIAL_INTERN(zend_hash_num_elements(&LPCGP(intern_hash)));
-                zend_hash_quick_add(&LPCGP(intern_hash), s, sn+1, h, &intern_d, sizeof(void *), NULL);
-            }
-
-            *dn = 0;
-
         } else { /* is copy_in() */
             zend_uchar *p;
             zend_uint len;  /* note that this includes the terminating zero */
             lpc_pool *sro_pool = &LPCGP(serial_pool);
             assert(LPC_IS_SERIAL_INTERNED(s) && LPC_SERIAL_INTERNED_ID(s) < LPCGP(intern_cnt));
             p = LPCGP(interns)[LPC_SERIAL_INTERNED_ID(s)];
-            memcpy((void *)&len, p, sizeof(uint));         /* not uint aligned so must use memcpy! */
-            *d = emalloc(len);
-            memcpy((void *)*d, p + sizeof(uint), len);
+
+            memcpy((void *)&len, p, sizeof(uint));       /* not uint aligned so must use memcpy! */
+
+            *d = (dynamic) ? (const char *) estrndup_rel(p + sizeof(uint), len-1) :
+                             (const char *) (p + sizeof(uint));
             *dn = len - 1;
+#ifdef LPC_DEBUG
+            if (LPCGP(debug_flags)&LPC_DBG_INTN)  /* Intern tracking */
+                lpc_debug("strndup:  %s of intern:%u to %08lx:\"%s\" at %s:%u" 
+                          TSRMLS_PC, dynamic ? "emalloc copy-in" : "Copy-in byref", 
+                          LPC_SERIAL_INTERNED_ID(s), *d, *d 
+                          ZEND_FILE_LINE_RELAY_CC);
+#endif
         }
     } else {
         *d  = NULL;
@@ -279,7 +300,7 @@ void _lpc_pool_nstrdup(const char **d, uint *dn,
 /* }}} */
 /*
  **HEALTH WARNING** pool_str(n)cmps can compare to strings that may or may not be interned.  Unlike 
- * the equivalent strcmps which return an ordered -1,0,1 these return -1,0,-1. Either or both 
+ * the equivalent strcmps which return an ordered -1,0,1 these return 1,0,1. Either or both 
  * string scan be interned.  The comparison is complicated in the mixed case in that the intern
  * lookup is different for the in and out cases
  */ 
@@ -295,11 +316,11 @@ static int intern_strcmp(const char* intern_s1, const char* s2, uint n, lpc_pool
         }
         s1 = LPCGP(interns)[LPC_SERIAL_INTERNED_ID(intern_s1)];
         memcpy((void *)&n1, s1, sizeof(uint));         /* not uint aligned so must use memcpy! */
-        return n1 != n || memcmp(s1 + sizeof(uint), s2, n);
+        return n1 != (n+1) || memcmp(s1 + sizeof(uint), s2, n1);
     } else {
         void *intern_s2;
         return zend_hash_find(&LPCGP(intern_hash), s2, n+1, &intern_s2)==FAILURE ||
-               intern_s1 != intern_s2;      
+               intern_s1 != *(void **)intern_s2;      
     }
 }
 /* }}} */
@@ -503,7 +524,6 @@ extern void  lpc_pool_storage(zend_uint arg1, zend_uint compressed_size,
             gv->pool_buffer_size = storage_size;
 
         } else if (storage_size > gv->pool_buffer_size) {
-
             gv->pool_buffer      = realloc(gv->pool_buffer, storage_size);
             gv->pool_buffer_size = storage_size;
 
@@ -522,7 +542,7 @@ extern void  lpc_pool_storage(zend_uint arg1, zend_uint compressed_size,
 /* }}} */
 
 /* {{{ _lpc_pool_create */
-extern lpc_pool* lpc_pool_create(lpc_pool_type_t type, void** first_rec TSRMLS_DC)
+extern lpc_pool* lpc_pool_create(lpc_pool_type_t type, void** arg1 TSRMLS_DC)
 {ENTER(lpc_pool_create)   
     char *s;
     void *dummy;
@@ -531,8 +551,8 @@ extern lpc_pool* lpc_pool_create(lpc_pool_type_t type, void** first_rec TSRMLS_D
     if (type == LPC_EXECPOOL) {
        /*
         * This just a simple wrapper around the emalloc storage allocator to unify the API for
-        * serial and exec pools. The first_rec parameter is ignored.
-        */ 
+        * serial and exec pools. 
+        */
         lpc_pool pool = {LPC_EXECPOOL,};     /* this is just a blank template */
 #if ZTS
         pool.tsrm_ls  = tsrm_ls;
@@ -542,6 +562,25 @@ extern lpc_pool* lpc_pool_create(lpc_pool_type_t type, void** first_rec TSRMLS_D
         if (LPCG(debug_flags)&LPC_DBG_LOAD)  /* Load/Unload Info */
             lpc_debug("Exec pool created" TSRMLS_CC);
 #endif
+       /*
+        * To enable strdups by reference, the interns vector is copied into emalloced memory.  This
+        * is then freed as a single block as part of the exec pool DTOR.
+        */
+        if (gv->interns) {
+            zend_uchar **p  = gv->interns;
+            zend_uint   *q  = (zend_uint *)(gv->interns[0]);
+            zend_uint    total_size = q[0], cnt = q[1], off = 0, len = 0, i;
+
+            pool.intern_copy = emalloc(total_size - 2*sizeof(uint));
+            q += 2;
+            memcpy(pool.intern_copy, q, total_size - 2*sizeof(uint));
+
+            for (i=0; i < gv->intern_cnt; i++) {
+                memcpy(&len, ADD_BYTEOFF(q, off), sizeof(zend_uint));  /* not uint aligned */
+                p[i] = pool.intern_copy + off;
+                off += len + sizeof(zend_uint);;
+            }
+        }
        /*
         * zend llists take a copy of the data element (the exec pool) and this is the one used
         */
@@ -586,7 +625,8 @@ extern lpc_pool* lpc_pool_create(lpc_pool_type_t type, void** first_rec TSRMLS_D
     } else if (type == LPC_RO_SERIALPOOL && gv->pool_buffer_comp_size) {
        /*
         * This is the Readonly serial allocator used as the source pool for copy-in.
-        */ 
+        */
+        void **first_rec = arg1; 
         lpc_pool *pool = &gv->serial_pool;
         pool_storage_header *hdr;
         zend_uchar *p, **q;
@@ -622,22 +662,17 @@ extern lpc_pool* lpc_pool_create(lpc_pool_type_t type, void** first_rec TSRMLS_D
         pool->count      = hdr->count;
         pool->size       = hdr->size;
 
-        p                = (zend_uchar *)ADD_PTROFF(pool->storage, hdr->intern_vec);
-        gv->intern_cnt   = *(zend_uint *)p;
-        p               += sizeof(zend_uint);
-
-        if (gv->intern_cnt < (gv->pool_buffer_size - record_size)/sizeof(size_t)) {
-            gv->interns = (zend_uchar **) ADD_BYTEOFF(pool->storage, ROUNDUP(record_size));
+        if (hdr->intern_vec) {
+            zend_uint *p   = (zend_uint *)ADD_PTROFF(pool->storage, hdr->intern_vec);
+            gv->intern_cnt = p[1];
+            gv->interns    = (gv->intern_cnt < (gv->pool_buffer_size-record_size)/sizeof(size_t)) ?
+                                 (zend_uchar **) ADD_BYTEOFF(pool->storage, ROUNDUP(record_size)) :
+                                 emalloc(gv->intern_cnt*sizeof(zend_uchar *));
+            gv->interns[0] =  (zend_uchar *)p;  /* use 0'th entry as tmp ptr to the intern vecs */
         } else {
-            gv->interns = emalloc(gv->intern_cnt*sizeof(zend_uchar *));
-        }
-        for (i=0, q = gv->interns; i < gv->intern_cnt; i++) {
-            zend_uint len;
-            memcpy(&len, p, sizeof(zend_uint));
-            *q++ = (zend_uchar *) p;
-            p += sizeof(uint) + len;
-        }
-
+            gv->interns = NULL;
+         }
+        
         relocate_pool(pool, 0);
 
     #ifdef LPC_DEBUG
@@ -688,7 +723,7 @@ zend_uchar* lpc_pool_serialize(lpc_pool* pool, zend_uint* compressed_size,
     hdr->count      = pool->count;
     hdr->size       = pool->size;
     hdr->allocated  = pool->allocated;
-    hdr->intern_vec = GET_PTROFF(interned_bvec, storage);
+    hdr->intern_vec = (interned_bvec == NULL) ? 0 : GET_PTROFF(interned_bvec, storage);
     *record_size    = hdr->allocated;
 
     relocate_pool(pool, 1);
@@ -752,7 +787,8 @@ void lpc_pool_destroy(lpc_pool *pool)
             efree(gv->interns);
         }
         gv->interns = NULL;
-     }
+    }
+
     if (!pool->tags.inconsistent && pool->tags.arBuckets) {
         zend_hash_destroy(&pool->tags);
         }
@@ -764,6 +800,11 @@ void lpc_pool_destroy(lpc_pool *pool)
     if (pool->storage && !gv->reuse_serial_buffer) {
         free(pool->storage);
         gv->pool_buffer = NULL;
+    }
+
+    if (pool->intern_copy) {
+        efree(pool->intern_copy);
+        pool->intern_copy = NULL;
     }
 
     memset(pool, 0, sizeof(lpc_pool));
@@ -1002,33 +1043,42 @@ static zend_uchar* generate_interned_strings(lpc_pool *pool)
 {ENTER(generate_interned_strings)
    /*
     * The interned string hashtable is serialize out to the pool in the format 
-    *     <count>{<size><string btyes>}
+    *     <total size><count>{<size><string btyes>}
     * where count and size are 4-byte unsigned values. Memcpy is used to move these because the
     * sizes are only byte-aligned.  This is a PIC format.  
     */
     HashTable *ht = &LPCGP(intern_hash);
     int  i, cnt = zend_hash_num_elements(ht);
-    uint size = 0, sn = 0;
+    zend_uint size = 0, sn = 0, total_size;
     zend_uchar *s, *d, *interned_vec;
+
+    if (cnt == 0) {
+        return NULL;
+    }
 
     zend_hash_internal_pointer_reset(ht);
     for (i = 0; i < cnt; i++) {
         zend_hash_get_current_key_ex(ht, (char **) &s, &sn, NULL,  0, NULL);
         zend_hash_move_forward(ht);
-        size += sn;
+        size += sn;   /* total up the sum of the string lengths */
     }
 
-    pool_alloc(interned_vec, (cnt+1)*sizeof(uint) + size);
-    memcpy(interned_vec, &cnt, sizeof(uint));
+    total_size = ((cnt+2)*sizeof(uint)) + size;
+
+    pool_alloc(interned_vec, total_size);
+    ((zend_uint *)interned_vec)[0] = total_size; /*allocs are size_t aligned so this is OK */
+    ((zend_uint *)interned_vec)[1] = cnt;
+
     zend_hash_internal_pointer_reset(ht);
-    for (i = 0, d = interned_vec + sizeof(uint); i < cnt; i++) {
+    for (i = 0, d = interned_vec + (2*sizeof(uint)); i < cnt; i++) {
         zend_hash_get_current_key_ex(ht, (char **) &s, &sn, NULL,  0, NULL);
         zend_hash_move_forward(ht);
-        memcpy( d, &sn, sizeof(uint));
+        memcpy( d, &sn, sizeof(uint));           /* this one isn't size_t aligned hence memcpy */
         memcpy( d+sizeof(uint), s, sn);
-        d+= sizeof(uint)+sn;
+        d += sizeof(uint)+sn;
     }
-    assert((d-interned_vec) == (cnt+1)*sizeof(uint) + size);
+
+    assert((d-interned_vec) == (cnt+2)*sizeof(uint) + size);
     zend_hash_destroy(ht);
     memset(ht, 0, sizeof(HashTable));
 

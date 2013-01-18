@@ -3,7 +3,7 @@ clean () {
     pushd /home/terry/work/ext/lpc/tests
 	rm -f .test*.cache {test,dd}*.php~
 	rm -f test*.{out,err,sum}[12]
-    test -d php && rm -R php
+    test -d php5 && rm -R php5/*
     popd
 }
 
@@ -13,6 +13,7 @@ dotest() {
     baseOP=$3
     t=${file%%.*}
 
+    echo -n "$baseDir - $t " 
     test -f $baseDir/.$t.cache && rm $baseDir/.$t.cache
 	SKIP_SLOW_TESTS=1 /opt/bin/php $OPT $baseDir/$file 1> $baseOP/$t.out1 2> $baseOP/$t.err1
 	SKIP_SLOW_TESTS=1 /opt/bin/php $OPT $baseDir/$file 1> $baseOP/$t.out2 2> $baseOP/$t.err2
@@ -33,10 +34,10 @@ dotest() {
     grep -P "===DONE===|^--TEST--|^PHP" $baseOP/$t.sum1 >/dev/null && diff $baseOP/$t.sum[12] > $baseOP/$t.diff
 
 	if [[ $? -eq 0 ]]; then
-		echo $t Passed
+		echo Passed
         rm $baseOP/$t.diff
 	else
-		echo $t Failed
+		echo Failed
 	fi
 }
 
@@ -49,7 +50,7 @@ run() {
 }
 php() {
     oldDir=$(pwd)
-    cd php
+    cd php5
     testdirs=$(cd ~/work/php5/tests; find * -type d)
 
     for d in $testdirs; do

@@ -71,7 +71,7 @@ void lpc_copy_hashtable(HashTable* dst, const HashTable* src, lpc_pool* pool,
                 memset(dst->arBuckets, 0, dst->nTableSize * sizeof(Bucket*));
             }
         } else { /* copy-out */
-            dst->arBuckets = (src->arBuckets) ? (void *) 1 : NULL;
+            dst->arBuckets = (src->arBuckets) ? LPC_ALLOCATE_TAG : NULL;
         }
     } else {
        /*
@@ -113,7 +113,7 @@ void lpc_copy_hashtable(HashTable* dst, const HashTable* src, lpc_pool* pool,
             Bucket **lastPtr;
             dst->nNumOfElements = nNumOfElements;
             /* flag arBuckets so that copy-in knows to allocate the arBuckets array */
-            dst->arBuckets = (void *) 1;
+            dst->arBuckets = LPC_ALLOCATE_TAG;
             for (i=0; i<nNumOfElements; i++) {
 #ifdef ZEND_ENGINE_2_4
                     ////// TODO: review interned string changes in PHP 5.4 to work out how this works 

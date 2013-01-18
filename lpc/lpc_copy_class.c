@@ -12,17 +12,16 @@
   | obtain it through the world-wide-web, please send a note to          |
   | license@php.net so we can mail you a copy immediately.               |
   +----------------------------------------------------------------------+
-  | Authors: Daniel Cowgill <dcowgill@communityconnect.com>              |
+  | Authors: Terry Ellison <Terry@ellisons.org.uk>                       |
+  |          Daniel Cowgill <dcowgill@communityconnect.com>              |
   |          Rasmus Lerdorf <rasmus@php.net>                             |
   |          Arun C. Murthy <arunc@yahoo-inc.com>                        |
   |          Gopal Vijayaraghavan <gopalv@yahoo-inc.com>                 |
   +----------------------------------------------------------------------+
 
-   This software was contributed to PHP by Community Connect Inc. in 2002
-   and revised in 2005 by Yahoo! Inc. to 9add support for PHP 5.1.
-   Future revisions and derivatives of this source code must acknowledge
-   Community Connect Inc. as the original contributor of this module by
-   leaving this note intact in the source code.
+   This software was derived from the APC extension which was initially 
+   contributed to PHP by Community Connect Inc. in 2002 and revised in 2005 
+   by Yahoo! Inc. See README for further details.
 
    All other licensing and usage conditions are those of the PHP Group.
 */
@@ -35,11 +34,10 @@
 #include "php_lpc.h"
 #include "lpc_string.h"
 #include "Zend/zend_compile.h"
-
 /*
- * These functions are filter functions used in lpc_copy_class_entry as lpc_copy_hashtable callbacks to 
- * determine whether each element within the HashTable should be copied or if it is already defined /
- *  overridden in the 'current' class entry and therefore not to be inherited.  
+ * These functions are filter functions used in lpc_copy_class_entry as lpc_copy_hashtable
+ * callbacks to determine whether each element within the HashTable should be copied or if it is
+ * already defined / overridden in the 'current' class entry and therefore not to be inherited.  
  */
 static lpc_check_t check_copy_default_property(Bucket* p, const void *, const void *);
 static lpc_check_t check_copy_property_info(Bucket* src, const void *, const void *);
@@ -57,20 +55,23 @@ void copy_property_info(zend_property_info* dst, zend_property_info* src, lpc_po
 #define TAG_SETPTR(dst,src) dst = src; pool_tag_ptr(dst)
 
 #ifdef ZEND_ENGINE_2_4
-# define CE_FILENAME(ce)            (ce)->info.user.filename
-# define CE_DOC_COMMENT(ce)        (ce)->info.user.doc_comment
-# define CE_DOC_COMMENT_LEN(ce) (ce)->info.user.doc_comment_len
-# define CE_BUILTIN_FUNCTIONS(ce)  (ce)->info.internal.builtin_functions
+# define NULL_CC_IF_ZE24        ,NULL
+# define CE_FILENAME(ce)          (ce)->info.user.filename
+# define CE_DOC_COMMENT(ce)       (ce)->info.user.doc_comment
+# define CE_DOC_COMMENT_LEN(ce)   (ce)->info.user.doc_comment_len
+# define CE_BUILTIN_FUNCTIONS(ce) (ce)->info.internal.builtin_functions
 #else
-# define CE_FILENAME(ce)            (ce)->filename
-# define CE_DOC_COMMENT(ce)        (ce)->doc_comment
-# define CE_DOC_COMMENT_LEN(ce) (ce)->doc_comment_len
-# define CE_BUILTIN_FUNCTIONS(ce)  (ce)->builtin_functions
+# define NULL_CC_IF_ZE24 
+# define CE_FILENAME(ce)          (ce)->filename
+# define CE_DOC_COMMENT(ce)       (ce)->doc_comment
+# define CE_DOC_COMMENT_LEN(ce)   (ce)->doc_comment_len
+# define CE_BUILTIN_FUNCTIONS(ce) (ce)->builtin_functions
 #endif
 
 /* {{{ lpc_copy_class_entry */
 void lpc_copy_class_entry(zend_class_entry* dst, zend_class_entry* src, lpc_pool* pool)
-/* Deep copying a zend_class_entry (see Zend/zend.h) involves various components:
+/*
+ * Deep copying a zend_class_entry (see Zend/zend.h) involves various components:
  *  1)  scalars which need to be copies "bit copied"
  *  2)  scalars which shouldn't be inherited on copy
  *  3)  Embeded HashTables and pointers to structures which need to be deep copied
@@ -79,16 +80,22 @@ void lpc_copy_class_entry(zend_class_entry* dst, zend_class_entry* src, lpc_pool
  * (1) is achieved by doing a base "bit copy" of the entire class entry; (2) by explicitly setting
  * to 0/NULL; (3) are the fields:
  *
- *  char                *name
- *  zend_class_entry    *parent
- *  zend_function_entry *builtin_functions
- *  zend_class_entry   **interfaces
- *  char                *filename
- *  char                *doc_comment
- *  zend_module_entry   *module
- * 
- * and the HahTables: function_table, default_properties, properties_info, default_static_members,
- * *static_members, constants_table
+ *  char                *name               [E]
+ *  zend_class_entry    *parent             [R]
+ *  zend_function_entry *builtin_functions  [R]
+ *  zend_class_entry   **interfaces         [E]
+ *  char                *filename           [R]
+ *  char                *doc_comment        [E]
+ *  zend_module_entry   *module             [R]
+ *
+ *  where [E] denotes an emalloced element and [R] a derived address reference.  The HashTables:
+ *  
+ *  function_table            zend_function_dtor
+ *  default_properties        zval_ptr_dtor_func
+ *  properties_info           zend_destroy_property_info
+ *  default_static_members    zval_ptr_dtor_func
+ *  constants_table           zval_ptr_dtor_func
+ *  *static_members           [R] (points to default_static_member in the case of user classes)
  * 
  *  (4) are the function pointers for : constructor, destructor, clone, __get, __set, __unset,
  *  __isset, __call, __callstatic, __tostring, serialize_func, unserialize_func, create_object,
@@ -96,22 +103,27 @@ void lpc_copy_class_entry(zend_class_entry* dst, zend_class_entry* src, lpc_pool
  * 
  * Also not that some operations are only done once on copying out from exec to serial pool such as
  * adjusting the interfaces count.
- */
+ *
+ * The handling of class inheritence adds some complications.  The crux of these is that in a pure
+ * compile and go environment -- as PHP implicitly assumes, if class B extends class A, then class A
+ * must have been compiled and 
+ * ... */
+
 {ENTER(lpc_copy_class_entry)
     uint i = 0;
     TSRMLS_FETCH_FROM_POOL();
 
     BITWISE_COPY(src,dst);
-   /*-
+
+    if (src->name) {
+        pool_nstrdup(dst->name, dst->name_length, src->name, src->name_length, 1);
+    }
+
+   /*
     * Set all fields that shouldn't be inherited on copy to 0/NULL 
     */
-    dst->name = NULL;
-    memset(&dst->function_table, 0, sizeof(dst->function_table));
     memset(&dst->properties_info, 0, sizeof(dst->properties_info));
     memset(&dst->constants_table, 0, sizeof(dst->constants_table));
-   /*
-    * The interfaces are populated at runtime using ADD_INTERFACE 
-    */
    /* 
     * These will either be set inside lpc_fixup_hashtable or they will be copied
     * out from parent inside zend_do_inheritance. 
@@ -137,10 +149,9 @@ void lpc_copy_class_entry(zend_class_entry* dst, zend_class_entry* src, lpc_pool
     dst->serialize_func = NULL;
     dst->unserialize_func = NULL;
 
-    if (src->name) {
-        pool_strdup(dst->name, src->name);
-    }
-    
+   /*
+    * The interfaces are populated at runtime using ADD_INTERFACE 
+    */    
     if (is_copy_out()) {
        /*
         * The compiler output count includes inherited interfaces as well, but the count
@@ -149,7 +160,7 @@ void lpc_copy_class_entry(zend_class_entry* dst, zend_class_entry* src, lpc_pool
         */
         for(i = 0 ; (i < src->num_interfaces) && !src->interfaces[i]; i++) {}
         dst->num_interfaces = (i < src->num_interfaces) ? i : 0;
-        dst->interfaces = src->interfaces ? ((void *) 1) : NULL;  
+        dst->interfaces = src->interfaces ? LPC_ALLOCATE_TAG : NULL;  
     } else { /* is copyin */
         dst->num_interfaces = src->num_interfaces;
         if (src->interfaces) { /* Only alloc array if original was allocated */
@@ -158,10 +169,9 @@ void lpc_copy_class_entry(zend_class_entry* dst, zend_class_entry* src, lpc_pool
         }  
     } 
    /*
-    * Copy and fixup the function table
+    * Copy the function table and fixup the __xxx function fields on copy in.
     */
     COPY_HT(function_table, lpc_copy_function, zend_function, check_copy_method, NULL);
- 
     lpc_fixup_hashtable(&dst->function_table, (lpc_ht_fixup_fun_t)fixup_method, src, dst, pool);
    /*
     * Copy the default properties table. Unfortunately this is different for Zend 2.4 and previous versions 
@@ -245,45 +255,13 @@ void lpc_copy_class_entry(zend_class_entry* dst, zend_class_entry* src, lpc_pool
         CE_DOC_COMMENT(dst) = NULL;
     }
 
-    /* For an internal class dup the null terminated list of builtin functions */ 
-    if (src->type == ZEND_INTERNAL_CLASS && CE_BUILTIN_FUNCTIONS(src)) {
-        int n;
+    assert(src->type == ZEND_USER_CLASS);
 
-        for (n = 0; CE_BUILTIN_FUNCTIONS(src)[n].fname != NULL; n++) {}
-
-        pool_memcpy(CE_BUILTIN_FUNCTIONS(dst), 
-                    CE_BUILTIN_FUNCTIONS(src), ((n + 1) * sizeof(zend_function_entry)));
-
-        for (i = 0; i < n; i++) {
-            zend_function_entry *fsrc = (zend_function_entry *) &CE_BUILTIN_FUNCTIONS(src)[i];
-            zend_function_entry *fdst = (zend_function_entry *) &CE_BUILTIN_FUNCTIONS(dst)[i];
-
-            if (fsrc->fname) {
-               pool_strdup(fdst->fname, fsrc->fname);
-            }
-
-            if (fsrc->arg_info) {
-                lpc_copy_arg_info_array((zend_arg_info **) &fdst->arg_info, fsrc->arg_info, fsrc->num_args, pool);
-            }
-        }
-        *(char**)&(CE_BUILTIN_FUNCTIONS(dst)[n].fname) = NULL;
-    }
-
-    if (src->type == ZEND_USER_CLASS && CE_FILENAME(src)) {
-        /*
-         * is the class filename is the current source file name then the RTS doesn't free this as
-         * it also points to the op_array filename, so replicate this to avoid the memory leak.
-         */
-        if (is_copy_out() && !strcmp(LPCG(current_filename), CE_FILENAME(src))) {
-            CE_FILENAME(dst) = ((char *) 1);
-        } else if (is_copy_in() && CE_FILENAME(src) == ((char *) 1)) {
-            CE_FILENAME(dst) = LPCG(current_filename);
-        } else {
-            pool_strdup(CE_FILENAME(dst), CE_FILENAME(src));
-        }
-    } else {
-        CE_FILENAME(dst) = NULL;
-    }
+   /*
+    * is the class filename is the current source file name then the RTS doesn't free this as
+    * it also points to the op_array filename, so replicate this to avoid the memory leak.
+    */    
+    CE_FILENAME(dst) = is_copy_out() ? NULL : LPCGP(current_filename);
 }
 /* }}} */
 
@@ -316,7 +294,7 @@ void lpc_copy_new_classes(lpc_class_t* cl_array, zend_uint count, lpc_pool* pool
         * cle->name_len as the length of an interned string is 0 -- left in for historic reasons
         * but compression removes this file-space overhead. 
         */  
-        pool_nstrdup(cle->name, cle->name_len, key, key_length-1);
+        pool_nstrdup(cle->name, cle->name_len, key, key_length-1, 0);
         pool_alloc(cle->class_entry, sizeof(zend_class_entry));
 
         lpc_copy_class_entry(cle->class_entry, class, pool);
@@ -328,9 +306,8 @@ void lpc_copy_new_classes(lpc_class_t* cl_array, zend_uint count, lpc_pool* pool
          */
 
         if (class->parent) {
-            pool_strdup(cle->parent_name, class->parent->name);
-        }
-        else {
+            pool_strdup(cle->parent_name, class->parent->name, 0);
+        } else {
             cle->parent_name = NULL;
         }
     }
@@ -358,7 +335,7 @@ zend_bool lpc_install_classes(lpc_class_t* classes, zend_uint num_classes, lpc_p
         zend_class_entry** parent = NULL;
         char *cl_name;
         zend_uint cl_name_len;
-        pool_nstrdup(cl_name, cl_name_len, cl->name, cl->name_len); /* de-intern */
+        pool_nstrdup(cl_name, cl_name_len, cl->name, cl->name_len, 0); /* de-intern */
        /*
         * Special case for mangled names (which start with a leading '\0'. These are unique, and can
         * only occur if a source including the class is included twice. In this case LPC, like APC,
@@ -374,17 +351,13 @@ zend_bool lpc_install_classes(lpc_class_t* classes, zend_uint num_classes, lpc_p
         if (cl->parent_name != NULL) {
             /* note that parent classes can never be mangled so a pool_strcpy suffices */
             char *parent_name;
-            pool_strdup(parent_name, cl->parent_name); /* de-intern */
-            if (zend_lookup_class_ex(parent_name, strlen(parent_name), 
-#ifdef ZEND_ENGINE_2_4  /* Adds an extra paramater which is NULL for this lookup */ 
-                                     NULL,
-#endif
+            pool_strdup(parent_name, cl->parent_name, 0); /* de-intern */
+            if (zend_lookup_class_ex(parent_name, strlen(parent_name)  NULL_CC_IF_ZE24, 
                                      0, &parent TSRMLS_PC) == FAILURE) {
                 i_fail = i;
                 efree(parent_name);
                 break;
             }
-            efree(parent_name);
         }   
         pool_alloc(dst_cl, sizeof(zend_class_entry));
         lpc_copy_class_entry(dst_cl, cl->class_entry,  pool);
@@ -400,8 +373,6 @@ zend_bool lpc_install_classes(lpc_class_t* classes, zend_uint num_classes, lpc_p
             i_fail = i;
             break;
         }
-
-        efree(cl_name);
     }
 
     if (i_fail >= 0) {
@@ -413,7 +384,7 @@ zend_bool lpc_install_classes(lpc_class_t* classes, zend_uint num_classes, lpc_p
             lpc_class_t* cl = classes + i;
             char *cl_name;
             zend_uint cl_name_len;
-            pool_nstrdup(cl_name, cl_name_len, cl->name, 0); /* de-intern poss mangled */
+            pool_nstrdup(cl_name, cl_name_len, cl->name, 0, 0); /* de-intern poss mangled */
              if (zend_hash_del(EG(class_table), cl_name, cl_name_len+1) == FAILURE) {
                  lpc_error("Cannot delete class %s" TSRMLS_CC, cl_name);
             }
@@ -429,21 +400,20 @@ zend_bool lpc_install_classes(lpc_class_t* classes, zend_uint num_classes, lpc_p
 void copy_property_info(zend_property_info* dst, zend_property_info* src, lpc_pool* pool)
 {ENTER(copy_property_info)
     BITWISE_COPY(src,dst);
-
+   /*
+    * Note that private properties are mangled by prefixing \0<classname>\0 to the property name.
+    */
    if (src->name) {
-        /* private members are stored inside property_info as a mangled
-         * string of the form:
-         *      \0<classname>\0<membername>\0
-         */
-        pool_memcpy(dst->name, src->name, src->name_length+1);
+        pool_nstrdup(dst->name, dst->name_length, src->name, src->name_length, 1);
    }
 
 #if defined(ZEND_ENGINE_2) && PHP_MINOR_VERSION > 0
     if (src->doc_comment) {
-        pool_memcpy(dst->doc_comment, src->doc_comment, src->doc_comment_len + 1);
+        pool_nstrdup(dst->doc_comment, dst->doc_comment_len, 
+                     src->doc_comment, src->doc_comment_len, 1);
     }
 #endif
-}
+} 
 /* }}} */
 #ifndef ZEND_ENGINE_2_4
 /* {{{ check_copy_default_property 
@@ -617,19 +587,8 @@ void fixup_method(Bucket *p, zend_class_entry *src, zend_class_entry *dst, lpc_p
             SET_IF_SAME_NAME(__unset)
             SET_IF_SAME_NAME(__isset)
             SET_IF_SAME_NAME(__call)
-
 #ifdef ZEND_ENGINE_2_2
-//            SET_IF_SAME_NAME(__tostring)
-// macro expansion of above
-        if (src->__tostring) { 
-            if (!_lpc_pool_strcmp((zf->common.function_name), 
-                                  (src->__tostring->common.function_name), 
-                                  pool , "lpc_copy_class.c", 622)) {
-                dst->__tostring = zf; 
-                _lpc_pool_tag_ptr((void **)&(dst->__tostring), pool , "lpc_copy_class.c", 622); 
-            }
-        }
-
+            SET_IF_SAME_NAME(__tostring)
 #endif
 #ifdef ZEND_ENGINE_2_3
             SET_IF_SAME_NAME(__callstatic)
@@ -652,6 +611,8 @@ static lpc_check_t check_copy_method(Bucket* p, const void *arg1, const void *du
 
     return  (zf->common.scope == src) ? CHECK_ACCEPT_ELT : CHECK_SKIP_ELT;
 }
+
+
 /* }}} */
 
 /*

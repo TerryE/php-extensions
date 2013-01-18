@@ -42,9 +42,8 @@
  * declared as inline scope. The copy out variants are explicit functions.
  */
  
-static void        copy_zval_out(zval* dst, const zval* src, lpc_pool* pool);
-static inline void copy_zval_in(zval* dst, const zval* src, lpc_pool* pool);
-static void        copy_opcodes_out(zend_op_array *dst, zend_op_array *src, lpc_pool* pool);
+static void copy_zval_out(zval* dst, const zval* src, lpc_pool* pool);
+static void copy_opcodes_out(zend_op_array *dst, zend_op_array *src, lpc_pool* pool);
 /* The public lpc_copy_op_array and lpc_copy_zval_ptr templates are in lpc_copy_op_array.h */
 
 /*
@@ -53,12 +52,15 @@ static void        copy_opcodes_out(zend_op_array *dst, zend_op_array *src, lpc_
  * this for you already.
  */ 
 #define TAG_SETPTR(dst,src) dst = src; pool_tag_ptr(dst);
-#define POOL_STRDUP_FLD(fld) if(src->fld) pool_strdup(dst->fld,src->fld)
+#define POOL_STRDUP_FLD(fld) if(src->fld) pool_strdup(dst->fld,src->fld, 0)
+#define POOL_ESTRDUP_FLD(fld) if(src->fld) pool_strdup(dst->fld,src->fld, 1)
 #define POOL_MEMCPY(dst,src,n) if(src) pool_memcpy(dst,src,n)
 #define POOL_MEMCPY_FLD(fld,n) POOL_MEMCPY(dst->fld,src->fld,n)
-#define POOL_STRDUP_FLD(fld) if(src->fld) pool_strdup(dst->fld,src->fld)
 #define POOL_NSTRDUP_FLD(fld) if (src->fld) \
-    pool_nstrdup(dst->fld, dst->fld##_len, src->fld, src->fld##_len);
+    pool_nstrdup(dst->fld, dst->fld##_len, src->fld, src->fld##_len, 0)
+#define POOL_ENSTRDUP(dst,src) if (src) \
+    pool_nstrdup(dst, dst##_len, src, src##_len, 1)
+#define POOL_ENSTRDUP_FLD(fld) POOL_ENSTRDUP(dst->fld,src->fld)
 
 /*
  * Whereas the changes introduced in 2.1 to 2.3 Zend engines were mostly additional 
@@ -113,13 +115,13 @@ static void copy_zval_out(zval* dst, const zval* src, lpc_pool* pool)
     */
     if (LPCGP(copied_zvals)-- == 0) {
         lpc_error("Fatal: Circular reference found in compiled zvals " TSRMLS_PC ZEND_FILE_LINE_CC);
-        return;
+        zend_bailout();
     }
 
    /* code uses refcount=2 for consts */
     Z_SET_REFCOUNT_P(dst, Z_REFCOUNT_P((zval*)src));
     Z_SET_ISREF_TO_P(dst, Z_ISREF_P((zval*)src));
-    Z_TYPE_P(dst) = Z_TYPE_P(src);
+    Z_TYPE_P(dst) = Z_TYPE_P((zval*)src);
 
     switch (Z_TYPE_P(src) & IS_CONSTANT_TYPE_MASK) {
 
@@ -142,12 +144,22 @@ static void copy_zval_out(zval* dst, const zval* src, lpc_pool* pool)
         case IS_CONSTANT:
         case IS_STRING:
             if (Z_STRVAL_P(src)) {
-                pool_nstrdup(Z_STRVAL_P(dst), Z_STRLEN_P(dst), Z_STRVAL_P(src), Z_STRLEN_P(src));
+#ifdef LPC_DEBUG
+                if (LPCGP(debug_flags)&LPC_DBG_ZVAL)  /* Intern tracking */
+                    lpc_debug("ZVAL copy-out type %u:%u/%u %08lx" TSRMLS_PC,
+                              Z_TYPE_P((zval*)src), Z_ISREF_P((zval*)src),
+                              Z_REFCOUNT_P((zval*)src), Z_STRVAL_P((zval*)src));
+#endif
+                pool_nstrdup(Z_STRVAL_P(dst), Z_STRLEN_P(dst), Z_STRVAL_P(src), Z_STRLEN_P(src), 0);
             }
             break;
 
         case IS_ARRAY:
         case IS_CONSTANT_ARRAY:
+#ifdef LPC_DEBUG
+                if (LPCGP(debug_flags)&LPC_DBG_ZVAL)  /* Intern tracking */
+                    lpc_debug("ZVAL copy-out HASH %u" TSRMLS_PC, src->value.ht->nNumOfElements);
+#endif
             pool_alloc_ht(Z_ARRVAL_P(dst));
             COPY_HT_P(value.ht, lpc_copy_zval_ptr, zval *, NULL, NULL);
             break;
@@ -166,8 +178,10 @@ static void copy_zval_out(zval* dst, const zval* src, lpc_pool* pool)
     Note that this an absolute lightweight version for copy-in inlining of zvals as used in compiled
     opcodes. It assume that the underlying zval data has already been bitwise copied. 
     No circular reference detection is employed:  this would have been picked up at copy out. */
-static inline void copy_zval_in(zval* dst, const zval* src, lpc_pool* pool)
+static zend_always_inline void copy_zval_in(zval* dst, const zval* src, lpc_pool* pool)
 {
+    memcpy(dst, src, sizeof(zval));
+
     /* code uses refcount=2 for consts */
     Z_SET_REFCOUNT_P(dst, Z_REFCOUNT_P((zval*)src));
     Z_SET_ISREF_TO_P(dst, Z_ISREF_P((zval*)src));
@@ -176,12 +190,22 @@ static inline void copy_zval_in(zval* dst, const zval* src, lpc_pool* pool)
         case IS_CONSTANT:
         case IS_STRING:
             if (Z_STRVAL_P(src)) {
-                pool_nstrdup(Z_STRVAL_P(dst), Z_STRLEN_P(dst), Z_STRVAL_P(src), Z_STRLEN_P(src));
+#ifdef LPC_DEBUG
+                if (LPCGP(debug_flags)&LPC_DBG_ZVAL)  /* Intern tracking */
+                    lpc_debug("ZVAL copy-in type %u:%u/%u %08lx" TSRMLS_PC,
+                              Z_TYPE_P((zval*)src), Z_ISREF_P((zval*)src),
+                              Z_REFCOUNT_P((zval*)src), Z_STRVAL_P((zval*)src));
+#endif
+                pool_nstrdup(Z_STRVAL_P(dst), Z_STRLEN_P(dst), Z_STRVAL_P(src), Z_STRLEN_P(src), 1);
             }
             break;
 
         case IS_ARRAY:
         case IS_CONSTANT_ARRAY:
+#ifdef LPC_DEBUG
+            if (LPCGP(debug_flags)&LPC_DBG_ZVAL)  /* Intern tracking */
+                lpc_debug("ZVAL copy-in HASH %u" TSRMLS_PC, src->value.ht->nNumOfElements);
+#endif
             pool_alloc_ht(Z_ARRVAL_P(dst));
             COPY_HT_P(value.ht, lpc_copy_zval_ptr, zval *, NULL, NULL);
             break;
@@ -189,6 +213,39 @@ static inline void copy_zval_in(zval* dst, const zval* src, lpc_pool* pool)
         default:
             break;
     }
+}
+/* }}} */
+
+/* {{{ zend_vm_get_opcode_handler
+       This is a copy of Zend/zend_vm_execute.c:zend_vm_get_opcode_handler() */
+#define _CONST_CODE  0
+#define _TMP_CODE    1
+#define _VAR_CODE    2
+#define _UNUSED_CODE 3
+#define _CV_CODE     4
+static const int zend_vm_decode[] = {
+	_UNUSED_CODE, /* 0              */
+	_CONST_CODE,  /* 1 = IS_CONST   */
+	_TMP_CODE,    /* 2 = IS_TMP_VAR */
+	_UNUSED_CODE, /* 3              */
+	_VAR_CODE,    /* 4 = IS_VAR     */
+	_UNUSED_CODE, /* 5              */
+	_UNUSED_CODE, /* 6              */
+	_UNUSED_CODE, /* 7              */
+	_UNUSED_CODE, /* 8 = IS_UNUSED  */
+	_UNUSED_CODE, /* 9              */
+	_UNUSED_CODE, /* 10             */
+	_UNUSED_CODE, /* 11             */
+	_UNUSED_CODE, /* 12             */
+	_UNUSED_CODE, /* 13             */
+	_UNUSED_CODE, /* 14             */
+	_UNUSED_CODE, /* 15             */
+	_CV_CODE      /* 16 = IS_CV     */
+};
+
+static zend_always_inline opcode_handler_t zend_vm_get_opcode_handler(zend_op* op)
+{
+		return zend_opcode_handlers[op->opcode * 25 + zend_vm_decode[op->op1.op_type] * 5 + zend_vm_decode[op->op2.op_type]];
 }
 /* }}} */
 
@@ -218,6 +275,17 @@ static void copy_opcodes_out(zend_op_array *dst, zend_op_array *src, lpc_pool* p
     for (src_zo = src->opcodes, dst_zo = dst->opcodes; 
          src_zo < src_zo_last; 
          src_zo++, dst_zo++) {
+
+#ifdef LPC_DEBUG
+    if (LPCGP(debug_flags)&LPC_DBG_LOG_OPCODES) 
+        php_stream_printf(LPCG(opcode_logger) TSRMLS_CC, "%u,%u,%u\n", src_zo->opcode,
+                          zend_vm_decode[src_zo->op1.op_type], zend_vm_decode[src_zo->op2.op_type]);
+#endif
+
+       if( src_zo->handler == zend_vm_get_opcode_handler(src_zo)) {
+            dst_zo->handler = NULL;
+        }
+
         zend_uchar opcode_flags = opcode_table[src_zo->opcode];
         LPCGP(copied_zvals) = LPC_COPIED_ZVALS_COUNTDOWN;
        /*
@@ -227,11 +295,16 @@ static void copy_opcodes_out(zend_op_array *dst, zend_op_array *src, lpc_pool* p
         * is done BEFORE the op1 copy.
         */
 
-        if ((LPCG(resolve_paths) && 
-            opcode_flags & LPC_OP_INCLUDE) && ZOP_TYPE_IS_CONSTANT_STRING(src_zo->op1)) {
+        if (LPCG(resolve_paths) && 
+            (opcode_flags & LPC_OP_INCLUDE) && 
+            ZOP_TYPE_IS_CONSTANT_STRING(src_zo->op1)) {
+
             zval *const_pzv = CONST_PZV(src_zo->op1);
+            zval *include_type = CONST_PZV(src_zo->op2);           
             char *resolved_path;
-            if(resolved_path = lpc_resolve_path(const_pzv TSRMLS_CC)) {
+
+            if (Z_LVAL_P(include_type) != ZEND_EVAL &&
+                (resolved_path = lpc_resolve_path(const_pzv TSRMLS_CC))) {
                /*
                 * If the path is not absolute or explicitly current dir relative, then it is 
                 * resolved against the include_path, script path and current working directory. The
@@ -279,7 +352,7 @@ static void copy_opcodes_out(zend_op_array *dst, zend_op_array *src, lpc_pool* p
            /*
             * Some extra functionality is needed to support the auto_globals_jit INI parameter. When
             * this is enabled, $_SERVER and related variables are JiT created when first referenced
-         s   * instead of at request initiation -- some extra complexity for a small performance
+            * instead of at request initiation -- some extra complexity for a small performance
             * gain. Loading an op array which refers to must trigger this process, hence the
             * appropriate flag bits are set during the copy-out scan to simplify this at copy-in. 
             */  
@@ -328,21 +401,23 @@ void lpc_copy_op_array(zend_op_array* dst, zend_op_array* src, lpc_pool* pool)
  * set by that class / function copy.  One of the reserved fields is used to hold the LPC flags. 
  * Here is the summary of the "rich" fields.
  *   
- *  char                   *function_name       pool_memcpy if not null              
- *  zend_class_entry       *scope               set by owning class copy if class op array 
- *  union _zend_function   *prototype           nulled as zend_do_inheritance will re-look this up               
- *  zend_arg_info          *arg_info            deep pool_memcpy if not nul                           
- *  zend_uint              *refcount            pool_memcpy if not nul                          
- *  zend_op                *opcodes             See below                 
- *  zend_compiled_variable *vars                deep copy the array using pool_memcpy                    
- *  zend_brk_cont_element  *brk_cont_array      pool_memcpy if not nul                                  
- *  zend_try_catch_element *try_catch_array     pool_memcpy if not nul                                  
- *  HashTable              *static_variables    HT copy                            
- *  zend_op                *start_op            processed with opcodes     
- *  char                   *filename            pool_memcpy if not nul                           
- *  char                   *doc_comment         pool_memcpy if not nul                              
+ *  char                   *function_name   [E] pool_memcpy if not null           
+ *  zend_class_entry       *scope           [R] set by owning class copy if class op array 
+ *  union _zend_function   *prototype       [R] nulled as zend_do_inheritance will re-look this up               
+ *  zend_arg_info          *arg_info        [E] deep pool_memcpy if not nul                           
+ *  zend_uint              *refcount        [E] pool_memcpy if not nul                          
+ *  zend_op                *opcodes         [E] See below                 
+ *  zend_compiled_variable *vars            [E] deep copy the array using pool_memcpy                    
+ *  zend_brk_cont_element  *brk_cont_array  [E] pool_memcpy if not nul                                  
+ *  zend_try_catch_element *try_catch_array [E] pool_memcpy if not nul                                  
+ *  HashTable              *static_variables[R] HT copy                            
+ *  zend_op                *start_op        [R] processed with opcodes     
+ *  char                   *filename        [R] pool_memcpy if not nul                           
+ *  char                   *doc_comment     [E] pool_memcpy if not nul                              
  *  void                   *reserved[]          used to hold LPC flags
  *
+ *  [E] denotes a field which is explicitly efree'd in the Zend op_array DTOR
+ *  [R] denotes a secondary reference which is not efreed.
  * 
  * To make this easier to code, this scan is driven by a table enerated by parsing the main 
  * zend_vm_def.h file during the development cycle.
@@ -357,14 +432,14 @@ TODO: Add processing of literals and interned strings for Zend 2.4
     * Copy the function_name, arg_info array, recount, vars, brk_cont_array, try_catch_array,
     * filename, doc_comment and literals as per above summary
     */
-    POOL_STRDUP_FLD(function_name);
+    POOL_ESTRDUP_FLD(function_name);
 
     POOL_MEMCPY_FLD(arg_info, src->num_args * sizeof(zend_arg_info));
     for(i=0; i < dst->num_args; i++) { /* dst->num_args = 0 if dst->arg_info is NULL */
         zend_arg_info *src_ai = src->arg_info + i;
         zend_arg_info *dst_ai = dst->arg_info + i;
-        POOL_MEMCPY(dst_ai->name, src_ai->name, src_ai->name_len+1);
-        POOL_MEMCPY(dst_ai->class_name, src_ai->class_name, src_ai->class_name_len+1);
+        POOL_ENSTRDUP(dst_ai->name, src_ai->name);
+        POOL_ENSTRDUP(dst_ai->class_name, src_ai->class_name);
     }
  
     POOL_MEMCPY_FLD(refcount, sizeof(zend_uint));
@@ -372,24 +447,23 @@ TODO: Add processing of literals and interned strings for Zend 2.4
 #ifdef ZEND_ENGINE_2_1 /* PHP 5.1 */
     POOL_MEMCPY_FLD(vars, sizeof(src->vars[0]) * src->last_var);
     for(i = 0; i <  src->last_var; i++) { /* dst->last_var = 0 if dst->vars is NULL */
-        POOL_MEMCPY(dst->vars[i].name, src->vars[i].name, src->vars[i].name_len + 1);
+        POOL_ENSTRDUP(dst->vars[i].name, src->vars[i].name);
     }
 #endif
     POOL_MEMCPY_FLD(brk_cont_array, sizeof(zend_brk_cont_element) * src->last_brk_cont);
-
     POOL_MEMCPY_FLD(try_catch_array, sizeof(zend_try_catch_element) * src->last_try_catch);
 
     /* copy the table of static variables */
     if (src->static_variables) {
         pool_alloc_ht(dst->static_variables);
+        LPCGP(copied_zvals) = LPC_COPIED_ZVALS_COUNTDOWN;
         COPY_HT_P(static_variables, lpc_copy_zval_ptr, 
                   zend_property_info *, NULL, NULL);
     }
 
-//    dst->filename = is_copy_in() ? LPCG(current_filename) : NULL;
+    dst->filename = is_copy_in() ? LPCG(current_filename) : NULL;
 
-    POOL_STRDUP_FLD(filename);
-    POOL_NSTRDUP_FLD(doc_comment);
+    POOL_ENSTRDUP_FLD(doc_comment);
 
 #ifdef ZEND_ENGINE_2_4                    /* Pooled literals introduced in Zend 2.4 */
     if (src->literals) {
@@ -398,6 +472,7 @@ TODO: Add processing of literals and interned strings for Zend 2.4
         POOL_MEMCPY_FLD(literals, sizeof(zend_literal) * src->last_literal);
         end = dst->literals + ;
         for (i = 0; i < dst->last_literal; i++ ) {
+            LPCGP(copied_zvals) = LPC_COPIED_ZVALS_COUNTDOWN;
             copy_zval_out(dst->literals[i].constant, src->literals[i].constant, pool);
             pool_tag_ptr(dst->literals[i].constant);
         }
@@ -443,6 +518,11 @@ TODO: Add processing of literals and interned strings for Zend 2.4
         for (src_zo = src->opcodes, dst_zo = dst->opcodes; 
              src_zo < src_zo_last; 
              src_zo++, dst_zo++) {
+
+        if( src_zo->handler == NULL) {
+            dst_zo->handler = zend_vm_get_opcode_handler(src_zo);
+        }
+
             zend_uchar opcode_flags = opcode_table[dst_zo->opcode];
            /*
             * The only type of pointer-based elements are in the zvals stored in the constant field
@@ -471,14 +551,8 @@ TODO: Add processing of literals and interned strings for Zend 2.4
 //// TODO: raise bug with APC.  Unknown autoglobals don't need to begin with _. Only a convention
                 (void) zend_is_auto_global(Z_STRVAL_P(const_pzv), Z_STRLEN_P(const_pzv) TSRMLS_CC);
             }  
-            /*
-            * Note that unlike APC, LPC does not canonicalize the path argument to includes and 
-            * requires.  Since the cache is request (and user) specific, there is not need to 
-            * canonicalize paths to avoid cross-request attacks.
-            */
         }
     }
-    i = i;    ///////////////   DEBUG TRACE TARGET
 }
 /* }}} */
 
@@ -487,11 +561,10 @@ void lpc_copy_zval_ptr(zval** pdst, const zval** psrc, lpc_pool* pool)
 {ENTER(lpc_copy_zval_ptr)
     pool_alloc_zval(*pdst);
     if (is_copy_in()) {
-        memcpy(*pdst, *psrc, sizeof(zval));
         copy_zval_in(*pdst, *psrc, pool);
-        return;
-    } 
-    copy_zval_out(*pdst, *psrc, pool);
+    } else {
+        copy_zval_out(*pdst, *psrc, pool);
+    }
 }
 /* }}} */
 

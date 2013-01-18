@@ -2,36 +2,46 @@ Overview
 ========
 
 The major rework arising from the 14-16 Dec review has now largely been implemented and is working:
-excluding memory leak reports, only 4 of the tests fail and all of these with subtle variations on 
-error path handling.  However, this leakage is still a major issue and since the intro of interning 
-in the serial pools, this has grown from a small trickle in a few tests to some fairly large 
-reports (e.g test47 has 89 leaks reported).  I need to do a full review of de-interning reuse.  
+one of the existing tests fails and after a retest against the PHP test suite this picked up a
+second failure which has been paired down to a new test also failing.  There are also a few known
+memory leaks.
+
+Known errors:
+
+*   There is some issue with context loss on my path substitution algo for constant include paths
+    which results in a ZendEE crash in some circumstances.
+
+*   Some events which trigger a zend_bailout and recovery (e.g. compile errors) result in execution
+    paths which leave dangling cachdb resources.
+
+*   Ditto some leaks occur with inheritence of properties in child classes.  This is discussed 
+    further below. 
+
+=== NOTES ===
+
+compile-time inheritence bindings are being lost on load
+
+
 
 W/E review 14-16 Dec 2012
 =========================
 
-This has pretty much been implemented. The following items are still to do:
+This has pretty much been implemented. The following items are still to do, but work on these is 
+deferred until I again have a version which can run mediaWiki without erroring or leaks on Zend 2.3.
+Ditto integration on Zend 2.4 support.
 
 *   Review all initialisation / shutdown code to ensure that it is properly scoped -- that is per
     request bookends belong in lpc_request.c, per source bookends belong in lpc_source.c. So cache
     bookends are called from per request, pool bookends are called from per source -- except overall
     pool_init / pool_shutdown called from per request.
 
-*   Review logging categories. At the moment basically everything is low-level pool reporting. We
-    need some extra reporting categories for overall per-source and per-request info, plus logging
-    of hrow / catch events.  
+*   Complete the review of logging categories.  At the moment basically most are low-level pool
+    reporting. We need some extra reporting categories for overall per-source and per-request info,
+    plus logging of hrow / catch events.  
 
 *   Add extra logging option to log each opcode/op1.type/op2.type -- need to decide whether to log
     these to a separate debug file. Run against PHP test suite and use o/p to develop note on Opcode
     coverage and Q on APC testing against the PHP test suite.   
-
-*   Formalize the LPC_REF_COPY ((void *) 1) and LPC_REF_AUTOGEN ((void *) 2) usage. Review source
-    code references to (\->|\.)filename\b to see usage cases when the reference is reused.
-
-*   Add conditional opcode handler address replacement with LPC_REF_AUTOGEN. Note this not only
-    increases the compression of the file-based record form, but move to another goal of removing
-    all addressed based references from the cache format so that the cache file can be moved from
-    php build to php build.
 
 *   Develop small reporter scipt to list off cache contents, e.g.
        /opn/bin/php -d lpc.cache_pattern=".*" -d lpc.cache_replacement=".testNN.cache" \
@@ -40,13 +50,76 @@ This has pretty much been implemented. The following items are still to do:
 *   Review regression test automation for php test suite. And how filtering of output records is
     done -- e.g. how site-specfic (pathnames, etc.) error content is surpressed. 
 
-*   (Long term) review how APC handles shallow copy references to SMA storage as a similar approach
-    could enable aggregated object allocation at copy-in. Less emallocs. 
+*   Need to think about refcount usage to bypass current opcode hierachy DTORs. Longer term wish.
 
-Other Module Specific
-=====================
+Module Specific
+===============
+
+php_lpc.c:
+    The only real API call left is lpc_compile_file().  I am really not sure what this brings to the
+    party in LPC, and I've never used it.  Maybe once to discuss with Rasmus later. 
+
+lpc_request.c:
+    At the moment lpc_request_init() is bypasses if the request is stdin (request_fullpath == "-")
+    as sb = NULL.  However this means that a "php -i" bypasses the PER_DIR ini settings, so that the 
+    INI information listing is incomplete. 
+
+    Unwind code from MSHUTDOWN needs to be folded in RSHUTDOWN now that caches and stacks only have
+    a request lifetime.
+
+    The lpc.clear_flag should be set based on the cookie and request parameters; in the meantime
+    default to false.
+
+lpc_copy_source.c:
+
+    The current pool allocation scheme for copy out is optimistic: it does an old_compile_file() 
+    followed by a loop around a zend try/catch bracketed copy-out (which can fail due to serial
+    pool over flow).   Need to review potential side effects to ensure that any are correctly 
+    backed out / recovered.
+
+If the source includes classes with parents then this inheritance is validate using
+    zend_do_inheritance(). This path needs testing.
+
+    This still leaves the class structures in memory so these WILL leak.
+
+lpc_copy_op_array.c:
+
+    This has inherited code paths for handling Internal classes.  Why does these exist?  We'll never
+    cache such classes.
+
+    Work out the interpretation and treatment of the scope field which should point back to the
+    parent class in the case of a method.
+
+    Need to add the new 2,4 functionality for interned strings etc as per "Performance Improvements"
+    RFC.  These and the associated Zend Engine 2.4 macros haven't been debugged yet.
+
+    Check inheritence (or NOT) of private properties by class children.
+ 
+    Raise a bugrep for APC -- It assumes that unknown autoglobals must begin with _. However, this 
+    is only a convention and there is nothing to stop another extensino declaring an autoglobal 
+    without a leading underscore.
+
+    Raise a bugrep for APC -- apc_copy_new_classes() and apc_copy_new_functions() locate the last 
+    few classes / functions to be added by stepping forwards Nold entries.  They should step 
+    backwards N-Nold+1 entries -- far faster in general. 
+
+lpc_copy_class.c
+
+    This currently includes code paths for copying ZEND_INTERNAL_CLASS classes.  I just don't think 
+    that we will ever cache these.
+
+    Step through code path on lines 394 ...
+        if (parent) {
+            dst_cl->parent = *parent;
+            zend_do_inheritance(dst_cl, *parent TSRMLS_PC);
+        }
 
 lpc_cache.c:
+
+    Review the whole issue of when files are open and what needs to added to llists.  In particular
+    when stat testing is done -- can zend_stream_fixup() be called twice on the same handle. Need 
+    to cover all of these code paths.  I am defering this at the mo because I don't want to nest 
+    into this depth just now and have set stat=0 to bypass this for now.
 
     APC has a mininum file age that is cacheable to prevent the caching of a file that is fetched
     which being stored.  It's proably worth disabling the LPC cache if the age is less than 2s say.
@@ -58,30 +131,10 @@ lpc_cache.c:
     logic so that the cache can be rebuilt on a single request. Also at the moment I am not setting 
     the cookie and request parameters to set the clear_flag_set boolean.
 
-lpc_copy_op_array.c:
-
-    Work out the interpretation and treatment of the scope field which should point back to the
-    parent class in the case of a method.
-
-    Need to add the new 2,4 functionality for interned strings etc as per "Performance Improvements"
-    RFC.  These and the associated Zend Engine 2.4 macros haven't been debugged yet.
- 
-    Raise a bugrep for APC -- It assumes that unknown autoglobals must begin with _. However, this 
-    is only a convention and there is nothing to stop another extensino declaring an autoglobal 
-    without a leading underscore.
-
-    Raise a bugrep for APC -- apc_copy_new_classes() and apc_copy_new_functions() locate the last 
-    few classes / functions to be added by stepping forwards Nold entries.  They should step 
-    backwards N-Nold+1 entries -- faster in general. 
-
-lpc_copy_source.c:
-
-    Cf. lpc_cache.c comment on filename sustitution.
-
-    If the source includes classes with parents then this inheritance is validate using
-    zend_do_inheritance(). This path needs testing.
-
-    This still leaves the class structures in memory so these WILL leak.
+    At the moment, if an error occurs resulting in LPC being disabled, then the cache file is closed
+    in mode 'r' -- that is no additions are committed to the file cache.  We may need to adopt a
+    stonger policy of clearing the cache entirely under such circumstances.  Need to think about 
+    this.
 
 lpc_hashtable.c:
     add Zend 2.4 insert interned strings for keys, etc.
@@ -90,32 +143,6 @@ lpc_hashtable.c:
 
     Copy out a new bucket with the deinterred key or inplace key
 
-lpc_request.c:
-    At the moment this fails if the request is stdin (request_fullpath == "-") as sb = NULL. 
-
-    unwind code from MSHUTDOWN needs to be folded in RSHUTDOWN now that caches and stacks only have
-    a request lifetime
-
-php_lpc.c:
-    The only real API call left is lpc_compile_file().  I am really not sure what this brings to the
-    party in LPC.  Maybe once to discuss with Rasmus later. 
-
-=== General Memory Leaks ===
-
-    Nothing major. Typically one or two emalloced strings per included source and emalloced memory
-    is captured at RSHUTDOWN anyway. The challenge is that the op_array data structures are released
-    by the Zend RTS so I've got to work out the path variants to release these safely. Leaving these
-    for RSHUTDOWN sweep up is inelegant and a slight annoyance but doing a double free is fatal.
-
-    Try / catch processing and compile errors in general seem to generate more so need to look at 
-    this further. 
-
-=== Functional Improvements ===
-
-1)  Remove the opline handler from copy-out formats IF this is the default which is looked up 
-    in the zend_opcode_handlers table as a function of the opcode and op1+op2 types.  Removing
-    this redundant field will (i) improve serial format compression, and (ii) mean that the serial
-    format is no longer link version dependent.
 
 === External Bugs Found ===
 
@@ -136,11 +163,27 @@ APC uses PG(include_path) for the include path and it should use INI_STR(include
 Tests that currently fail 
 =========================
 
-Tests 32 42 42b 43 and 47 fail
+Tests 32 and 47 fail, but not materially.  
 
-What I've done is to run LPC against the PHP test suites running each test twice -- once to prime
-the cache and once to use it to load the op arrays, etc. I have copied any that fail -- by abending
-or by producing different output or unexplained errors -- into my own LPC suite then cutting the
-test down further until I've reached a threshold where I am toggling the errors. This is then used
-to analyse and debug the problem. 
+    *   Test 32 fails because the cache-miss compile generates a compiler warning which isn't
+        reissued when the code is loaded from the cache.
 
+    *   Test 47 fails because the debug_print_backtrace() output contains diffferent filenames 
+        (./test47.php vs test47.php).
+
+PHP test suite, all of the 748 tests in the PHP test suite pass save the two from which tests 
+32 and 37 are derived and for the same reason.  
+
+There is also still a smattering of emalloc leakages in addition to these, with tests 13, 32 and 41
+being the examples in the LPC test suite.  These still need tracking down, but in the 
+
+    *   Case of 32 and 41 these relate to the zend_bailout() following a compiler error leaving a
+        few strings to be cleaned up by emalloc rundown. Annoying, but not a high priority.
+
+    *   Test 13 (minimalised to 13a) shows that inherited properties in a derived class are not
+        properly GCCed for a copied-in script.  The issue is related to zend_do_inheritance() and
+        ~ line 2865 the hash_merge of the parent->default_properties
+
+
+=== Other known leaks ===
+When a script change is detected resulting in cache clear, lpc/cachedb dosn't properly GC.  

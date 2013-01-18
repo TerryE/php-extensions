@@ -163,7 +163,7 @@ ZEND_BEGIN_MODULE_GLOBALS(lpc)
     HashTable   intern_hash;            /* used to create interned strings */
     zend_uchar **interns;               /* used on copy-in and out, array of LPC interns[]  */
     uint        intern_cnt;             /* used on copy-in and out, count of LPC interns[]  */
-
+    php_stream *opcode_logger;           /* used for debug logging */
 
 ZEND_END_MODULE_GLOBALS(lpc)
 
@@ -200,11 +200,13 @@ extern int lpc_reserved_offset;
 # define LPC_DBG_RELO   (1<<1)  /* Relocation outside pool */
 # define LPC_DBG_RELC   (1<<2)  /* Relocation Address check */
 # define LPC_DBG_RELR   (1<<3)  /* Missed relocation report */
-# define LPC_DBG_RELD   (1<<4)  /* Duplicate relocation call */
-# define LPC_DBG_LOAD   (1<<5)  /* Load/Unload Info */
-# define LPC_DBG_ENTER  (1<<6)  /* Print out function enty audit */
-# define LPC_DBG_COUNTS (1<<7)  /* Print out function summary counts */
-# define LPC_DBG_FILES  (1<<8)  /* Print out any file requests */
+# define LPC_DBG_LOAD   (1<<4)  /* Load/Unload Info */
+# define LPC_DBG_ENTER  (1<<5)  /* Print out function enty audit */
+# define LPC_DBG_COUNTS (1<<6)  /* Print out function summary counts */
+# define LPC_DBG_FILES  (1<<7)  /* Print out any file requests */
+# define LPC_DBG_INTN   (1<<8)  /* Duplicate intern allocation */
+# define LPC_DBG_ZVAL   (1<<9)  /* ZVAL tracking */
+# define LPC_DBG_LOG_OPCODES (1<<10)  /* Opcode loggin */
 
 #define LPC_POOL_OVERFLOW 1
 
@@ -232,6 +234,8 @@ extern int lpc_reserved_offset;
 
 # define LPC_SERIAL_INTERN(id) ((void *)(LPC_SERIAL_INTERNED_VALUE + id))
 # define LPC_SERIAL_INTERNED_ID(ip) ((uint) ((size_t)(ip)&LPC_SERIAL_INTERNED_MASK))
+
+# define LPC_ALLOCATE_TAG ((void *)1)
 
 #endif /* LPC_H */
 /*

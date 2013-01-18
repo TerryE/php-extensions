@@ -35,7 +35,7 @@
 /* {{{ zend_op_array */
 /* keep track of vld_dump_oparray() signature */
 void dump(zend_op_array *op_array TSRMLS_DC)
-{ENTER(dump)
+{
 #ifdef LPC_DEBUG
     void (*dump_op_array) (zend_op_array * TSRMLS_DC) = 
         lpc_resolve_symbol("vld_dump_oparray" TSRMLS_CC);
@@ -104,7 +104,7 @@ int lpc_debug_enter(char *s)
 "_lpc_pool_strncmp", "_lpc_pool_memcpy", "lpc_pool_storage", "lpc_pool_create",
 "lpc_pool_serialize","lpc_pool_destroy", "make_pool_rbvec", "missed_tag_check", "relocate_pool",
 "generate_interned_strings", "pool_compress", "pool_uncompress",
-"*** lpc_request.c ***", "lpc_set_compile_hook", "lpc_module_shutdown", "lpc_deactivate",
+"*** lpc_request.c ***", "lpc_set_compile_hook", "lpc_module_shutdown", 
 "add_filter_delims", "lpc_request_init", "lpc_request_shutdown", "lpc_dtor_context", 
 "*** lpc_string.c", "dummy_interned_strings_snapshot_for_php",
 "dummy_interned_strings_restore_for_php", "lpc_new_interned_string", "lpc_copy_internal_strings",
