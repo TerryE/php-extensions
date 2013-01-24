@@ -1,5 +1,5 @@
+TEST one class with 1 static and one public function
 <?php
-#one class with 1 static and one public function
 class TestClass {
 	private static $a = ' ';
 	private $b;

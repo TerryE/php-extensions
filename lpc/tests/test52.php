@@ -1,7 +1,4 @@
-*** Derived from PHP test script output/ob_implicit_flush_variation_001 ***
---TEST--
-Test ob_implicit_flush() function : usage variation 
---FILE--
+TEST ob_implicit_flush() function : usage variation 
 <?php
 /* Prototype  : void ob_implicit_flush([int flag])
  * Description: Turn implicit flush on/off and is equivalent to calling flush() after every output call 

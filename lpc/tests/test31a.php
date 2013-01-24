@@ -1,10 +1,8 @@
---TEST--
-Bug #23951 (Defines not working in inherited classes)
---FILE--
+TEST Minimal inherited class
 <?php
-class A {
-    public $a_var = array('foo1_value', 'foo2_value');
-}
+#if (1) { 
+  class A { static $a_var = 'foo'; }
+#   }
 class B extends A {}
 ?>
 ===DONE===

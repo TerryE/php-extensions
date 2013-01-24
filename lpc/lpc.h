@@ -12,18 +12,12 @@
   | obtain it through the world-wide-web, please send a note to          |
   | license@php.net so we can mail you a copy immediately.               |
   +----------------------------------------------------------------------+
-  | Authors: Daniel Cowgill <dcowgill@communityconnect.com>              |
-  |          George Schlossnagle <george@omniti.com>                     |
-  |          Rasmus Lerdorf <rasmus@php.net>                             |
-  |          Arun C. Murthy <arunc@yahoo-inc.com>                        |
-  |          Gopal Vijayaraghavan <gopalv@yahoo-inc.com>                 |
+  | Authors: Terry Ellison <Terry@ellisons.org.uk                        |
   +----------------------------------------------------------------------+
 
-   This software was contributed to PHP by Community Connect Inc. in 2002
-   and revised in 2005 by Yahoo! Inc. to add support for PHP 5.1.
-   Future revisions and derivatives of this source code must acknowledge
-   Community Connect Inc. as the original contributor of this module by
-   leaving this note intact in the source code.
+   This software includes content derived from the APC extension which was
+   initially contributed to PHP by Community Connect Inc. in 2002 and revised 
+   in 2005 by Yahoo! Inc. See README for further details.
 
    All other licensing and usage conditions are those of the PHP Group.
 */
@@ -159,11 +153,11 @@ ZEND_BEGIN_MODULE_GLOBALS(lpc)
     zend_uint   storage_quantum;        /* quantum for pool buffer allocation */
     zend_bool   reuse_serial_buffer;    /* if true then the serial buffer persists over the request */
     zend_uint   compression_algo;       /* 0 = none; 1 = RLE; 2 = GZ */
-    zend_uchar  bailout_status;         /* used to sentence known throws from bailouts */
+    JMP_BUF    *bailout;                /* used to sentence known throws from bailouts */
     HashTable   intern_hash;            /* used to create interned strings */
     zend_uchar **interns;               /* used on copy-in and out, array of LPC interns[]  */
     uint        intern_cnt;             /* used on copy-in and out, count of LPC interns[]  */
-    php_stream *opcode_logger;           /* used for debug logging */
+    php_stream *opcode_logger;          /* used for debug logging */
 
 ZEND_END_MODULE_GLOBALS(lpc)
 
@@ -236,6 +230,55 @@ extern int lpc_reserved_offset;
 # define LPC_SERIAL_INTERNED_ID(ip) ((uint) ((size_t)(ip)&LPC_SERIAL_INTERNED_MASK))
 
 # define LPC_ALLOCATE_TAG ((void *)1)
+
+#if defined(ZEND_ENGINE_2_4)
+#  define LPC_MAX_OPCODE     156       /* 3 new opcodes in 5.4 - separate, bind_trais, add_trait */
+#elif defined(ZEND_ENGINE_2_3)
+#  define LPC_MAX_OPCODE     153       /* 3 new opcodes in 5.3 - unused, lambda, jmp_set */
+# else
+#  define LPC_MAX_OPCODE     150
+# endif
+
+/*
+ * The LPC bailout macros are effectively cloned from the Zend equivalents.  The Zend bailout 
+ * macros resets the execution status and execution context, but in the LPC case for pool overflow, 
+ * the code makes a soft recovery that enables execution to continue. 
+ */ 
+#define lpc_try \
+    { \
+        JMP_BUF *__orig_bailout = LPCG(bailout); \
+        JMP_BUF  __bailout; \
+        int      __jump_status; \
+        LPCG(bailout) = &__bailout; \
+        __jump_status = SETJMP(__bailout); \
+        if (__jump_status==0) { 
+#define lpc_catch \
+	    } else if (__jump_status==1) { \
+            LPCG(bailout) = __orig_bailout;
+#define lpc_end_try() \
+	    } else { \
+            LPCG(bailout) = __orig_bailout; \
+            zend_throw(); \
+        } \
+	    LPCG(bailout) = __orig_bailout; \
+    }
+#define lpc_throw_storage_overflow()	LONGJMP(*LPCG(bailout), 1)
+
+
+/* {{{ lpc_vm_get_opcode_handler
+       This is a copy of Zend/zend_vm_execute.c:zend_vm_get_opcode_handler() */
+#define _LPC_CONST_CODE  0
+#define _LPC_TMP_CODE    1
+#define _LPC_VAR_CODE    2
+#define _LPC_UNUSED_CODE 3
+#define _LPC_CV_CODE     4
+extern const int lpc_vm_decode[];
+static zend_always_inline opcode_handler_t lpc_vm_get_opcode_handler(zend_op* op)
+{
+		return zend_opcode_handlers[op->opcode * 25 + lpc_vm_decode[op->op1.op_type] * 5 + lpc_vm_decode[op->op2.op_type]];
+}
+/* }}} */
+
 
 #endif /* LPC_H */
 /*

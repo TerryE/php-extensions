@@ -1,5 +1,5 @@
+TEST Minimum - 1 function, no classes
 <?php
-# Minimum - 1 function, no classes
 function US($y) {
     return $y == 0 ? "America" : "Canada";
 }

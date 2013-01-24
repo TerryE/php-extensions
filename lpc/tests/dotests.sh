@@ -4,6 +4,7 @@ clean () {
 	rm -f .test*.cache {test,dd}*.php~
 	rm -f test*.{out,err,sum}[12]
     test -d php5 && rm -R php5/*
+    for d in $(cd ~/work/php5; find tests -type d);do rm ~/work/php5/$d/.*.cache; done
     popd
 }
 
@@ -11,9 +12,10 @@ dotest() {
     file=$1
     baseDir=$2
     baseOP=$3
-    t=${file%%.*}
+    t=${file%.ph*}
 
-    echo -n "$baseDir - $t " 
+    title=$(head -1 $baseDir/$file| cut -b 6-)
+    echo -n "$baseDir - $t: $title: " 
     test -f $baseDir/.$t.cache && rm $baseDir/.$t.cache
 	SKIP_SLOW_TESTS=1 /opt/bin/php $OPT $baseDir/$file 1> $baseOP/$t.out1 2> $baseOP/$t.err1
 	SKIP_SLOW_TESTS=1 /opt/bin/php $OPT $baseDir/$file 1> $baseOP/$t.out2 2> $baseOP/$t.err2
@@ -43,8 +45,8 @@ dotest() {
 
 run() {
 	rm -f .test*.cache {test,dd}*.php~
-	rm -f test*.{out,err}[12]
- 	for t in t*.php; do
+	rm -f test*.{out,err}[12] test*.diff
+ 	for t in test*.php; do
         dotest $t . .
 	done
 }

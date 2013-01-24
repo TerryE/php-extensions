@@ -1,4 +1,4 @@
-*** Derived from PHP test script classes/constants_basic_001 ***
+TEST Basic class constants
 <?php
   define('DEFINED', 1234);
   $def = 456;

@@ -1,21 +1,6 @@
---TEST--
-Ensure exceptions are handled properly when thrown in a statically declared __call.  
---FILE--
+TEST Garbage collection on compile-time bound inheritance of a static function  
 <?php
-class A {
-	function __call($strMethod, $arrArgs) {
-		@var_dump($this);
-		throw new Exception;
-		echo "You should not see this";
-	}
-}
-$a = new A();
-
-echo "---> Invoke __call via simple method call.\n";
-try {
-	$a->unknown();
-} catch (Exception $e) {
-	echo "Exception caught OK; continuing.\n";
-}
+if (1) { class A { static function fred() {} } }
+class B extends A { }
 ?>
 ==DONE==

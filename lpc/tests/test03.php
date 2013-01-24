@@ -1,3 +1,4 @@
+TEST one op_array and an eval
 <?php
 $x=1;
 $y=TRUE;
@@ -11,4 +12,3 @@ eval("\$GLOBALS['test']=\$zz;");
 echo count($test), "\n";
 ?>
 ===DONE===
-

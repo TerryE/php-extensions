@@ -12,16 +12,12 @@
   | obtain it through the world-wide-web, please send a note to          |
   | license@php.net so we can mail you a copy immediately.               |
   +----------------------------------------------------------------------+
-  | Authors: Daniel Cowgill <dcowgill@communityconnect.com>              |
-  |          Arun C. Murthy <arunc@yahoo-inc.com>                        |
-  |          Gopal Vijayaraghavan <gopalv@yahoo-inc.com>                 |
+  | Authors: Terry Ellison <Terry@ellisons.org.uk                        |
   +----------------------------------------------------------------------+
 
-   This software was contributed to PHP by Community Connect Inc. in 2002
-   and revised in 2005 by Yahoo! Inc. to add support for PHP 5.1.
-   Future revisions and derivatives of this source code must acknowledge
-   Community Connect Inc. as the original contributor of this module by
-   leaving this note intact in the source code.
+   This software includes content derived from the APC extension which was
+   initially contributed to PHP by Community Connect Inc. in 2002 and revised 
+   in 2005 by Yahoo! Inc. See README for further details.
 
    All other licensing and usage conditions are those of the PHP Group.
 */
@@ -89,10 +85,10 @@ int lpc_debug_enter(char *s)
 "lpc_resolve_symbol",
 "*** lpc_cache.c", "lpc_cache_create", "lpc_cache_destroy", "lpc_cache_clear", "lpc_cache_insert",
 "lpc_cache_retrieve", "lpc_cache_make_key", "lpc_cache_free_key", "lpc_cache_info", 
-"*** lpc_copy_class.c", "lpc_copy_class_entry", "lpc_copy_new_classes", "lpc_install_classes",
-"copy_property_info", "check_copy_default_property", "fixup_property_info",
-"check_copy_property_info", "check_copy_static_member", "check_copy_constant", "fixup_method",
-"check_copy_method", 
+"*** lpc_copy_class.c", "lpc_copy_new_classes", "lpc_install_classes", "lpc_copy_class_entry",
+"copy_property_info", "is_local_method", "is_local_default_property", "is_local_property_info",
+"is_local_static_member", "is_local_constant", "fixup_denormalised_methods",
+"fixup_property_info_ce_field",
 "*** lpc_copy_function.c", "lpc_copy_function", "lpc_copy_new_functions", "lpc_install_functions",
 "copy_zval_out", "copy_opcodes_out", "lpc_copy_op_array", "lpc_copy_zval_ptr", 
 "*** lpc_copy_source.c", "lpc_compile_file", "build_cache_entry", "cached_compile",
@@ -112,9 +108,8 @@ int lpc_debug_enter(char *s)
 "*** php_lpc.c", "PHP_MINFO_FUNCTION", "PHP_GINIT_FUNCTION", "PHP_GSHUTDOWN_FUNCTION",
 "PHP_RINIT_FUNCTION", "PHP_RSHUTDOWN_FUNCTION", "PHP-lpc_cache_info", "PHP-lpc_clear_cache",
 "PHP-lpc_compile_file"};
-    int stack_depth = get_stack_depth();
+    uint stack_depth,i,ndx,found;
     const char fill[] = "                                                                                                    ";
-    uint i,ndx,found;
     TSRMLS_FETCH();
 
 #define find(str,n,found) \
@@ -132,7 +127,8 @@ int lpc_debug_enter(char *s)
     } while (0)
     if (!(LPCG(debug_flags)&LPC_DBG_ENTER)) {  /* */
         return 0;
-    }    
+    }
+    stack_depth = get_stack_depth();
     if (n_func_probe == 0) {
         for (i = 0; i<(sizeof(module)/sizeof(char *)); i++) {
             find(module[i],ndx,found);

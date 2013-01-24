@@ -12,13 +12,14 @@
   | obtain it through the world-wide-web, please send a note to          |
   | license@php.net so we can mail you a copy immediately.               |
   +----------------------------------------------------------------------+
-  | Authors: Daniel Cowgill <dcowgill@communityconnect.com>              |
-  |          Rasmus Lerdorf <rasmus@php.net>                             |
+  | Authors: Terry Ellison <Terry@ellisons.org.uk                        |
   +----------------------------------------------------------------------+
 
-   This software was derived from the APC extension which was initially 
-   contributed to PHP by Community Connect Inc. in 2002 and revised in 2005 
-   by Yahoo! Inc. See README for further details.
+   This software includes content derived from the APC extension which was
+   initially contributed to PHP by Community Connect Inc. in 2002 and revised 
+   in 2005 by Yahoo! Inc. See README for further details.
+
+   All other licensing and usage conditions are those of the PHP Group.
 */ 
 
 #ifndef LPC_CACHE_H
@@ -162,6 +163,12 @@ extern void lpc_cache_insert(lpc_cache_key_t *key, zend_uchar *compressed_buffer
  * Give information on the cache content
  */
 extern zval* lpc_cache_info(zend_bool limited TSRMLS_DC);
+
+/*
+ * Wrapper around the ZEND_INCLUDE_OR_EVAL instruction handler.  This is part of the 
+ * Cache module because of its close coupling to the cache functions.
+ */
+extern int ZEND_FASTCALL lpc_include_or_eval_handler(ZEND_OPCODE_HANDLER_ARGS);
 
 /* }}} */
 #endif

@@ -15,9 +15,9 @@
   | Authors: Terry Ellison <Terry@ellisons.org.uk>                       |
   +----------------------------------------------------------------------+
 
-   This software was derived from the APC extension which was initially 
-   contributed to PHP by Community Connect Inc. in 2002 and revised in 2005 
-   by Yahoo! Inc. See README for further details.
+   This software includes content derived from the APC extension which was
+   initially contributed to PHP by Community Connect Inc. in 2002 and revised 
+   in 2005 by Yahoo! Inc. See README for further details.
  
    All other licensing and usage conditions are those of the PHP Group.
 */
@@ -34,29 +34,16 @@ void lpc_copy_function(zend_function* dst, zend_function* src, lpc_pool* pool)
    /*
     * The union zend_function is defined in zend_compile.h and the first group of fields is common 
     * to all. This includes a type selector with one of the following swithed values and the three
-    * pointers: function_name, (ce) scope, prototype and arg_info.  In the internal/overloaded
-    * functions (e.g. inherited methods in a class extending a built-in class, a shallow copy can 
-    * take place; otherwise they are deep copied by the copy_op_array. 
+    * pointers: function_name, (ce) scope, prototype and arg_info. User functions are deep-copy and
+    * everything else is by reference.  Also back out any fields set by compile-time 
+    * zend_do_inheritance() as this will be done at load or runtime anyway.
     */
-    switch (src->type) {
-    case ZEND_INTERNAL_FUNCTION:        
-    case ZEND_OVERLOADED_FUNCTION:
-        dst->op_array = src->op_array;
-        break;
-
-    case ZEND_USER_FUNCTION:
-    case ZEND_EVAL_CODE:
+    if (src->type == ZEND_USER_FUNCTION) {
         lpc_copy_op_array(&dst->op_array, &src->op_array, pool);
-        break;
-
-    default:
-        assert(0);
+    } else {
+        dst->op_array = src->op_array;
     }
-   /*
-    * If a method is flagged ZEND_ACC_IMPLEMENTED_ABSTRACT then it MUST have a prototype defined.
-    * However, as zend_do_inheritance sets this property correctly, the flag can be cleared here
-    * and the prototype nulled. 
-    */
+
     dst->common.fn_flags = src->common.fn_flags & (~ZEND_ACC_IMPLEMENTED_ABSTRACT);
     dst->common.prototype = NULL;
 }
@@ -64,10 +51,15 @@ void lpc_copy_function(zend_function* dst, zend_function* src, lpc_pool* pool)
 
 /* {{{ lpc_copy_new_functions 
     Deep copy the last set of functions added during the last compile from the CG(function_table) */
-void lpc_copy_new_functions(lpc_function_t* dst_array, uint count, lpc_pool* pool)
+void lpc_copy_new_functions(lpc_function_t** pdst_array, uint count, lpc_pool* pool)
 {ENTER(lpc_copy_new_functions)
     uint i;
-    TSRMLS_FETCH_FROM_POOL();
+    lpc_function_t* dst_array;
+    TSRMLS_FETCH_FROM_POOL()
+
+    pool_alloc(*pdst_array, sizeof(lpc_function_t) * count);
+    dst_array =*pdst_array;
+
    /*
     * The functions table can typically have ~1K entries and the source only adds a few of these, so
     * it's better to count back count-1 functions from the end of the function table.

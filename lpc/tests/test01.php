@@ -1,3 +1,4 @@
+TEST one op_array some logic and built-in calls; no user classes or functions
 <?php
 $x=1;
 $y=TRUE;

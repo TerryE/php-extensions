@@ -1,5 +1,4 @@
-*** Derived from PHP test script lang/bug22592 ***
-Bug #22592 (cascading assignments to strings with curly braces broken)
+TEST cascading assignments to strings with curly braces broken
 <?php
 function error_hdlr($errno, $errstr) {
 	echo "[$errstr]\n";

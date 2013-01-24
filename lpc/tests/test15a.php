@@ -1,4 +1,4 @@
-Test 15a -- exercise compile-time vs runtime binding of class inheritance
+TEST Exercise compile-time vs runtime binding of class inheritance
 <?php
 
 # Bound at compile time

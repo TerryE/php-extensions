@@ -15,9 +15,9 @@
   | Authors: Terry Ellison <Terry@ellisons.org.uk>                       |
   +----------------------------------------------------------------------+
 
-   This software was derived from the APC extension which was initially 
-   contributed to PHP by Community Connect Inc. in 2002 and revised in 2005 
-   by Yahoo! Inc. See README for further details.
+   This software includes content derived from the APC extension which was
+   initially contributed to PHP by Community Connect Inc. in 2002 and revised 
+   in 2005 by Yahoo! Inc. See README for further details.
 
    All other licensing and usage conditions are those of the PHP Group.
 */
@@ -118,8 +118,8 @@ static void copy_zval_out(zval* dst, const zval* src, lpc_pool* pool)
         zend_bailout();
     }
 
-   /* code uses refcount=2 for consts */
-    Z_SET_REFCOUNT_P(dst, Z_REFCOUNT_P((zval*)src));
+//    Z_SET_REFCOUNT_P(dst, Z_REFCOUNT_P((zval*)src));
+    Z_SET_REFCOUNT_P(dst, 1);
     Z_SET_ISREF_TO_P(dst, Z_ISREF_P((zval*)src));
     Z_TYPE_P(dst) = Z_TYPE_P((zval*)src);
 
@@ -216,39 +216,6 @@ static zend_always_inline void copy_zval_in(zval* dst, const zval* src, lpc_pool
 }
 /* }}} */
 
-/* {{{ zend_vm_get_opcode_handler
-       This is a copy of Zend/zend_vm_execute.c:zend_vm_get_opcode_handler() */
-#define _CONST_CODE  0
-#define _TMP_CODE    1
-#define _VAR_CODE    2
-#define _UNUSED_CODE 3
-#define _CV_CODE     4
-static const int zend_vm_decode[] = {
-	_UNUSED_CODE, /* 0              */
-	_CONST_CODE,  /* 1 = IS_CONST   */
-	_TMP_CODE,    /* 2 = IS_TMP_VAR */
-	_UNUSED_CODE, /* 3              */
-	_VAR_CODE,    /* 4 = IS_VAR     */
-	_UNUSED_CODE, /* 5              */
-	_UNUSED_CODE, /* 6              */
-	_UNUSED_CODE, /* 7              */
-	_UNUSED_CODE, /* 8 = IS_UNUSED  */
-	_UNUSED_CODE, /* 9              */
-	_UNUSED_CODE, /* 10             */
-	_UNUSED_CODE, /* 11             */
-	_UNUSED_CODE, /* 12             */
-	_UNUSED_CODE, /* 13             */
-	_UNUSED_CODE, /* 14             */
-	_UNUSED_CODE, /* 15             */
-	_CV_CODE      /* 16 = IS_CV     */
-};
-
-static zend_always_inline opcode_handler_t zend_vm_get_opcode_handler(zend_op* op)
-{
-		return zend_opcode_handlers[op->opcode * 25 + zend_vm_decode[op->op1.op_type] * 5 + zend_vm_decode[op->op2.op_type]];
-}
-/* }}} */
-
 #define COPY_FLD(fld) dst_zo->fld = src_zo->fld
 #define COPY_ZNODE(node) copy_znode_out(&dst_zo->node, &src_zo->node,pool)
 #define IS_AG_THEN_SET_FLAG(initial,var) \
@@ -279,10 +246,10 @@ static void copy_opcodes_out(zend_op_array *dst, zend_op_array *src, lpc_pool* p
 #ifdef LPC_DEBUG
     if (LPCGP(debug_flags)&LPC_DBG_LOG_OPCODES) 
         php_stream_printf(LPCG(opcode_logger) TSRMLS_CC, "%u,%u,%u\n", src_zo->opcode,
-                          zend_vm_decode[src_zo->op1.op_type], zend_vm_decode[src_zo->op2.op_type]);
+                          lpc_vm_decode[src_zo->op1.op_type], lpc_vm_decode[src_zo->op2.op_type]);
 #endif
 
-       if( src_zo->handler == zend_vm_get_opcode_handler(src_zo)) {
+       if( src_zo->handler == lpc_vm_get_opcode_handler(src_zo)) {
             dst_zo->handler = NULL;
         }
 
@@ -424,7 +391,6 @@ void lpc_copy_op_array(zend_op_array* dst, zend_op_array* src, lpc_pool* pool)
  *
 TODO: Add processing of literals and interned strings for Zend 2.4
  */ 
-
     /* start with a bitwise copy of the array */
     memcpy(dst, src, sizeof(*src));
 
@@ -441,8 +407,16 @@ TODO: Add processing of literals and interned strings for Zend 2.4
         POOL_ENSTRDUP(dst_ai->name, src_ai->name);
         POOL_ENSTRDUP(dst_ai->class_name, src_ai->class_name);
     }
- 
-    POOL_MEMCPY_FLD(refcount, sizeof(zend_uint));
+   /*
+    * As op_arrays are never deep copied in LPC, the refcount is always 1.
+    */
+//    POOL_MEMCPY_FLD(refcount, sizeof(zend_uint));
+    if (is_copy_out()) {
+        dst->refcount = NULL;
+    } else {
+        pool_alloc(dst->refcount, sizeof(zend_uint));
+        *dst->refcount = 1;
+    }
 
 #ifdef ZEND_ENGINE_2_1 /* PHP 5.1 */
     POOL_MEMCPY_FLD(vars, sizeof(src->vars[0]) * src->last_var);
@@ -520,7 +494,7 @@ TODO: Add processing of literals and interned strings for Zend 2.4
              src_zo++, dst_zo++) {
 
         if( src_zo->handler == NULL) {
-            dst_zo->handler = zend_vm_get_opcode_handler(src_zo);
+            dst_zo->handler = lpc_vm_get_opcode_handler(src_zo);
         }
 
             zend_uchar opcode_flags = opcode_table[dst_zo->opcode];

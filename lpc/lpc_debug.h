@@ -12,16 +12,12 @@
   | obtain it through the world-wide-web, please send a note to          |
   | license@php.net so we can mail you a copy immediately.               |
   +----------------------------------------------------------------------+
-  | Authors: Daniel Cowgill <dcowgill@communityconnect.com>              |
-  |          Arun C. Murthy <arunc@yahoo-inc.com>                        |
-  |          Gopal Vijayaraghavan <gopalv@yahoo-inc.com>                 |
+  | Authors: Terry Ellison <Terry@ellisons.org.uk                        |
   +----------------------------------------------------------------------+
 
-   This software was contributed to PHP by Community Connect Inc. in 2002
-   and revised in 2005 by Yahoo! Inc. to add support for PHP 5.1.
-   Future revisions and derivatives of this source code must acknowledge
-   Community Connect Inc. as the original contributor of this module by
-   leaving this note intact in the source code.
+   This software includes content derived from the APC extension which was
+   initially contributed to PHP by Community Connect Inc. in 2002 and revised 
+   in 2005 by Yahoo! Inc. See README for further details.
 
    All other licensing and usage conditions are those of the PHP Group.
 */

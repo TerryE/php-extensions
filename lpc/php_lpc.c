@@ -12,15 +12,12 @@
   | obtain it through the world-wide-web, please send a note to          |
   | license@php.net so we can mail you a copy immediately.               |
   +----------------------------------------------------------------------+
-  | Authors: Daniel Cowgill <dcowgill@communityconnect.com>              |
-  |          Rasmus Lerdorf <rasmus@php.net>                             |
+  | Authors: Terry Ellison <Terry@ellisons.org.uk                        |
   +----------------------------------------------------------------------+
 
-   This software was contributed to PHP by Community Connect Inc. in 2002
-   and revised in 2005 by Yahoo! Inc. to add support for PHP 5.1.
-   Future revisions and derivatives of this source code must acknowledge
-   Community Connect Inc. as the original contributor of this module by
-   leaving this note intact in the source code.
+   This software includes content derived from the APC extension which was
+   initially contributed to PHP by Community Connect Inc. in 2002 and revised 
+   in 2005 by Yahoo! Inc. See README for further details.
 
    All other licensing and usage conditions are those of the PHP Group.
 */
@@ -40,6 +37,7 @@
 #include "ext/standard/info.h"
 #include "ext/standard/file.h"
 #include "ext/standard/md5.h"
+#include "Zend/zend_vm_opcodes.h"
 
 /* {{{ PHP_FUNCTION declarations */
 PHP_FUNCTION(lpc_cache_info);
@@ -164,20 +162,38 @@ static PHP_GSHUTDOWN_FUNCTION(lpc)
 }
 /* }}} */
 
+#define OPCODE_TABLE_SIZE 25*LPC_MAX_OPCODE+26
+static opcode_handler_t *old_opcode_handler_ptr = NULL;
+static opcode_handler_t opcode_handlers[OPCODE_TABLE_SIZE];
+
 /* {{{ PHP_MINIT_FUNCTION(lpc) */
 static PHP_MINIT_FUNCTION(lpc)
 {
     zend_extension dummy_ext;
-    lpc_reserved_offset = zend_get_resource_handle(&dummy_ext); 
+    int            i;
+    lpc_reserved_offset     = zend_get_resource_handle(&dummy_ext); 
 
-    LPCG(cache_by_default) = 1;
-    LPCG(canonicalize) = 1;
+    LPCG(cache_by_default)  = 1;
+    LPCG(canonicalize)      = 1;
     LPCG(sapi_request_time) = (time_t) sapi_get_request_time(TSRMLS_C);
 
     REGISTER_INI_ENTRIES();
 
     if (INI_INT("lpc.enabled") && (!LPCG(initialized))) {
         lpc_module_init(module_number TSRMLS_CC);
+        /*
+         * Intercept all ZEND_INCLUDE_OR_EVAL instructions with LPCs own handler.  This copy / 
+         * mod / overwrite pointer blows away 30K, but is atomic and avoids patching an internal
+         * static constant Zend datastructure.
+         */ 
+        memcpy(opcode_handlers, zend_opcode_handlers, sizeof(opcode_handlers));
+        for(i = 0; i < 25; i++) {
+            if ((i/5) != _LPC_UNUSED_CODE) { /* op1 must be specified so skip unused */
+//////not yet                opcode_handlers[(ZEND_INCLUDE_OR_EVAL*25) + i] = lpc_include_or_eval_handler; 
+            }
+        }
+        old_opcode_handler_ptr = zend_opcode_handlers;
+        zend_opcode_handlers   = opcode_handlers;
     }
 
     return SUCCESS;
@@ -191,6 +207,9 @@ static PHP_MSHUTDOWN_FUNCTION(lpc)
         lpc_module_shutdown(TSRMLS_C);
     }
     UNREGISTER_INI_ENTRIES();
+    if (!old_opcode_handler_ptr) {
+        zend_opcode_handlers = old_opcode_handler_ptr;
+    }
     return SUCCESS;
 }
 /* }}} */

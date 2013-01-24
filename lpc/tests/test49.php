@@ -1,9 +1,4 @@
-*** Derived from PHP test script lang/error_2_exception_001 ***
---TEST--
-ZE2 errors caught as exceptions
---SKIPIF--
-<?php if (version_compare(zend_version(), '2.0.0-dev', '<')) die('skip ZendEngine 2 needed'); ?>
---FILE--
+TEST  errors caught as exceptions
 <?php
 
 class MyException extends Exception {

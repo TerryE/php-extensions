@@ -1,5 +1,4 @@
-*** Derived from PHP test script lang/include_variation2 ***
-Including a file in the current script directory from an included function
+TEST Minimal including a file in the current script directory from an included function
 <?php
 $fred=100;
 echo "Include path = ", get_include_path(), "\n";

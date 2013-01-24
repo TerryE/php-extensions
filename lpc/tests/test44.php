@@ -1,5 +1,4 @@
-*** Derived from PHP test script lang/038 ***
-Convert warnings to exceptions
+TEST Convert warnings to exceptions
 <?php
 
 class MyException extends Exception
@@ -32,6 +31,4 @@ catch (Exception $e)
 }
 
 ?>
-===DONE===
-<?php exit(0); ?>
- 
+===DONE=== 

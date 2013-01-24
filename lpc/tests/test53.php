@@ -1,5 +1,4 @@
-*** Derived from PHP test script output/ob_start_basic_unerasable_002 ***
-ob_start(): Ensure unerasable buffer cannot be erased by ob_clean(), ob_end_clean() or ob_end_flush().
+TEST ob_start(): Ensure unerasable buffer cannot be erased by ob_clean(), ob_end_clean() or ob_end_flush().
 <?php
 function callback($string) {
 	static $callback_invocations;

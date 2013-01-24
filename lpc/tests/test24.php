@@ -1,3 +1,4 @@
+TEST one required class
 <?php
 require "dd1.php";
 class X {

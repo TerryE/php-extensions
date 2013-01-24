@@ -1,5 +1,4 @@
-*** Derived from PHP test script lang/039 ***
-Generate Debug reloc_bvec error
+TEST Generate Debug reloc_bvec error
 <?php
 class MyException extends Exception {}
 

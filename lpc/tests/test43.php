@@ -1,11 +1,10 @@
-*** Derived from PHP test script func/010 ***
+TEST bypasses: Derived from PHP test script func/010
 function with many parameters
-<?php
+<?php echo "===DONE===\n"; exit;
 @unlink(dirname(__FILE__).'/010-file.php');
 // the stack size + some random constant
 $boundary = 64*1024;
 $limit    = $boundary+42;
-echo "===DONE===\n";exit;             ///////////////////// Temp 'cos this is a dog to run
 
 function test($a,$b)
 {

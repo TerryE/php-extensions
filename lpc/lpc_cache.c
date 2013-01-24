@@ -12,16 +12,13 @@
   | obtain it through the world-wide-web, please send a note to          |
   | license@php.net so we can mail you a copy immediately.               |
   +----------------------------------------------------------------------+
-  | Authors: Daniel Cowgill <dcowgill@communityconnect.com>              |
-  |          Rasmus Lerdorf <rasmus@php.net>                             |
-  |          Arun C. Murthy <arunc@yahoo-inc.com>                        |
-  |          Gopal Vijayaraghavan <gopalv@yahoo-inc.com>                 |
+  | Authors: Terry Ellison <Terry@ellisons.org.uk                        |
   +----------------------------------------------------------------------+
 
-   This software was derived from the APC extension which was initially 
-   contributed to PHP by Community Connect Inc. in 2002 and revised in 2005 
-   by Yahoo! Inc. See README for further details.
- 
+   This software includes content derived from the APC extension which was
+   initially contributed to PHP by Community Connect Inc. in 2002 and revised 
+   in 2005 by Yahoo! Inc. See README for further details.
+
    All other licensing and usage conditions are those of the PHP Group.
 */
 
@@ -155,10 +152,6 @@ zend_bool lpc_cache_create(uint *max_module_len TSRMLS_DC)
             Z_LVAL_PP(zmtime) == r_cxt->request_mtime &&
             Z_LVAL_PP(zfilesize) == r_cxt->request_filesize &&
             !r_cxt->clear_flag_set) {
-
-            if (zcomp_algo) {
-                LPCG(compression_algo) = Z_LVAL_PP(zcomp_algo); /* Use the DB ver of the comp algo */
-            }
            /*
             * The cache is OK to use so loop over the remaining list array setting up zle to
             * enumerate the elements of: 
@@ -166,7 +159,6 @@ zend_bool lpc_cache_create(uint *max_module_len TSRMLS_DC)
             * and creating a new 
             *     index = array( filename=>array(len, mtime, filesize, pool_len), ... ) 
             */
-
             for (hash_next(hlist); hash_get(hlist, zle) == SUCCESS; hash_next(hlist)) {
                 zval **zfilename, /* **zzlen, */ **zlen, **zmetadata;
 
@@ -186,9 +178,17 @@ zend_bool lpc_cache_create(uint *max_module_len TSRMLS_DC)
 
                 hash_add(hindex,Z_STRVAL_PP(zfilename),zie);
             }
+
+            LPCG(compression_algo) = Z_LVAL_PP(zcomp_algo); /* Use the DB ver of the comp algo */
+ 
         } else {
-            /* There is a mismatch so unlink the cache and turn of caching for the remainder
-             * of this request.  The next will rebuild a new cache. */
+           /*
+            * There is a mismatch so unlink the cache and turn off caching for the remainder
+            * of this request.  The next request through will rebuild a new cache. 
+            */
+            zval_dtor(zinfo);
+            FREE_ZVAL(zinfo);
+            cache->index = hindex;
             LPCG(lpc_cache) = cache;
             lpc_cache_clear(TSRMLS_C);
             lpc_cache_destroy(TSRMLS_C);
@@ -196,7 +196,9 @@ zend_bool lpc_cache_create(uint *max_module_len TSRMLS_DC)
         }
     
     } else {
-        /* This is a new cache file.  Create the context record and add it to the cache */
+       /* 
+        * This is a new cache file.  Create the context record and add it to the cache
+        */
         zval *zctxt_metadata, *zdummy;
         int dummy = 0;
         char context_key[] = "_ context _";
@@ -224,7 +226,6 @@ zend_bool lpc_cache_create(uint *max_module_len TSRMLS_DC)
         }
     }
 
-    /* Now destroy the zinfo zval, because we're done with it */
     zval_dtor(zinfo);
     FREE_ZVAL(zinfo);
 
@@ -366,7 +367,6 @@ lpc_cache_key_t* lpc_cache_make_key(zend_file_handle* handle, const char* includ
     lpc_cache_key_t  *key             = ecalloc(1, sizeof(lpc_cache_key_t));
     char             *filename        = handle->filename;
     uint              filename_length;
-    int               handle_filename = (handle->type == ZEND_HANDLE_FILENAME);
     char             *buf; 
     size_t            buf_length;
     zval            **index_entry = NULL, **recsize, **mtime, **filesize, **pool_length;
@@ -375,10 +375,10 @@ lpc_cache_key_t* lpc_cache_make_key(zend_file_handle* handle, const char* includ
     if(filename==NULL) {
         return NULL;
     }
-
     filename_length = strlen(filename);
-
-    /* Lookup to see if filename already exists in index */
+   /*
+    * If filename already exists in index, then use the index entry
+    */
     if (hash_find(LPCG(lpc_cache)->index, filename, index_entry) == SUCCESS) {
 
         hash_get_first_zv(Z_ARRVAL_PP(index_entry), recsize);
@@ -386,44 +386,52 @@ lpc_cache_key_t* lpc_cache_make_key(zend_file_handle* handle, const char* includ
         hash_get_next_zv( Z_ARRVAL_PP(index_entry), filesize);
         hash_get_next_zv( Z_ARRVAL_PP(index_entry), pool_length);
     }
-
-    /* Unlike APC, LPC uses a percentage for fpstat, so if 0 < fpstat < 100, a random number 
-     * is generated to decide whether stat validation is bypassed.  The randomness doesn't 
-     * need to be strong, so rand() plus the request time is good enough. */
-    stat_file = (index_entry != NULL && LPCG(fpstat)>=0 && 
+   /*
+    * Unlike APC, LPC uses a percentage for fpstat, so if 0 < fpstat < 100, a random number 
+    * is generated to decide whether stat validation is bypassed.  The randomness doesn't 
+    * need to be strong, so rand() plus the request time is good enough.  Note that the only
+    * previously opened file was the requested script which has already been checked during the
+    * cache create, so this doesn't neet to be stat'ed again.
+    */
+    stat_file = (handle->type != ZEND_HANDLE_FP &&
+                 index_entry && 
+                 LPCG(fpstat) >=0 && 
                  (((time_t) rand() + LPCG(sapi_request_time)) % 100) < LPCG(fpstat));
 
-    if (index_entry != NULL && !stat_file) {
-
-        /* Cache hits and it's OK to use the cache details */
-
+    if (index_entry && !stat_file) {
+       /*
+        * This is a cache hit and it's OK to use the cache details.
+        */
         key->mtime           = Z_LVAL_PP(mtime);
         key->filesize        = Z_LVAL_PP(filesize);
         key->type            = LPC_CACHE_LOOKUP;
+
     } else { 
         struct stat sb = {0,};
-        
-        /* If this is a cache miss or the stat value requires a file check then open the file
-         * using the standard zend fixup utility.  If the fixup fails then  the simplest thing
-         * to do is to pass back a nil response so the caller fails back to the standard zend 
-         * compile module to let it deal with the error, because depending the type this might
-         * be acceptable to the application.  */
-
-        if ((zend_stream_fixup(handle, &buf, &buf_length TSRMLS_CC) == FAILURE) ||
-            stat(filename, &sb) != 0) {
+       /*
+        * If this is a cache miss or the stat value requires a file check then open the file using
+        * the standard zend fixup utility.  If the fixup fails then the simplest thing to do is to
+        * pass back a nil response so the caller fails back to the standard zend compile module to
+        * let it deal with the error, because depending the type this might be acceptable to the
+        * application.
+        */
+        if (zend_stream_fixup(handle, &buf, &buf_length TSRMLS_CC) == FAILURE || 
+            stat(handle->filename, &sb) != 0) {
             efree(key);
             return NULL;
             }
 
-        if (stat_file) { 
+        if (stat_file) {
+ 
             if ((Z_LVAL_PP(mtime) != sb.st_mtime) || (Z_LVAL_PP(filesize) != sb.st_size)) {
-                /* There is a mismatch between the cached and on filesystem versions. Something is wrong !! */
+               /*
+                * There is a mismatch between the cached and on filesystem versions.  This means 
+                * that cache should be treated as invalid, and purged at the end of the request.
+                */
                 lpc_cache_clear(TSRMLS_C);
                 efree(key);
- /////// TODO:  check: this isn't needed -- zend_llist_add_element(&CG(open_files), handle);
                 return NULL;
-            } else { 
-                /* stat was consistent with the cache so close the file and use the cache version */
+            } else { /* The stat was consistent with the cache so use the cache version */
                 zend_file_handle_dtor(handle TSRMLS_CC);
                 key->mtime    = Z_LVAL_PP(mtime);
                 key->filesize = Z_LVAL_PP(filesize);
@@ -440,10 +448,6 @@ lpc_cache_key_t* lpc_cache_make_key(zend_file_handle* handle, const char* includ
     key->filename        = estrdup(filename);
     key->filename_length = strlen(filename);
     
-        /* Ditto fail back to the standard zend compile module if the age of the file is less than
-         * a fixed (e.g. 2sec) old.  Let the next request cache it :-) */
-///////// TODO:     CHECK((LPCG(sapi_request_time) - key->mtime) > LPCG(file_update_protection));
-
     return key;
 
 }
@@ -466,6 +470,10 @@ zval* lpc_cache_info(zend_bool limited TSRMLS_DC)
     return info;
 }
 /* }}} */
+
+int ZEND_FASTCALL lpc_include_or_eval_handler(ZEND_OPCODE_HANDLER_ARGS)
+{
+}
 
 /*
  * Local variables:

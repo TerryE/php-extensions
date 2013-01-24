@@ -15,9 +15,9 @@
   | Authors: Terry Ellison <Terry@ellisons.org.uk>                       |
   +----------------------------------------------------------------------+
 
-   This software was derived from the APC extension which was initially 
-   contributed to PHP by Community Connect Inc. in 2002 and revised in 2005 
-   by Yahoo! Inc. See README for further details.
+   This software includes content derived from the APC extension which was
+   initially contributed to PHP by Community Connect Inc. in 2002 and revised 
+   in 2005 by Yahoo! Inc. See README for further details.
  
    All other licensing and usage conditions are those of the PHP Group.
 */
@@ -41,7 +41,7 @@ typedef struct lpc_function_t {
 } lpc_function_t;
 
 extern void lpc_copy_function(zend_function* dst, zend_function* src, lpc_pool* pool);
-extern void lpc_copy_new_functions(lpc_function_t* dst_array, uint count, lpc_pool* pool);
+extern void lpc_copy_new_functions(lpc_function_t** dst_array, uint count, lpc_pool* pool);
 extern void lpc_install_functions(lpc_function_t* functions, uint num_functions, lpc_pool* pool);
 #endif
 

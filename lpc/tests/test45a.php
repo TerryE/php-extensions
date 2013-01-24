@@ -1,5 +1,4 @@
-*** Derived from PHP test script lang/039 ***
-Catch Interfaces
+TEST Catch Interfaces
 <?php
 
 function Error2Exception($errno, $errstr, $errfile, $errline)

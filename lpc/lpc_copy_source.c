@@ -15,9 +15,9 @@
   | Authors: Terry Ellison <Terry@ellisons.org.uk>                       |
   +----------------------------------------------------------------------+
 
-   This software was derived from the APC extension which was initially 
-   contributed to PHP by Community Connect Inc. in 2002 and revised in 2005 
-   by Yahoo! Inc. See README for further details.
+   This software includes content derived from the APC extension which was
+   initially contributed to PHP by Community Connect Inc. in 2002 and revised 
+   in 2005 by Yahoo! Inc. See README for further details.
  
    All other licensing and usage conditions are those of the PHP Group.
 */
@@ -25,6 +25,8 @@
 #include "lpc.h"
 #include "lpc_copy_op_array.h"
 #include "lpc_copy_source.h"
+#include "lpc_copy_function.h"
+#include "lpc_copy_class.h"
 #include "lpc_hashtable.h"
 
 static zend_op_array* cached_compile(lpc_entry_block_t* cache_entry, lpc_pool* pool);
@@ -98,14 +100,15 @@ zend_op_array* lpc_compile_file(zend_file_handle* h, int type TSRMLS_DC)
         key = lpc_cache_make_key(h, INI_STR("include_path") TSRMLS_CC);
     }
 
-    if (key && key->type == LPC_CACHE_MISS) {  /* ============ Source needs compiled ============ */
+    if (key && (LPCG(sapi_request_time) - key->mtime) > LPCG(file_update_protection) &&
+        key->type == LPC_CACHE_MISS) {  /* ============ Source needs compiled ============ */
        /*
         * No valid entry for the key exists in the file cache, but it is an includable filename, so 
-        * the cache entry needs to be compiled and serialised.  This first involves calling the 
-        * normal compilation process which returns an op_array as well as adding any new entries for
-        * any functions and classes that were compiled onto the CG(function_table) and 
-        * CG(class_table) HashTables. Hence these last two HTs are first high-water marked to 
-        * facilitate deterniming any added entries.
+        * the cache entry needs to be compiled and serialised.  (As a safety check, the file must be 
+        * at least lpc.file_update_protection seconds old.) This first involves calling the normal 
+        * compilation process which returns an op_array as well as adding any new entries for any
+        * functions and classes that were compiled onto the CG(function_table) and CG(class_table) 
+        * HashTables.  So these last two HTs are first high-water marked to determine any additions.
         */
         zend_op_array *op_array;
         zend_uint      pool_length, compressed_length, request;
@@ -125,14 +128,11 @@ zend_op_array* lpc_compile_file(zend_file_handle* h, int type TSRMLS_DC)
         * relatively cheap, but this approach considerably simplifies the pool allocations logic.
         * See TECHNOTES.txt for further discussion of this approach.  
         */
-
-///// TODO: This retry process may lead to repeated registration of classes etc -- check !!
-
         LPCG(current_filename) = op_array->filename;
 
         request = 0;  /* start off with current / default buffer */
         do {
-            zend_try {
+            lpc_try {
 
                 pool = NULL;
                 compressed_length = 0;
@@ -141,14 +141,14 @@ zend_op_array* lpc_compile_file(zend_file_handle* h, int type TSRMLS_DC)
                 pool = build_cache_entry(key, op_array, num_functions, num_classes TSRMLS_CC);
                 compressed_buffer = lpc_pool_serialize(pool, &compressed_length, &pool_length);
 
-            } zend_catch {
+            } lpc_catch {
 
                 request = LPCG(storage_quantum); /* retry with an enlarged pool buffer */
                 lpc_pool_destroy(&LPCG(serial_pool));
 
-            } zend_end_try();
+            } lpc_end_try();
 
-        } while (LPCG(bailout_status) == LPC_POOL_OVERFLOW);
+        } while (!compressed_length);
 
        /*
         * If the bailout_status != LPC_POOL_OVERFLOW, but compressed_length == 0 then we've
@@ -200,8 +200,8 @@ zend_op_array* lpc_compile_file(zend_file_handle* h, int type TSRMLS_DC)
         return op_array;
     }
    /*
-    * If we've dropped through to here, something has gone wrong or the file isn't cacheable.  So
-    * chain onto the old (zend) compile file function.  
+    * If we've dropped through to here, the file isn't cacheable or has failed stat validation,
+    * or something has gone wrong.  So chain onto the old (zend) compile file function.  
     */
 #ifdef LPC_DEBUG
     if (LPCG(debug_flags)&LPC_DBG_FILES)  /* Load/Unload Info */
@@ -219,31 +219,28 @@ static lpc_pool* build_cache_entry(lpc_cache_key_t *key, zend_op_array *op_array
 {ENTER(build_cache_entry)
     lpc_entry_block_t* entry;
     lpc_pool* pool;
-
-    LPCG(bailout_status) = 0;
    /*
     * The compile has succeeded so create the pool and allocated the entry block as this is
     * alway the first block allocated in a serial pool, then fill the entry block. Note that
-    * the key->filename is that passed to the include/require request by the execution environment.
-    * We need to store the version that is fully resolved by the compiler.
+    * the key->filename is that passed to the include/require request by the execution
+    * environment.  We need to store the version that is fully resolved by the compiler.
     */
     pool = lpc_pool_create(LPC_SERIALPOOL, (void **) &entry  TSRMLS_CC);
+
     pool_alloc(entry, sizeof(lpc_entry_block_t));
     pool_strdup(entry->filename, LPCGP(current_filename), 0);
+    entry->num_functions = num_functions;
+    entry->num_classes   = num_classes;
 
     pool_alloc(entry->op_array, sizeof(zend_op_array));
     lpc_copy_op_array(entry->op_array, op_array,  pool);
 
-    entry->num_functions = num_functions;
     if (num_functions) {
-        pool_alloc(entry->functions, sizeof(lpc_function_t) * num_functions);
-        lpc_copy_new_functions(entry->functions, num_functions, pool);
+        lpc_copy_new_functions(&entry->functions, num_functions, pool);
     }
 
-    entry->num_classes = num_classes;
     if (num_classes) {
-        pool_alloc(entry->classes, sizeof(lpc_class_t) * num_classes);
-        lpc_copy_new_classes(entry->classes, num_classes, pool);
+        lpc_copy_new_classes(&entry->classes, num_classes, pool);
     }
 
     entry->halt_offset = file_halt_offset(key->filename TSRMLS_PC);

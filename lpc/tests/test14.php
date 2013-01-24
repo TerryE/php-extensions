@@ -1,16 +1,9 @@
---TEST--
-is_a and is_subclass_of behaviour (with and without autoload)
---SKIPIF--
-<?php if (version_compare(zend_version(), '2.0.0-dev', '<')) die('skip ZendEngine 2 needed'); ?>
---FILE--
+TEST classes with extensions and interfaces
 <?php
 
-interface if_a {
-	function f_a();
-}
-	
-interface if_b extends if_a {
-	function f_b();
+interface if_a { function f_a(); }
+if (1) {
+    interface if_b extends if_a { function f_b(); }
 }
 
 class base {
@@ -56,29 +49,18 @@ class derived_c extends derived_a implements if_b {
 class derived_d extends derived_c {
 }
 
-$t = new base();
-$t->test();
+$t = new base();       $t->test();
+$t = new derived_a();  $t->test();
 
-$t = new derived_a();
-$t->test();
-
-eval('
-  function __autoload($name)
-  {
-      echo ">>>> In __autoload: ";
-      var_dump($name);
-  }
-');
+eval('function __autoload($name) {
+        echo ">>>> In __autoload: ";
+        var_dump($name);
+      }');
 
 echo "NOW WITH AUTOLOAD\n\n";
 
-$t = new base();
-$t->test();
-
-$t = new derived_a();
-$t->test();
-
-$t = new derived_b();
-$t->test();
+$t = new base();       $t->test();
+$t = new derived_a();  $t->test();
+$t = new derived_b();  $t->test();
 ?>
-
+===DONE===

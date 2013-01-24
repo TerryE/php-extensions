@@ -12,18 +12,12 @@
   | obtain it through the world-wide-web, please send a note to          |
   | license@php.net so we can mail you a copy immediately.               |
   +----------------------------------------------------------------------+
-  | Authors: Daniel Cowgill <dcowgill@communityconnect.com>              |
-  |          George Schlossnagle <george@omniti.com>                     |
-  |          Rasmus Lerdorf <rasmus@php.net>                             |
-  |          Arun C. Murthy <arunc@yahoo-inc.com>                        |
-  |          Gopal Vijayaraghavan <gopalv@yahoo-inc.com>                 |
+  | Authors: Terry Ellison <Terry@ellisons.org.uk                        |
   +----------------------------------------------------------------------+
 
-   This software was contributed to PHP by Community Connect Inc. in 2002
-   and revised in 2005 by Yahoo! Inc. to add support for PHP 5.1.
-   Future revisions and derivatives of this source code must acknowledge
-   Community Connect Inc. as the original contributor of this module by
-   leaving this note intact in the source code.
+   This software includes content derived from the APC extension which was
+   initially contributed to PHP by Community Connect Inc. in 2002 and revised 
+   in 2005 by Yahoo! Inc. See README for further details.
 
    All other licensing and usage conditions are those of the PHP Group.
 
@@ -37,6 +31,29 @@
 #  include "ext/pcre/php_pcre.h"
 #endif
 
+/* }}} */
+
+/* {{{ lpc_vm_get_opcode_handler
+       This is a copy of Zend/zend_vm_execute.c:zend_vm_get_opcode_handler() */
+const int lpc_vm_decode[] = {
+	_LPC_UNUSED_CODE, /* 0              */
+	_LPC_CONST_CODE,  /* 1 = IS_CONST   */
+	_LPC_TMP_CODE,    /* 2 = IS_TMP_VAR */
+	_LPC_UNUSED_CODE, /* 3              */
+	_LPC_VAR_CODE,    /* 4 = IS_VAR     */
+	_LPC_UNUSED_CODE, /* 5              */
+	_LPC_UNUSED_CODE, /* 6              */
+	_LPC_UNUSED_CODE, /* 7              */
+	_LPC_UNUSED_CODE, /* 8 = IS_UNUSED  */
+	_LPC_UNUSED_CODE, /* 9              */
+	_LPC_UNUSED_CODE, /* 10             */
+	_LPC_UNUSED_CODE, /* 11             */
+	_LPC_UNUSED_CODE, /* 12             */
+	_LPC_UNUSED_CODE, /* 13             */
+	_LPC_UNUSED_CODE, /* 14             */
+	_LPC_UNUSED_CODE, /* 15             */
+	_LPC_CV_CODE      /* 16 = IS_CV     */
+};
 /* }}} */
 
 /* {{{ console display functions */
@@ -330,7 +347,7 @@ void *lpc_resolve_symbol(const char *symbol TSRMLS_DC)
 
     return addr;
 }
-/* }}} */
+/* }}} */   
 /*
  * Local variables:
  * tab-width: 4

@@ -15,9 +15,9 @@
   | Authors: Terry Ellison <Terry@ellisons.org.uk>                       |
   +----------------------------------------------------------------------+
 
-   This software was derived from the APC extension which was initially 
-   contributed to PHP by Community Connect Inc. in 2002 and revised in 2005 
-   by Yahoo! Inc. See README for further details.
+   This software includes content derived from the APC extension which was
+   initially contributed to PHP by Community Connect Inc. in 2002 and revised 
+   in 2005 by Yahoo! Inc. See README for further details.
 
    All other licensing and usage conditions are those of the PHP Group.
 */
@@ -87,7 +87,7 @@ void lpc_copy_hashtable(HashTable* dst, const HashTable* src, lpc_pool* pool,
                     emalloc(src->nNumOfElements * sizeof(Bucket*));
  
        for (p = src->pListHead, q = list; p != NULL; p = p->pListNext) {
-            if ((!check_fn) || check_fn(p, cf_arg1, cf_arg1) == CHECK_ACCEPT_ELT) {
+            if ((!check_fn) || check_fn(p, cf_arg1, cf_arg2) == CHECK_ACCEPT_ELT) {
                 *q++ = p;
             }
         }

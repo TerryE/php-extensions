@@ -1,5 +1,5 @@
+TEST Single external builtin class
 <?php
-#external class
 $obj = new stdClass;
 
 $obj->fred = 23;

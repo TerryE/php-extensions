@@ -1,4 +1,4 @@
-*** Derived from PHP test script classes/constants_basic_006 ***
+TEST class constants and inheritance
 <?php
   class C
   {
@@ -11,7 +11,7 @@
       const A = "hello";
   }
   
-  define('K', "nasty");
+//  define('K', "nasty");
   
   var_dump(C::X, C::$a, D::X, D::$a, D::X, D::$a);
 ?>

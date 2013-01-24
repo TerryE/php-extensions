@@ -341,7 +341,14 @@ retrieval.  Note that this is only done for child classes that have been strippe
 because the op_array codes for runtime bound classes will already include the appropriate
 ZEND_DECLARE_INHERITED_CLASS zend_op.
 
-This back-out logic adds quite a lot of complexity to the lpc_copy_class.c code. 
+One gotcha here is that any zval's inherited by compile-time binding will be reference-copied
+rather than deep copied. Hence a static initializer $a="fred" will be cloned into the child class 
+with both having a reference count of 2.  However, the back-out deletes the second copy leaving the 
+parent with an incorrect reference count of 2, and hence when the class DTOR executes this will 
+decrement down to 1 and not be correctly released.  Since LPC deep copies all such references, the 
+corresponding reference counts are always set to 1.
+
+This back-out logic adds quite a lot of complexity to the lpc_copy_class.c code.
 
 
 5.  Pools and Caches
@@ -581,3 +588,13 @@ will work as expected since (i) more_includes.php is included via a variable (co
 path) and (ii) the include path will be correct for any files included within more_includes.php. The
 PER_DIR INI flag lpc.resolve_path can be set to 0 to disable this resolution function in cases where
 the application maintainer has this problem and can't resolve it by code modification.
+
+
+8.   A note on the "tests" suite.
+
+This is a working regressions suite.  My primary test suites are the PHP test suite and applications 
+such as MediaWiki, Wordpress and phpBB.   When tests against one of these and get a failure, I 
+clone the relevant failing module into the test suite and then chop the test module down to a 
+minimum where the failure still occurs.  This minimal failing module is then used as the basis to 
+fix the bug and subsequently remains as a regression test to ensure that I don't re-introduce the 
+error with future changes.

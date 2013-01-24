@@ -1,4 +1,4 @@
-*** Derived from PHP test script classes/tostring_004 ***
+TEST Error handling with classes and __tostring
 <?php
 function test_error_handler($err_no, $err_msg, $filename, $linenum, $vars) {
         echo "Error: $err_no - $err_msg\n";

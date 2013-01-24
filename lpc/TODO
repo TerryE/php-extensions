@@ -1,26 +1,21 @@
 Overview
 ========
 
-The major rework arising from the 14-16 Dec review has now largely been implemented and is working:
+The major rework arising from the 14-16 Dec review has now largely been implemented and is working.
 one of the existing tests fails and after a retest against the PHP test suite this picked up a
-second failure which has been paired down to a new test also failing.  There are also a few known
-memory leaks.
+second failure which has been paired down to a new test also failing. 
 
-Known errors:
+As at current version, LPC can run the PHP test suite and MediaWiki without leeks and with no errors 
+other than compile-related (e.g. compiler warnings are ony issued on first and actual compile), so 
+I am now switching the development focus to addressing a few performance issues.  
 
-*   There is some issue with context loss on my path substitution algo for constant include paths
-    which results in a ZendEE crash in some circumstances.
+*   The one issue that leaps out from an strace analysis of MediaWiki execution is that the standard
+    PHP opcode handler ZEND_INCLUDE_OR_EVAL_SPEC_TMP_HANDLER opens the source file in the case of a
+    require_once or include_once which is a performance killer for LPC.  I am adding an additional 
+    opcode intercept to handle this correctly.
 
-*   Some events which trigger a zend_bailout and recovery (e.g. compile errors) result in execution
-    paths which leave dangling cachdb resources.
-
-*   Ditto some leaks occur with inheritence of properties in child classes.  This is discussed 
-    further below. 
-
-=== NOTES ===
-
-compile-time inheritence bindings are being lost on load
-
+*   Alternative compression engines.  Need to investigate the cost/benefit/penalty trade-offs of 
+    adding LZ4 and LZ4 HC (see http://code.google.com/p/lz4/) as alternative compression options.
 
 
 W/E review 14-16 Dec 2012
@@ -39,13 +34,11 @@ Ditto integration on Zend 2.4 support.
     reporting. We need some extra reporting categories for overall per-source and per-request info,
     plus logging of hrow / catch events.  
 
-*   Add extra logging option to log each opcode/op1.type/op2.type -- need to decide whether to log
-    these to a separate debug file. Run against PHP test suite and use o/p to develop note on Opcode
-    coverage and Q on APC testing against the PHP test suite.   
-
 *   Develop small reporter scipt to list off cache contents, e.g.
        /opn/bin/php -d lpc.cache_pattern=".*" -d lpc.cache_replacement=".testNN.cache" \
                     -d lpc.filter="(?!.)" reporter.php
+    Note that at the moment, the info access code has been backed out from the LPC API, and I need
+    to reintroduce this broadly based on cachedb_info to implement this.
 
 *   Review regression test automation for php test suite. And how filtering of output records is
     done -- e.g. how site-specfic (pathnames, etc.) error content is surpressed. 

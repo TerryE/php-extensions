@@ -1,5 +1,5 @@
+TEST Minimum - 2 functions -- one late binding, no classes
 <?php
-# Minimum - 2 functions -- one late binding, no classes
 if(1) {
     function US($y) {
         return $y == 0 ? "America" : "Canada";

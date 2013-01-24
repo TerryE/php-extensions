@@ -15,9 +15,9 @@
   | Authors: Terry Ellison <Terry@ellisons.org.uk>                       |
   +----------------------------------------------------------------------+
 
-   This software was derived from the APC extension which was initially 
-   contributed to PHP by Community Connect Inc. in 2002 and revised in 2005 
-   by Yahoo! Inc. See README for further details.
+   This software includes content derived from the APC extension which was
+   initially contributed to PHP by Community Connect Inc. in 2002 and revised 
+   in 2005 by Yahoo! Inc. See README for further details.
  
    All other licensing and usage conditions are those of the PHP Group.
 */
@@ -36,10 +36,8 @@
 
 /* {{{ struct definition: lpc_class_t */
 typedef struct lpc_class_t {
-    char     *name;                  /* the class name */
-    zend_uint name_len;              /* length of name */
-    char     *parent_name;           /* the parent class name */
-    zend_class_entry* class_entry;  /* the zend class data structure */
+    char              *name;         /* the class name */
+    zend_class_entry   class_entry;  /* the zend class data structure */
 } lpc_class_t;
 /* }}} */
 
@@ -47,7 +45,7 @@ typedef struct lpc_class_t {
  * These are the top-level class copy functions.
  */
 extern void      lpc_copy_class_entry(zend_class_entry* dst, zend_class_entry* src, lpc_pool* pool);
-extern void      lpc_copy_new_classes(lpc_class_t* cl_array, zend_uint count, lpc_pool* pool);
+extern void      lpc_copy_new_classes(lpc_class_t** cl_array, zend_uint count, lpc_pool* pool);
 extern zend_bool lpc_install_classes(lpc_class_t* classes, zend_uint num_classes, lpc_pool* pool);
 #endif
 

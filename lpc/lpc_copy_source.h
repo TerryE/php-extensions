@@ -15,9 +15,9 @@
   | Authors: Terry Ellison <Terry@ellisons.org.uk>                       |
   +----------------------------------------------------------------------+
 
-   This software was derived from the APC extension which was initially 
-   contributed to PHP by Community Connect Inc. in 2002 and revised in 2005 
-   by Yahoo! Inc. See README for further details.
+   This software includes content derived from the APC extension which was
+   initially contributed to PHP by Community Connect Inc. in 2002 and revised 
+   in 2005 by Yahoo! Inc. See README for further details.
  
    All other licensing and usage conditions are those of the PHP Group.
 */
@@ -38,6 +38,8 @@
 #include "lpc_copy_class.h"
 
 /* {{{ struct definition: lpc_entry_block_t */
+typedef struct lpc_class_t    lpc_class_t;
+typedef struct lpc_function_t lpc_function_t;
 typedef struct _lpc_entry_block_t {  
     long halt_offset;           /* value of __COMPILER_HALT_OFFSET__ for the file */
     zend_op_array* op_array;    /* op_array allocated in shared memory */

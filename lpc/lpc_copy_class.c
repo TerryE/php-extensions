@@ -19,9 +19,9 @@
   |          Gopal Vijayaraghavan <gopalv@yahoo-inc.com>                 |
   +----------------------------------------------------------------------+
 
-   This software was derived from the APC extension which was initially 
-   contributed to PHP by Community Connect Inc. in 2002 and revised in 2005 
-   by Yahoo! Inc. See README for further details.
+   This software includes content derived from the APC extension which was
+   initially contributed to PHP by Community Connect Inc. in 2002 and revised 
+   in 2005 by Yahoo! Inc. See README for further details.
 
    All other licensing and usage conditions are those of the PHP Group.
 */
@@ -39,34 +39,140 @@
  * callbacks to determine whether each element within the HashTable should be copied or if it is
  * already defined / overridden in the 'current' class entry and therefore not to be inherited.  
  */
-static lpc_check_t check_copy_default_property(Bucket* p, const void *, const void *);
-static lpc_check_t check_copy_property_info(Bucket* src, const void *, const void *);
-static lpc_check_t check_copy_static_member(Bucket* src, const void *, const void *);
-static lpc_check_t check_copy_constant(Bucket* src, const void *, const void *);
-static lpc_check_t check_copy_method(Bucket* p, const void *, const void *);
-static void        fixup_method(Bucket *p, zend_class_entry *src, 
-                                zend_class_entry *dst, lpc_pool* pool);
-#ifdef ZEND_ENGINE_2_2
-static void        fixup_property_info(Bucket *p, zend_class_entry *src, 
+static int is_local_method(Bucket* p, const void *, const void *);
+static int is_local_default_property(Bucket* p, const void *, const void *);
+static int is_local_property_info(Bucket* src, const void *, const void *);
+static int is_local_static_member(Bucket* src, const void *, const void *);
+static int is_local_constant(Bucket* src, const void *, const void *);
+static void fixup_denormalised_methods(Bucket *p, zend_class_entry *src, 
                                        zend_class_entry *dst, lpc_pool* pool);
+#ifdef ZEND_ENGINE_2_2
+static void fixup_property_info_ce_field(Bucket *p, zend_class_entry *src, 
+                                          zend_class_entry *dst, lpc_pool* pool);
 #endif
-void copy_property_info(zend_property_info* dst, zend_property_info* src, lpc_pool* pool);
+static void copy_property_info(zend_property_info* dst, zend_property_info* src, lpc_pool* pool);
+
+/* {{{ lpc_copy_new_classes
+    Deep copy the last set of classes added during the last compile from the CG(function_table) */
+void lpc_copy_new_classes(lpc_class_t** pcl_array, zend_uint count, lpc_pool* pool)
+{ENTER(lpc_copy_new_classes)
+    lpc_class_t *cle;
+    char* key;
+    zend_class_entry **class_ptr;
+    uint i, key_length, dummy_len;
+    TSRMLS_FETCH_FROM_POOL()
+
+    pool_alloc(*pcl_array, sizeof(lpc_class_t) * count);
+    memset (*pcl_array, 0, sizeof(lpc_class_t) * count);
+    cle = *pcl_array;
+   /*
+    * Normally count is small compared to the size of the class table, so move back count-1 
+    * functions and read the last count classname => class from the table into the cl_array.  Note 
+    * that the key may be a mangled class name and different to class->name which is the unmangled
+    * version. Alson ote that the PHP convention for zvals and HT key lengths is inconsistent as
+    * the former excludes the terminating \0 char and the latter includes it.
+    */
+    zend_hash_internal_pointer_end(CG(class_table));
+    for (i = 1; i < count; i++) {
+        zend_hash_move_backwards(CG(class_table));
+    }
+    for (i = 0; i < count; i++, cle++, zend_hash_move_forward(CG(class_table))) {
+        zend_hash_get_current_key_ex(CG(class_table), &key, &key_length, NULL, 0, NULL);
+        zend_hash_get_current_data(CG(class_table), (void**) &class_ptr);
+        pool_nstrdup(cle->name, dummy_len, key, key_length-1, 0);
+        lpc_copy_class_entry(&cle->class_entry, *class_ptr, pool);
+    }
+}
+/* }}} */
+
+zend_bool lpc_install_classes(lpc_class_t* classes, zend_uint num_classes, lpc_pool *pool)
+{ENTER(lpc_install_classes)
+   /*
+    * There could be problems class inheritance problems during the module load, especially if
+    * autoloading is being employed as the loading of the child class triggers autoload of the
+    * parent. A missing parent will therefore forces explicit re-compile whether __autoload is
+    * enabled or not, because __autoload errors cause php to die.
+    *
+    * Failing back to a recompile requires the uninstalling any classes already loaded and
+    * aborting any function or opcode loads.  
+    */
+    lpc_class_t       *cl;
+    char              *cl_name, *cl_err_name, *parent_name;
+    zend_class_entry  *dst_cl, **parent;
+    zend_uint          cl_name_len, i;
+    TSRMLS_FETCH_FROM_POOL()
+
+    for (i = 0, cl = classes; i < num_classes; i++, cl++) {
+        zend_bool do_inheritance = 0;
+       /*
+        * Skip duplicated mangled names, as this will be pricked up at runtime when the class is 
+        * attempted to be bound with the multiple DECLARE_CLASS zend_ops.  If the class has a 
+        * parent set to the interned parent name. If this parent exists, then this was a compile-
+        * time bound class that needs to be rebound.  If it doesn't exist then bailout, otherwise
+        * copy the class.   
+        */
+        pool_nstrdup(cl_name, cl_name_len, cl->name, 0, 0); /* de-intern */
+        if (cl_name[0] || !zend_hash_exists(CG(class_table), cl_name, cl_name_len+1)) {
+            if (cl->class_entry.parent) {
+                pool_strdup(parent_name, (char *) cl->class_entry.parent, 0); /* de-intern */
+                do_inheritance = (zend_lookup_class_ex(parent_name, strlen(parent_name),
+#ifdef ZEND_ENGINE_2_4
+                                                       NULL,
+#endif
+                                                       0, &parent TSRMLS_PC) == SUCCESS);
+                CHECK(do_inheritance);
+            }   
+
+            pool_alloc(dst_cl, sizeof(zend_class_entry));
+            lpc_copy_class_entry(dst_cl, &cl->class_entry,  pool);
+
+            if (do_inheritance) {
+                zend_do_inheritance(dst_cl, *parent TSRMLS_PC);
+//////                dst_cl->refcount++;
+            }
+
+            CHECK(zend_hash_add(EG(class_table), cl_name, cl_name_len+1,
+                              &dst_cl, sizeof(zend_class_entry*), NULL) == SUCCESS);
+        }
+    }
+    return SUCCESS;
+
+error:
+   /*
+    * There has been a class inheritance failure, so remove installed classes in reverse order
+    * and return. Note that this still leaves the class structures in memory so these WILL leak
+    */
+    while (i--) {
+        zend_class_entry **class_ptr;
+        pool_nstrdup(cl_err_name, cl_name_len, classes[i].name, 0, 0); /* de-intern poss mangled */
+        if (zend_hash_find(EG(class_table), cl_err_name, cl_name_len, (void **) &class_ptr) 
+            == SUCCESS) {
+            destroy_zend_class(class_ptr);
+            zend_hash_del(EG(class_table), cl_err_name, cl_name_len+1);
+            efree(cl_name);
+        }
+    }
+    lpc_warning("Cannot redeclare class %s" TSRMLS_CC, dst_cl->name);
+    return FAILURE;
+}
+/* }}} */
+
 
 #define TAG_SETPTR(dst,src) dst = src; pool_tag_ptr(dst)
 
 #ifdef ZEND_ENGINE_2_4
-# define NULL_CC_IF_ZE24        ,NULL
 # define CE_FILENAME(ce)          (ce)->info.user.filename
 # define CE_DOC_COMMENT(ce)       (ce)->info.user.doc_comment
 # define CE_DOC_COMMENT_LEN(ce)   (ce)->info.user.doc_comment_len
 # define CE_BUILTIN_FUNCTIONS(ce) (ce)->info.internal.builtin_functions
 #else
-# define NULL_CC_IF_ZE24 
 # define CE_FILENAME(ce)          (ce)->filename
 # define CE_DOC_COMMENT(ce)       (ce)->doc_comment
 # define CE_DOC_COMMENT_LEN(ce)   (ce)->doc_comment_len
 # define CE_BUILTIN_FUNCTIONS(ce) (ce)->builtin_functions
 #endif
+
+#define CHECK(p) if(!(p)) goto error
 
 /* {{{ lpc_copy_class_entry */
 void lpc_copy_class_entry(zend_class_entry* dst, zend_class_entry* src, lpc_pool* pool)
@@ -78,52 +184,50 @@ void lpc_copy_class_entry(zend_class_entry* dst, zend_class_entry* src, lpc_pool
  *  4)  function pointers which need to be relocated.
  *
  * (1) is achieved by doing a base "bit copy" of the entire class entry; (2) by explicitly setting
- * to 0/NULL; (3) are the fields:
+ * to 0/NULL; (3) are the fields ([E] is an emalloced element; [R] a derived address reference):
  *
- *  char                *name               [E]
- *  zend_class_entry    *parent             [R]
- *  zend_function_entry *builtin_functions  [R]
- *  zend_class_entry   **interfaces         [E]
- *  char                *filename           [R]
- *  char                *doc_comment        [E]
- *  zend_module_entry   *module             [R]
+ *    char                *name               [E]
+ *    zend_class_entry    *parent             [R]
+ *    zend_function_entry *builtin_functions  [R]
+ *    zend_class_entry   **interfaces         [E]
+ *    char                *filename           [R]
+ *    char                *doc_comment        [E]
+ *    zend_module_entry   *module             [R]
  *
- *  where [E] denotes an emalloced element and [R] a derived address reference.  The HashTables:
- *  
- *  function_table            zend_function_dtor
- *  default_properties        zval_ptr_dtor_func
- *  properties_info           zend_destroy_property_info
- *  default_static_members    zval_ptr_dtor_func
- *  constants_table           zval_ptr_dtor_func
- *  *static_members           [R] (points to default_static_member in the case of user classes)
+ * and the HashTables:
+ *    
+ *    function_table            zend_function_dtor
+ *    default_properties        zval_ptr_dtor_func
+ *    properties_info           zend_destroy_property_info
+ *    default_static_members    zval_ptr_dtor_func
+ *    constants_table           zval_ptr_dtor_func
+ *    *static_members           [R] (points to default_static_member in the case of user classes)
  * 
- *  (4) are the function pointers for : constructor, destructor, clone, __get, __set, __unset,
- *  __isset, __call, __callstatic, __tostring, serialize_func, unserialize_func, create_object,
- *  get_iterator, interface_gets_implemented, get_static_method, serialize, unserialize
+ * (4) are the function pointers for : constructor, destructor, clone, __get, __set, __unset,
+ * __isset, __call, __callstatic, __tostring, serialize_func, unserialize_func, create_object,
+ * get_iterator, interface_gets_implemented, get_static_method, serialize, unserialize
  * 
- * Also not that some operations are only done once on copying out from exec to serial pool such as
- * adjusting the interfaces count.
- *
- * The handling of class inheritence adds some complications.  The crux of these is that in a pure
- * compile and go environment -- as PHP implicitly assumes, if class B extends class A, then class A
- * must have been compiled and 
- * ... */
-
+ * The compiler binds class inheritance at compile-time, but for reasons discussed in TECHNOTES, LPC
+ * must back these changes out on copy-out. Hence on copy-out of a child class already bound to its
+ * parent, the COPY_HT macros use a filter routine to  determine if the current element is local
+ * (that is not inherited) and therefore must be copied.  These are checks are tagged as in
+ * comments as *** compile-time inheritence backout *** and are clearly only done on copy-out. 
+ * 
+ * Some fields which have denormalised for performance reasons (e.g the above function pointer), so
+ * where appropriate a fixup_hashtable callback is used to do this.  As this is only done on
+ * copy-in, these routines all assume copy-in mode to simplify coding.
+ */
 {ENTER(lpc_copy_class_entry)
     uint i = 0;
     TSRMLS_FETCH_FROM_POOL();
 
+    assert(src->type == ZEND_USER_CLASS);
     BITWISE_COPY(src,dst);
 
     if (src->name) {
         pool_nstrdup(dst->name, dst->name_length, src->name, src->name_length, 1);
     }
 
-   /*
-    * Set all fields that shouldn't be inherited on copy to 0/NULL 
-    */
-    memset(&dst->properties_info, 0, sizeof(dst->properties_info));
-    memset(&dst->constants_table, 0, sizeof(dst->constants_table));
    /* 
     * These will either be set inside lpc_fixup_hashtable or they will be copied
     * out from parent inside zend_do_inheritance. 
@@ -144,23 +248,30 @@ void lpc_copy_class_entry(zend_class_entry* dst, zend_class_entry* src, lpc_pool
     dst->__callstatic = NULL;
 #endif
    /*
-    * Unset function proxies 
+]    * Unset function proxies 
     */
     dst->serialize_func = NULL;
     dst->unserialize_func = NULL;
 
    /*
-    * The interfaces are populated at runtime using ADD_INTERFACE 
+    * If the class has a pointer to its parent class then the compiler has performed compile-time
+    * inheritance which must be backed out, but the parent class name is first interned into the
+    * parent field to be avaiable for rebinding on subsequent retrieval.
+    */
+    if (src->parent) {
+        pool_strdup(dst->parent, is_copy_out() ? src->parent->name : (char *) src->parent, 0);
+    }
+
+#define ON_COPYOUT_BOUND_CHILD(rtn) ((is_copy_out() && src->parent) ? rtn : NULL)
+   /*
+    * Class interfaces are NULLed but then populated at runtime using ADD_INTERFACE zend_op.  
+    * However, inherited ones may have been added if the class is compile-time bound to a parent. 
     */    
     if (is_copy_out()) {
-       /*
-        * The compiler output count includes inherited interfaces as well, but the count
-        * to be saved is count of first <n> real dynamic ones which were zero'd out in
-        * zend_do_end_class_declaration
-        */
         for(i = 0 ; (i < src->num_interfaces) && !src->interfaces[i]; i++) {}
-        dst->num_interfaces = (i < src->num_interfaces) ? i : 0;
-        dst->interfaces = src->interfaces ? LPC_ALLOCATE_TAG : NULL;  
+///  TODO: this used to be set to 0 for nonbound child classes?
+        dst->num_interfaces = i;
+        dst->interfaces     = src->interfaces ? LPC_ALLOCATE_TAG : NULL;  
     } else { /* is copyin */
         dst->num_interfaces = src->num_interfaces;
         if (src->interfaces) { /* Only alloc array if original was allocated */
@@ -168,14 +279,14 @@ void lpc_copy_class_entry(zend_class_entry* dst, zend_class_entry* src, lpc_pool
             memset(dst->interfaces, 0,  sizeof(zend_class_entry*) * src->num_interfaces);
         }  
     } 
-   /*
-    * Copy the function table and fixup the __xxx function fields on copy in.
-    */
-    COPY_HT(function_table, lpc_copy_function, zend_function, check_copy_method, NULL);
-    lpc_fixup_hashtable(&dst->function_table, (lpc_ht_fixup_fun_t)fixup_method, src, dst, pool);
-   /*
-    * Copy the default properties table. Unfortunately this is different for Zend 2.4 and previous versions 
-    */
+
+    COPY_HT(function_table, lpc_copy_function, zend_function, 
+            ON_COPYOUT_BOUND_CHILD(is_local_method), NULL);
+
+    if (is_copy_in()) {
+        lpc_fixup_hashtable(&dst->function_table, fixup_denormalised_methods, src, dst, pool);
+    }
+
 #ifdef ZEND_ENGINE_2_4
     dst->default_properties_count = src->default_properties_count;
     if (src->default_properties_count) {
@@ -185,7 +296,7 @@ void lpc_copy_class_entry(zend_class_entry* dst, zend_class_entry* src, lpc_pool
             if (src->default_properties_table[i]) {
                 lpc_copy_zval_ptr(&dst->default_properties_table[i], 
                                   (const zval**) &src->default_properties_table[i], pool);
-                pool_tag_ptr(dst->default_properties_table[i]);
+//////          pool_tag_ptr(dst->default_properties_table[i]);
             } else {
                 dst->default_properties_table[i] = NULL;
             }
@@ -194,21 +305,17 @@ void lpc_copy_class_entry(zend_class_entry* dst, zend_class_entry* src, lpc_pool
         dst->default_properties_table = NULL;
     }
 #else
-    COPY_HT(default_properties, lpc_copy_zval_ptr, zval *, check_copy_default_property, NULL);
+    COPY_HT(default_properties, lpc_copy_zval_ptr, zval *, 
+            ON_COPYOUT_BOUND_CHILD(is_local_default_property), NULL);
 #endif
 
-   /*
-    * Copy the properties info table and fixup scope attribute (introduced in Zend 2.2) 
-    */
-    COPY_HT(properties_info, copy_property_info, zend_property_info, check_copy_property_info, NULL);
+    COPY_HT(properties_info, copy_property_info, zend_property_info, 
+            ON_COPYOUT_BOUND_CHILD(is_local_property_info), NULL);
+
 #ifdef ZEND_ENGINE_2_2
-    lpc_fixup_hashtable(&dst->properties_info, 
-                       (lpc_ht_fixup_fun_t)fixup_property_info, 
-                       src, dst, pool);
+    lpc_fixup_hashtable(&dst->properties_info, fixup_property_info_ce_field, src, dst, pool);
 #endif
-   /*
-    * Copy the default static members table. Again this was changed at Zend 2.4 
-    */
+
 #ifdef ZEND_ENGINE_2_4
     dst->default_static_members_count = src->default_static_members_count;
 
@@ -231,171 +338,37 @@ void lpc_copy_class_entry(zend_class_entry* dst, zend_class_entry* src, lpc_pool
     TAG_SETPTR(dst->static_members_table, dst->default_static_members_table);
 #else
     COPY_HT(default_static_members, lpc_copy_zval_ptr, zval *, 
-            check_copy_static_member, &src->default_static_members);
+            ON_COPYOUT_BOUND_CHILD(is_local_static_member), NULL);
 
-    if (src->static_members != &src->default_static_members) {
+    if (src->static_members && src->static_members != &src->default_static_members) {
         pool_alloc_ht(dst->static_members); 
         COPY_HT_P(static_members, lpc_copy_zval_ptr, zval *,
-                  check_copy_static_member, src->static_members);
-    } else {
+                  ON_COPYOUT_BOUND_CHILD(is_local_static_member), (void *)1);
+    } else if (is_copy_in()){
         dst->static_members = &dst->default_static_members;
-        pool_tag_ptr(dst->static_members);
+    } else {
+        dst->static_members = NULL;  /* NULL is used in lieu in the serial pool */
     }
 #endif
-   /*
-    * Copy the constants table 
-    */
-    COPY_HT(constants_table, lpc_copy_zval_ptr, zval *, check_copy_constant, NULL);
+
+    COPY_HT(constants_table, lpc_copy_zval_ptr, zval *, 
+            ON_COPYOUT_BOUND_CHILD(is_local_constant), NULL);
 
     /* In the case of a user class dup the doc_comment if any */
-    if (src->type == ZEND_USER_CLASS && CE_DOC_COMMENT(src)) {
+    if (CE_DOC_COMMENT(src)) {
         pool_memcpy(CE_DOC_COMMENT(dst),
                     CE_DOC_COMMENT(src), (CE_DOC_COMMENT_LEN(src) + 1));
-    } else {
-        CE_DOC_COMMENT(dst) = NULL;
     }
-
-    assert(src->type == ZEND_USER_CLASS);
-
    /*
     * is the class filename is the current source file name then the RTS doesn't free this as
     * it also points to the op_array filename, so replicate this to avoid the memory leak.
     */    
     CE_FILENAME(dst) = is_copy_out() ? NULL : LPCGP(current_filename);
+
 }
 /* }}} */
 
-/* {{{ lpc_copy_new_classes
-    Deep copy the last set of classes added during the last compile from the CG(function_table) */
-void lpc_copy_new_classes(lpc_class_t* cl_array, zend_uint count, lpc_pool* pool)
-{ENTER(lpc_copy_new_classes)
-    zend_uint i;
-    TSRMLS_FETCH_FROM_POOL();
-
-    /* count back count-1 functions from the end of the class table */
-    zend_hash_internal_pointer_end(CG(class_table));
-    for (i = 1; i < count; i++) {
-        zend_hash_move_backwards(CG(class_table));
-    }
-
-    /* Add the next <count> classes to our cl_array */
-    for (i = 0; i < count; i++, zend_hash_move_forward(CG(class_table))) {
-        char* key;
-        uint key_length;
-        zend_class_entry *class, **class_ptr;
-        lpc_class_t *cle = &cl_array[i];
-
-        zend_hash_get_current_key_ex(CG(class_table), &key, &key_length, NULL, 0, NULL);
-        zend_hash_get_current_data(CG(class_table), (void**) &class_ptr);
-        class= *class_ptr;
-       /*
-        * Note that the PHP convention for zvals and HT key lengths is inconsistent as the 
-        * former excludes the terminating \0 char and the latter includes it.  Also note that
-        * cle->name_len as the length of an interned string is 0 -- left in for historic reasons
-        * but compression removes this file-space overhead. 
-        */  
-        pool_nstrdup(cle->name, cle->name_len, key, key_length-1, 0);
-        pool_alloc(cle->class_entry, sizeof(zend_class_entry));
-
-        lpc_copy_class_entry(cle->class_entry, class, pool);
-
-        /*
-         * If the class has a pointer to its parent class, save the parent
-         * name so that we can enable compile-time inheritance when we reload
-         * the child class; otherwise, set the parent name to null
-         */
-
-        if (class->parent) {
-            pool_strdup(cle->parent_name, class->parent->name, 0);
-        } else {
-            cle->parent_name = NULL;
-        }
-    }
-}
-/* }}} */
-
-zend_bool lpc_install_classes(lpc_class_t* classes, zend_uint num_classes, lpc_pool *pool)
-{ENTER(lpc_install_classes)
-   /*
-    * There could be problems class inheritance problems during the module load, especially if
-    * autoloading is being employed as the loading of the child class triggers autoload of the
-    * parent. A missing parent will therefore forces explicit re-compile whether __autoload is
-    * enabled or not, because __autoload errors cause php to die.
-    *
-    * Failing back to a recompile requires the uninstalling any classes already loaded and aborting
-    * any function or opcode loads.  
-    */
-    zend_uint i;
-    int i_fail = -1;
-    TSRMLS_FETCH_FROM_POOL();
-
-    for (i = 0; i < num_classes; i++) {
-        lpc_class_t*       cl = classes + i;
-        zend_class_entry*  dst_cl;
-        zend_class_entry** parent = NULL;
-        char *cl_name;
-        zend_uint cl_name_len;
-        pool_nstrdup(cl_name, cl_name_len, cl->name, cl->name_len, 0); /* de-intern */
-       /*
-        * Special case for mangled names (which start with a leading '\0'. These are unique, and can
-        * only occur if a source including the class is included twice. In this case LPC, like APC,
-        * ignores duplicates leaving detection to runtime when the class is attempted to be bound 
-        * with the multiple DECLARE_CLASS calls.
-        */
-        if(cl_name_len != 0 && cl_name[0] == '\0') {
-            if(zend_hash_exists(CG(class_table), cl_name, cl_name_len+1)) {
-                continue;
-            }
-        }
-
-        if (cl->parent_name != NULL) {
-            /* note that parent classes can never be mangled so a pool_strcpy suffices */
-            char *parent_name;
-            pool_strdup(parent_name, cl->parent_name, 0); /* de-intern */
-            if (zend_lookup_class_ex(parent_name, strlen(parent_name)  NULL_CC_IF_ZE24, 
-                                     0, &parent TSRMLS_PC) == FAILURE) {
-                i_fail = i;
-                efree(parent_name);
-                break;
-            }
-        }   
-        pool_alloc(dst_cl, sizeof(zend_class_entry));
-        lpc_copy_class_entry(dst_cl, cl->class_entry,  pool);
-
-        if (parent) {
-            dst_cl->parent = *parent;
-            zend_do_inheritance(dst_cl, *parent TSRMLS_PC);
-        }
-
-        if (zend_hash_add(EG(class_table), cl_name, cl_name_len+1,
-                          &dst_cl, sizeof(zend_class_entry*), NULL) == FAILURE) {
-            lpc_error("Cannot redeclare class %s" TSRMLS_CC, dst_cl->name);
-            i_fail = i;
-            break;
-        }
-    }
-
-    if (i_fail >= 0) {
-       /*
-        * There has been a class inheritance failure, so remove installed classes in reverse order
-        * and return. Note that this still leaves the class structures in memory so these WILL leak
-        */
-        for (i = i_fail; i >= 0; i--) {
-            lpc_class_t* cl = classes + i;
-            char *cl_name;
-            zend_uint cl_name_len;
-            pool_nstrdup(cl_name, cl_name_len, cl->name, 0, 0); /* de-intern poss mangled */
-             if (zend_hash_del(EG(class_table), cl_name, cl_name_len+1) == FAILURE) {
-                 lpc_error("Cannot delete class %s" TSRMLS_CC, cl_name);
-            }
-            efree(cl_name);
-        }
-        return FAILURE;
-    }
-    return SUCCESS;
-}
-/* }}} */
-
+/* {{{ Hashtable copy callbacks used in deep copy of the class entry */
 /* {{{ copy_property_info */
 void copy_property_info(zend_property_info* dst, zend_property_info* src, lpc_pool* pool)
 {ENTER(copy_property_info)
@@ -415,205 +388,175 @@ void copy_property_info(zend_property_info* dst, zend_property_info* src, lpc_po
 #endif
 } 
 /* }}} */
+/* }}} Hashtable copy callbacks */
+
+/* {{{ Hashtable copy filters used in deep copy of the class entry
+       These all return true if the element is to be copied.  In the case of class entry copying
+       these are used to implement compile-time inheritence backout and so return true if the
+       element is local to the class.  Any elements that have been inherited from a parent 
+       return false and therefore are ignored on the copy */
+/* {{{ is_local_method */
+static int is_local_method(Bucket* p, const void *arg1, const void *dummy)
+{ENTER(is_local_method)
+   /*
+    * Only locally defined methods should be copied as any inherited by a compile-time 
+    * zend_do_inheritance() will be bound at load or runtime anyway.
+    */
+    zend_class_entry *src = (zend_class_entry*)arg1;
+    zend_function    *zf  = (zend_function*)p->pData;
+    return  zf->common.scope == src;
+}
+/* }}} */
+/* {{{ is_local_default_property  */
 #ifndef ZEND_ENGINE_2_4
-/* {{{ check_copy_default_property 
-       returns ACCEPT if the property is not inherited from its parent class */
-static lpc_check_t check_copy_default_property(Bucket* p, const void *arg1, const void *dummy)
-{ENTER(check_copy_default_property)
-    zend_class_entry* src = (zend_class_entry*) arg1;
-    zend_class_entry* parent = src->parent;
-    zval ** child_prop = (zval**)p->pData;
-    zval ** parent_prop = NULL;
+static int is_local_default_property(Bucket* p, const void *arg1, const void *dummy)
+{ENTER(is_local_default_property)
+    zend_class_entry  *src                       = (zend_class_entry*) arg1;
+    HashTable         *parent_default_properties = &src->parent->default_properties;
+    zval             **child_prop                = (zval**)p->pData;
+    zval             **parent_prop               = NULL;
+   /*
+    * The property's not local if the parent has the same property at the same address
+    */
+    return  (zend_hash_quick_find(parent_default_properties, p->arKey, p->nKeyLength,
+                                   p->h, (void **) &parent_prop)==FAILURE) ||
+             !parent_prop || !child_prop ||
+             *parent_prop != *child_prop;
+}
+#endif
+/* }}} */
+/* {{{ is_local_property_info */
+static int is_local_property_info(Bucket* p, const void *arg1, const void *dummy)
+{ENTER(is_local_property_info)
+    zend_class_entry   *src                    = (zend_class_entry*) arg1;
+    HashTable          *parent_properties_info = &src->parent->properties_info;
+    zend_property_info *child_info             = (zend_property_info*)p->pData;
+    zend_property_info *parent_info            = NULL;
 
-    if (parent && zend_hash_quick_find(&parent->default_properties, p->arKey, 
-                                       p->nKeyLength, p->h, (void **) &parent_prop)==SUCCESS &&
-        (parent_prop && child_prop) && (*parent_prop) == (*child_prop)) {
-        return CHECK_SKIP_ELT;
-    }
+#ifdef ZEND_ENGINE_2_2
+    return (child_info->ce == src);
+#else
+    return (zend_hash_quick_find(parent_properties_info, p->arKey, p->nKeyLength,
+                                 p->h, (void **) &parent_info)==FAILURE) ||
+           (parent_info->flags & ZEND_ACC_PRIVATE) ||
+           ((parent_info->flags & ZEND_ACC_PPP_MASK) != (child_info->flags & ZEND_ACC_PPP_MASK)));
+#endif
+}
+/* }}} */
 
-    /* possibly not in the parent */
-    return CHECK_ACCEPT_ELT;
+#ifndef ZEND_ENGINE_2_4
+/* {{{ is_local_static_member */
+static int is_local_static_member(Bucket* p, const void *arg1, const void *arg2)
+{ENTER(is_local_static_member)
+    zend_class_entry  *src                    = (zend_class_entry*) arg1;
+    int                is_sm                  = (arg2 != NULL);
+    HashTable         *parent_properties_info = &src->parent->properties_info;
+    HashTable         *parent_sm_ht           = is_sm ? src->parent->static_members :
+                                                        &src->parent->default_static_members;
+    zval             **child_prop             = (zval**)(p->pData);
+    zval             **parent_prop = NULL;
+    char              *unmangled, *class_name;
+    int                unmangled_len;
+    void             *dummy;
+    
+   /*
+    * The member isn't local if the parent has the same member at the same address.  Protected
+    * properties are unmangled on inheritance -- hence the unmangling checks.
+    */
+/////// TODO:  This algo doesn't make sense -- create testcase & step through in debugger
+    zend_unmangle_property_name(p->arKey, 
+#ifdef ZEND_ENGINE_2_2
+                                p->nKeyLength-1,
+#endif
+                                &class_name, &unmangled);
+    unmangled_len = strlen(unmangled)+1;
+
+    return zend_hash_find(parent_properties_info, unmangled, unmangled_len, &dummy) == FAILURE ||
+           zend_hash_find(&src->properties_info, unmangled, unmangled_len, &dummy) == FAILURE ||
+           zend_hash_quick_find(parent_sm_ht, p->arKey, p->nKeyLength, p->h, (void**)&parent_prop) 
+               == FAILURE ||
+           *parent_prop != *child_prop;
 }
 /* }}} */
 #endif
 
-#ifdef ZEND_ENGINE_2_2
-/* {{{ fixup_property_info */
-static void fixup_property_info(Bucket *p, zend_class_entry *src, zend_class_entry *dst,
+/* {{{ is_local_constant */
+static int is_local_constant(Bucket* p, const void *arg1, const void *dummy)
+{ENTER(is_local_constant)
+    zend_class_entry *src                    = (zend_class_entry*) arg1;
+    HashTable        *parent_constants_table = &src->parent->constants_table;
+    zval            **child_const            = (zval**)p->pData;
+    zval           **parent_const            = NULL;
+
+    return zend_hash_quick_find(parent_constants_table, p->arKey, 
+                                p->nKeyLength, p->h, (void **) &parent_const) == FAILURE ||
+           !parent_const || !child_const ||
+           *parent_const != *child_const;
+}
+/* }}} */
+
+
+/* {{{ Fixup routines to set fields which have denormalised for performance reasons */
+/* {{{ fixup_denormalised_methods */
+void fixup_denormalised_methods(Bucket *p, zend_class_entry *src, zend_class_entry *dst, 
                                 lpc_pool* pool)
-{ENTER(fixup_property_info)
-    assert(((zend_property_info*)p->pData)->ce == src);
-    ((zend_property_info*)p->pData)->ce = dst;
-    pool_tag_ptr(((zend_property_info*)p->pData)->ce);
-}
-/* }}} */
-#endif
-/* {{{ check_copy_property_info 
-       accept property info element for copy if
-       (Zend Engine >= 2.2)      */
-static lpc_check_t check_copy_property_info(Bucket* p, const void *arg1, 
-                                                       const void *dummy)
-{ENTER(check_copy_property_info)
-    zend_class_entry* src    = (zend_class_entry*) arg1;
-    zend_class_entry* parent = src->parent;
-    zend_property_info* child_info = (zend_property_info*)p->pData;
-    zend_property_info* parent_info = NULL;
-
-#ifdef ZEND_ENGINE_2_2
-    /* so much easier */
-    return (child_info->ce == src) ? CHECK_ACCEPT_ELT : CHECK_SKIP_ELT;
-#else
-    if (parent &&
-        zend_hash_quick_find(&parent->properties_info, p->arKey, p->nKeyLength,
-            p->h, (void **) &parent_info)==SUCCESS) {
-        if (parent_info->flags & ZEND_ACC_PRIVATE) {
-            return CHECK_ACCEPT_ELT;
-        }
-        if ((parent_info->flags & ZEND_ACC_PPP_MASK) !=
-            (child_info->flags & ZEND_ACC_PPP_MASK)) {
-            return CHECK_ACCEPT_ELT;
-        }
-        return  CHECK_SKIP_ELT;
-    }
-
-    /* property doesn't exist in parent, copy into cached child */
-    return ;
-#endif
-}
-/* }}} */
-
-#ifndef ZEND_ENGINE_2_4
-/* {{{ check_copy_static_member */
-static lpc_check_t check_copy_static_member(Bucket* p, const void *arg1, const void *arg2)
-{ENTER(check_copy_static_member)
-    zend_class_entry* src = (zend_class_entry*) arg1;
-    HashTable * ht = (HashTable*) arg2;
-    zend_class_entry* parent = src->parent;
-    HashTable * parent_ht = NULL;
-    char * member_name;
-    char * class_name = NULL;
-
-    zend_property_info *parent_info = NULL;
-    zend_property_info *child_info = NULL;
-    zval ** parent_prop = NULL;
-    zval ** child_prop = (zval**)(p->pData);
-
-    if (!parent) {
-        return CHECK_ACCEPT_ELT;
-    }
-
-    /* these do not need free'ing */
-#ifdef ZEND_ENGINE_2_2
-    zend_unmangle_property_name(p->arKey, p->nKeyLength-1, &class_name, &member_name);
-#else
-    zend_unmangle_property_name(p->arKey, &class_name, &member_name);
-#endif
-
-    /* please refer do_inherit_property_access_check in zend_compile.c
-     * to understand why we lookup in properties_info.
+{ENTER(fixup_denormalised_methods)
+    zend_function* zf = p->pData;
+    /* 
+     * The class_entry contains fields for the address of some standard functions.  All functions
+     * are checked against this list and the fields set as required.  This is only done on copy-in
+     * so all entries are local to the class rather than inherited.  Method names can't be magic
+     * and have already been validated by zend_do_begin_function_declaration(), so a straight
+     * string comparison can by used for the match.
      */
-    if ((zend_hash_find(&parent->properties_info, member_name,
-                        strlen(member_name)+1, (void**)&parent_info) == SUCCESS) &&
-        (zend_hash_find(&src->properties_info, member_name,
-                        strlen(member_name)+1, (void**)&child_info) == SUCCESS)) {
+    if (zf->common.fn_flags & ZEND_ACC_CTOR) {
+        dst->constructor = zf;
+    } else if (zf->common.fn_flags & ZEND_ACC_DTOR) {
+        dst->destructor  = zf;
+    } else if (zf->common.fn_flags & ZEND_ACC_CLONE) {
+        dst->clone       = zf;
+    } else {
+        char *method = zf->common.function_name;
+        if (method[0] == '_' && method[1] == '_') {
+#define SET_IF_SAME(m)  if (!strcmp(method, "__" #m)) dst->__ ## m = zf; 
+            switch (method[2]) {
 
-        if (ht == &(src->default_static_members)) {
-            parent_ht = &parent->default_static_members;
-        } else {
-            parent_ht = parent->static_members;
-        }
-
-        if (zend_hash_quick_find(parent_ht, p->arKey,
-                                 p->nKeyLength, p->h, (void**)&parent_prop) == SUCCESS) {
-            /* they point to the same zval */
-            if (*parent_prop == *child_prop) {
-                return CHECK_SKIP_ELT;
+            case 'c':
+#ifdef ZEND_ENGINE_2_3
+                SET_IF_SAME(callstatic);
+#endif
+                SET_IF_SAME(call);         break;
+            case 'g':
+                SET_IF_SAME(get);          break;
+            case 'i':
+                SET_IF_SAME(isset);        break;
+            case 's':
+                SET_IF_SAME(set);          break;
+#ifdef ZEND_ENGINE_2_2
+            case 't':
+                SET_IF_SAME(tostring);     break;
+#endif
+            case 'u':
+                SET_IF_SAME(unset);        break;
+            default: break;
+#undef SET_IF_SAME
             }
         }
     }
-
-    return CHECK_ACCEPT_ELT;
-}
-/* }}} */
-#endif
-
-/* {{{ check_copy_constant */
-static lpc_check_t check_copy_constant(Bucket* p, const void *arg1, const void *dummy)
-{ENTER(check_copy_constant)
-    zend_class_entry* src = (zend_class_entry*) arg1;
-    zend_class_entry* parent = src->parent;
-    zval ** child_const = (zval**)p->pData;
-    zval ** parent_const = NULL;
-
-    if (parent &&
-        zend_hash_quick_find(&parent->constants_table, p->arKey, 
-                             p->nKeyLength, p->h, (void **) &parent_const)==SUCCESS) {
-        if ((parent_const && child_const) && (*parent_const) == (*child_const)) {
-            return  CHECK_SKIP_ELT;
-        }
-    }
-
-    /* possibly not in the parent */
-    return CHECK_ACCEPT_ELT;
+    zf->common.scope = dst;
 }
 /* }}} */
 
-/* {{{ fixup_method */
-    #define SET_IF_SAME_NAME(member) \
-        if(src->member && !pool_strcmp(zf->common.function_name, src->member->common.function_name)) { \
-            TAG_SETPTR(dst->member, zf); \
-        }
-void fixup_method(Bucket *p, zend_class_entry *src, zend_class_entry *dst, lpc_pool* pool)
-{ENTER(fixup_method)
-    zend_function* zf = p->pData;
-
-    if (zf->common.scope == src) {
-        /* Fixing up the default functions for objects here since
-         * we need to compare with the newly allocated functions
-         *
-         * caveat: a sub-class method can have the same name as the
-         * parent's constructor and create problems.
-         */
-
-        if (zf->common.fn_flags & ZEND_ACC_CTOR) {
-            TAG_SETPTR(dst->constructor, zf);
-        } else if (zf->common.fn_flags & ZEND_ACC_DTOR) {
-            TAG_SETPTR(dst->destructor, zf);
-        } else if (zf->common.fn_flags & ZEND_ACC_CLONE) {
-            TAG_SETPTR(dst->clone, zf);
-        } else {
-            SET_IF_SAME_NAME(__get)
-            SET_IF_SAME_NAME(__set)
-            SET_IF_SAME_NAME(__unset)
-            SET_IF_SAME_NAME(__isset)
-            SET_IF_SAME_NAME(__call)
 #ifdef ZEND_ENGINE_2_2
-            SET_IF_SAME_NAME(__tostring)
-#endif
-#ifdef ZEND_ENGINE_2_3
-            SET_IF_SAME_NAME(__callstatic)
-#endif
-        }
-        TAG_SETPTR(zf->common.scope, dst);
-    } else {
-        /* no other function should reach here */
-        assert(0);
-    }
-}
+/* {{{ fixup_property_info_ce_field */
+static void fixup_property_info_ce_field(Bucket *p, zend_class_entry *src, zend_class_entry *dst,
+                                lpc_pool* pool)
+{ENTER(fixup_property_info_ce_field)
+    ((zend_property_info*)p->pData)->ce = dst;
+ }
 /* }}} */
-
-/* {{{ check_copy_method
-       returns ACCEPT if the function (class method) is in the scope of the class being copied */
-static lpc_check_t check_copy_method(Bucket* p, const void *arg1, const void *dummy)
-{ENTER(check_copy_method)
-    zend_class_entry* src = (zend_class_entry*)arg1;
-    zend_function* zf = (zend_function*)p->pData;
-
-    return  (zf->common.scope == src) ? CHECK_ACCEPT_ELT : CHECK_SKIP_ELT;
-}
-
-
-/* }}} */
+#endif
+/* }}} Fixup routines */
 
 /*
  * Local variables:
@@ -622,5 +565,5 @@ static lpc_check_t check_copy_method(Bucket* p, const void *arg1, const void *du
  * End:
  * vim>600: expandtab sw=4 ts=4 sts=4 fdm=marker
  * vim<600: expandtab sw=4 ts=4 sts=4
- */
+     */
 

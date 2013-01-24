@@ -12,14 +12,12 @@
   | obtain it through the world-wide-web, please send a note to          |
   | license@php.net so we can mail you a copy immediately.               |
   +----------------------------------------------------------------------+
-  | Authors: Gopal Vijayaraghavan <gopalv@yahoo-inc.com>                 |
+  | Authors: Terry Ellison <Terry@ellisons.org.uk                        |
   +----------------------------------------------------------------------+
 
-   This software was contributed to PHP by Yahoo! Inc. in 2008.
-
-   Future revisions and derivatives of this source code must acknowledge
-   Yahoo! Inc. as the original contributor of this module by
-   leaving this note intact in the source code.
+   This software includes content derived from the APC extension which was
+   initially contributed to PHP by Community Connect Inc. in 2002 and revised 
+   in 2005 by Yahoo! Inc. See README for further details.
 
    All other licensing and usage conditions are those of the PHP Group.
 */
@@ -146,12 +144,12 @@ void _lpc_pool_alloc(void **dest, lpc_pool* pool, uint size ZEND_FILE_LINE_DC)
         zend_uint rounded_size = ROUNDUP(size);
 
         if (rounded_size >= pool->available) {
+            TSRMLS_FETCH_FROM_POOL()
             /*
              * If the pool is full then bailout with a POOL_OVERFLOW.  The upper level will retry
              * the copy with a larger allocation;
              */ 
-            LPCGP(bailout_status) = LPC_POOL_OVERFLOW;
-            zend_bailout();
+            lpc_throw_storage_overflow();
         }
 
         storage = (zend_uchar *) pool->storage + pool->allocated;
@@ -603,7 +601,7 @@ extern lpc_pool* lpc_pool_create(lpc_pool_type_t type, void** arg1 TSRMLS_DC)
 #endif 
 #ifdef LPC_DEBUG
         if (LPCG(debug_flags)&LPC_DBG_LOAD)  /* Load/Unload Info */
-            lpc_debug("Serial pool created" TSRMLS_CC);
+            lpc_debug("Serial pool created for %s" TSRMLS_CC, gv->current_filename);
 #endif       
        /*
         * Use the pool global variables to allocate the appropriate pool storage. 
@@ -620,6 +618,8 @@ extern lpc_pool* lpc_pool_create(lpc_pool_type_t type, void** arg1 TSRMLS_DC)
         pool_alloc(dummy, sizeof(pool_storage_header));
         hdr            = pool->storage;      /* the header is the zeroth entry */
         memset(pool->storage , 0, gv->pool_buffer_size);
+        memcpy(ADD_BYTEOFF(pool->storage, gv->pool_buffer_size - sizeof (zend_uint)), 
+               END_MARKER, sizeof (zend_uint));
         return pool;
 
     } else if (type == LPC_RO_SERIALPOOL && gv->pool_buffer_comp_size) {
@@ -850,8 +850,7 @@ static zend_uchar *make_pool_rbvec(lpc_pool *pool)
     reloc_vec     = (ulong*)ADD_BYTEOFF(pool->storage, pool->allocated);
     reloc_vec_len = zend_hash_num_elements(&pool->tags);
     if (reloc_vec_len*sizeof(ulong) > pool->available) {
-        LPCG(bailout_status) = LPC_POOL_OVERFLOW;
-        zend_bailout();
+        lpc_throw_storage_overflow();
     }
  
     zend_hash_internal_pointer_reset(ht);
@@ -1128,8 +1127,7 @@ static int pool_compress(zend_uchar *outbuf, zend_uchar *inbuf, zend_uint insize
             q += j;
 
             if (q >= p) {                            /* bailout if overlap overflow has occurred */
-                LPCG(bailout_status) = LPC_POOL_OVERFLOW;
-                zend_bailout();
+                lpc_throw_storage_overflow();
             }
         }
         outsize = q - outbuf;
@@ -1148,8 +1146,7 @@ static int pool_compress(zend_uchar *outbuf, zend_uchar *inbuf, zend_uint insize
         ulong outsize = (inbuf - outbuf) + insize; 
 
         if (outsize < compressBound(insize)) {
-            LPCG(bailout_status) = LPC_POOL_OVERFLOW;
-            zend_bailout();
+            lpc_throw_storage_overflow();
         }
         if (compress2(outbuf, &outsize, inbuf, (uLong) insize, 2)==Z_OK) {
             return outsize;

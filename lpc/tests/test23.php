@@ -1,6 +1,5 @@
+TEST One local function, one class with one static and one public function
 <?php
-# one local function
-#included class with one static and one punblic function
 require "dd.php";
 function hw($x) {
     echo "hello world $x\n";

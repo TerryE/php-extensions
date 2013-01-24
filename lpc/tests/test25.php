@@ -1,3 +1,4 @@
+TEST Abstract class
 <?php
 
 abstract class pass {
