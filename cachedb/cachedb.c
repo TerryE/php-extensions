@@ -245,6 +245,9 @@ PHPAPI int _cachedb_open(cachedb_t** pdb, char *file, size_t file_length, char *
 			return FAILURE;
 	}
 
+    if(base->fp) {
+        php_stream_set_chunk_size(base->fp, 64*1024);
+    }
 	EFREE(opened);
 
 	db->is_binary = (mode_length == 2 && mode[1] == 'b');
@@ -652,7 +655,7 @@ static int cachedb_read_var(php_stream *fp, int is_binary, zval *value, size_t z
 	unsigned char   *buf        = NULL;
 	unsigned char   *p, *pend;
 	char             error_type = ' ';
-    size_t           ret;
+    size_t           ret        = -1;
 
 	/* Note that the value zval has been preallocated and initialised by the caller */ 
 
