@@ -6,13 +6,8 @@ function test_error_handler($err_no, $err_msg, $filename, $linenum, $vars) {
 set_error_handler('test_error_handler');
 error_reporting(8191);
 
-echo "\n\nObject with bad __toString():\n";
-class badToString {
-	function __toString() {
-		return 0;
-	}	
-}
-$obj = new badToString;
-printf($obj);
+class badToString { function __toString() { return 0; }	}
+$obj =  new badToString;
+printf ($obj);
 ?>
 ===DONE===

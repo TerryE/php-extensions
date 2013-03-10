@@ -65,8 +65,7 @@ if test "$PHP_LPC" != "no"; then
                lpc_hashtable.c \
                lpc_cache.c \
                lpc_debug.c \
-               lpc_pool.c \
-               lpc_string.c "
+               lpc_pool.c "
 
   PHP_NEW_EXTENSION(lpc, $lpc_sources, $ext_shared,, \\$(LPC_CFLAGS))
   PHP_SUBST(LPC_CFLAGS)

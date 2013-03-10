@@ -1,4 +1,8 @@
-LPC Quick-Start Braindump
+LPC Quick-Start Technical Overview
+
+*** With the Open-sourcing of Zend OptimizerPlus, I have decided to suspend work on this APC ***
+*** fork and re-engineer some of this technology into O+. This current commit is simply a    ***
+*** snapshot of LPC at the point of suspension.                                              ***
 
 This is a short overview of how LPC (a Light Program Cache) currently works in the form of a quick-
 start guide to start hacking LPC.  It assumes that you are already familiar with the corresponding
@@ -10,7 +14,7 @@ guide to APC, so doesn't include the intro sections on how to get, install, buil
 PHP installations are broadly divided into two categories: (i) application-optimised systems which
 host a single application or a set of mutually trusted applications on a dedicated server or VM; and
 (ii) shared hosting environments where a hosting provider provides the infrastructure and a managed
-service the hosts a (large number of) number of independent account.  Accelerators such as APC
+service which hosts a (large number of) number of independent account.  Accelerators such as APC
 effectively address the first of these. LPC is designed to address the second category.
 
 In a shared hosting environment, UID based access control is used to enable account separation.
@@ -34,8 +38,8 @@ application. It therefore discards:
 
 *   The bulk of the API including the APC iterator class
 
-*   Lazy function and class loading (which was introduced in 2009 to support mega-applications such
-    as Facebook -- see http://www.serverphorums.com/read.php?7,11145. It produces marginal if any
+*   Lazy function and class loading.  This was introduced in 2009 to support mega-applications such
+    as Facebook -- see http://www.serverphorums.com/read.php?7,11145.  It produces marginal if any
     performance gains for applications such as Wordpress or MediaWiki which at the upper end of the
     size range that LPC targets.
 
@@ -44,11 +48,9 @@ application. It therefore discards:
 These discarded functions represent roughly two-thirds of the APC source code base, so as a
 side-effect the LPC code base is a lot smaller than APC. 
 
-LPC uses a file-based opcode cache DB, with the aim of replacing the assembly and compilation of 
-dozens of source files with the largely serial access to a single cache file.  (I had initially 
-intended to use the core DBA (cdb and cdb_make) APIs, but cdb has quite poor performance for this
-usecase, so I implemented my own cachedb extension for this purpose.)  By default, each request
-script has its own file cache (e.g. DOCUMENT_ROOT/index.php uses DOCUMENT_ROOT/.index.php.cache by
+LPC uses a file-based opcode cache DB, with the aim of replacing the assembly and compilation of
+dozens of source files with the largely serial access to a single cache file.  By default, each
+request has its own file cache (e.g. DOCUMENT_ROOT/index.php uses DOCUMENT_ROOT/.index.php.cache by
 default).  This means that caches are specific to the script and each is under the same ownership.
 Nonetheless, the PER_DIR ini parameters lpc.cache_pattern and lpc.cache_replacement provide
 preg_replace-like functionality to allow the maintainer to move these caches into a separate
@@ -72,15 +74,15 @@ sentencing it into three categories:
 *   Code modules where I hoped to adopt a minimum change strategy (e.g. apc_cache.c.)
 
 However as development progressed, LPC had removed or changed so much of the APC functionality that
-it had passed the point where a full re-implementation became the most practical approach. This also
-had benefit that I could consistently adopt a single and consistent coding style which minimises 
-code length, of course subject to clarity and functionality constraints. 
+it had passed the point where a full re-implementation became the most practical approach.  This 
+also had benefit that I could consistently adopt a single and consistent coding style which 
+minimises code length, of course subject to clarity and functionality constraints. 
 
 I have taken advantage of the rewrite to move to a move Zend style of programming by using macros 
 (where practical) to encapsulate frequent code patterns and any Zend Engine variant coding.  I have
 also added extra documentation into the source, so hopefully other developers will find it easier 
 to get to grips with.  The net result of this is that at the current git version, the line counts
-are 5.4K source lines for LPC against 16.1K for APC with the corresponding comments:code percentages
+are 6.4K source lines for LPC against 16.1K for APC with the corresponding comments:code percentages
 are 41%:59% and 34%:66%.
 
 The APC policy on error handling is complicated by the need to protect the integrity of the shared
@@ -114,7 +116,7 @@ binary format (one or more op_arrays, etc.) and then execution proceeds with the
 The overall execution process is initiated by PHP receiving a request in one of various ways, such
 as a php parameter in the case of a php-cli script or as a URI scriptname as a webserver request.
 This resolves to the first source to be compiled, boot-strapping the execution cycle.  The execution
-hierarchy is then built up over the execution of the request, and on completion, the Zend runs a
+hierarchy is then built up over the execution of the request, and on completion, the ZendEE runs a
 destructor to enumerate and destroy these execution structures for each function, class, etc. 
 
     [As an aside, this is true even for the create_function() built-in which compiles and registers
@@ -357,11 +359,14 @@ The LPC pool and cache implementations are a complete rewrite compared to APC. T
 requirements driving their design are very different.
 
 The cache itself is a fairly simple wrapper around a CacheDB cache file, with the file index loaded
-into a hashtable as part of request initiation.  It contains one record per compiled module in
-initial creation order.  As most scripts follow the same programmatic path (as far as module loading
-is concerned) -- or at least one of a relatively small number of variants -- this means that in
-practice the cache file is then read essentially sequentially during the execution process to load
-all remaining modules.
+into a hashtable as part of request initiation.  Note that it was had initially intended to use the
+core DBA (cdb and cdb_make) APIs, but cdb has quite poor performance for this usecase, so the
+author's cachedb extension was implemented for this purpose.
+
+The Cache DB contains one record per compiled module in initial creation order.  As most scripts
+follow the same programmatic path (as far as module loading is concerned) -- or at least one of a
+relatively small number of variants -- this means that in practice the cache file is then read
+essentially sequentially during the execution process to load all remaining modules.
 
 The PHP initiator opens and validates the top level script, but other than this, the cache file is
 the only file accessed to load all scripts under default INI settings. 
@@ -519,6 +524,43 @@ To simplify coded use of the pool API:
     potential zero pointer returns. In the case of the emalloc layered call, memory exhaustion is
     already handled this way by the PHP runtime environment. In the case of pool memory exhaustion,
     this is caught programmatically by copy source function as discussed above. 
+
+6.  Minimizing File I/O to Source Files
+
+The use of a single unified Cache which is accessed largely serially effectively in lieu of the 
+reading of many separate source files effectively eliminates most of the I/O overheads of script 
+loading and compilation.  However, one aspect of the Zend architecture complicates this. 
+
+The include / require / eval pseudo functions are compiled directly down to an INCLUDE_OR_EVAL 
+instruction which then executes one of the 4 INCLUDE_OR_EVAL handlers.  (These are identical apart 
+from a few lines which handle the fetch of the 4 valid types of op1 parameter).  On the "_ONCE" 
+execution paths, the handlers do a look-ahead resolution of the source filename and in the case of
+first load pre-open the source itself.  This is entirely redundant in the case of LPC where the
+source already exists in the Cache.
+
+To address this issue, LPC replace the zend_opcode_handlers vector in the ZendEE, with a copy where
+where the INCLUDE_OR_EVAL handlers are replaced by an lpc-specific wrapper.  In the case where:
+
+*   The op is a _ONCE variant
+*   The source (op1) is a TMP, VAR or CONSTANT (the code generator doesn't seem to use CVs here).
+*   The source exists in the cash
+*   The source hasn't been previously loaded
+
+then the instruction is rewritten as a ZEND_INCLUDE / ZEND_REQUIRE variant for that single execution 
+step before the original zend handler is then called to do the work, then restoring the op2.  This
+approach of replacing a require_once by a require, and an include_once by an include on the first 
+load attempt, removes the need to do resolution and I/O.  Cache-misses need to do the I/O anyway, 
+and repeated _once variants still generate an filename resolution.
+
+Also note that this cache-existence check does not carry out a filename resolution (e.g. converting 
+a relative scriptname ./somescript.php to its absolute address form), and so will fall back to the
+the Zend handler if the parameter is a relative one.  However, as part of the opcode copy-out, LPC 
+does resolve constant relative filenames to the fully resolved variant and substitutes this resolved
+constant filename into both the source and copied opcode.  In this way the path resolution is 
+hoisted to compile time.  
+
+This approach can't be used for variable filename arguments, but in practice these are nearly always 
+resolved paths anyway (for example dirname(__FILE)__."/somescript.php").
 
 
 7.  Record Formats and Hash Tables

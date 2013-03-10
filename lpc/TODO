@@ -6,16 +6,21 @@ one of the existing tests fails and after a retest against the PHP test suite th
 second failure which has been paired down to a new test also failing. 
 
 As at current version, LPC can run the PHP test suite and MediaWiki without leeks and with no errors 
-other than compile-related (e.g. compiler warnings are ony issued on first and actual compile), so 
-I am now switching the development focus to addressing a few performance issues.  
+other than compile-related (e.g. compiler warnings are ony issued on first and actual compile).  I 
+have removed most file overheads. (APC now does more file opens than LPC even when running out of
+cache.)  My next steps are:
 
-*   The one issue that leaps out from an strace analysis of MediaWiki execution is that the standard
-    PHP opcode handler ZEND_INCLUDE_OR_EVAL_SPEC_TMP_HANDLER opens the source file in the case of a
-    require_once or include_once which is a performance killer for LPC.  I am adding an additional 
-    opcode intercept to handle this correctly.
+*   php-cgi builds with debug, then full optimization and no debug.
 
-*   Alternative compression engines.  Need to investigate the cost/benefit/penalty trade-offs of 
-    adding LZ4 and LZ4 HC (see http://code.google.com/p/lz4/) as alternative compression options.
+*   Benchmarking MediaWiki performance with a production LPC.
+
+*   Publish results on PECL and DEV DLs.
+
+*   Look at alternative compression engines.  Need to investigate the cost/benefit/penalty 
+    trade-offs of adding LZ4 and LZ4 HC (see http://code.google.com/p/lz4/) as alternative 
+    compression options.
+
+*   Regress 5.4 version support into LPC.
 
 
 W/E review 14-16 Dec 2012

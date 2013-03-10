@@ -162,13 +162,10 @@ zend_op_array* lpc_compile_file(zend_file_handle* h, int type TSRMLS_DC)
 
         lpc_cache_insert(key, compressed_buffer, compressed_length, pool_length TSRMLS_CC);
         lpc_cache_free_key(key TSRMLS_CC);
+        DEBUG2(FILES, "Opcode cache entry for %s created (%u bytes)", 
+                      h->filename, compressed_length);
         lpc_pool_destroy(pool);
 
-#ifdef LPC_DEBUG
-        if (LPCG(debug_flags)&LPC_DBG_FILES)  /* Load/Unload Info */
-            lpc_debug("Opcode cache entry for %s created (%u bytes)" TSRMLS_CC, 
-                      h->filename, compressed_length);
-#endif	
         LPCG(current_filename) = NULL;
 
         return op_array;
@@ -192,6 +189,7 @@ zend_op_array* lpc_compile_file(zend_file_handle* h, int type TSRMLS_DC)
 
 	    if (h->opened_path) {
             efree(h->opened_path);
+            h->opened_path = NULL;
         }
 
         lpc_cache_free_key(key TSRMLS_CC);
@@ -203,10 +201,8 @@ zend_op_array* lpc_compile_file(zend_file_handle* h, int type TSRMLS_DC)
     * If we've dropped through to here, the file isn't cacheable or has failed stat validation,
     * or something has gone wrong.  So chain onto the old (zend) compile file function.  
     */
-#ifdef LPC_DEBUG
-    if (LPCG(debug_flags)&LPC_DBG_FILES)  /* Load/Unload Info */
+    IF_DEBUG(FILES)
         lpc_debug("Failing back to default compile for %s" TSRMLS_CC, h->filename);
-#endif
     if (key) lpc_cache_free_key(key TSRMLS_CC);
     LPCG(current_filename) = NULL;
     return safe_old_compile_file(h, type TSRMLS_CC);

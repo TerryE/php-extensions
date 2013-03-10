@@ -472,7 +472,80 @@ zval* lpc_cache_info(zend_bool limited TSRMLS_DC)
 /* }}} */
 
 int ZEND_FASTCALL lpc_include_or_eval_handler(ZEND_OPCODE_HANDLER_ARGS)
-{
+{ENTER(lpc_include_or_eval_handler)
+   /*
+    * The one common scenario where the standard Zend opcode handler generates unnecessary I/O
+    * incuring a runtime performance hit is in the case of the first require_once (or include_once)
+    * for a previously cached source, as the source file is opened by the Zend handler in this case. 
+    * The strategy here is to replace the op2 type by the corresponding require or include for this 
+    * single instruction step before chaining onto the zend routine. 
+    */
+#ifdef ZEND_ENGINE_2_4
+  #define OP2_VAL(opl) opl->extended_value
+#else
+  #define TMP_FREE(z) (zval*)(((zend_uintptr_t)(z)) | 1L
+  #define OP2_VAL(opl) Z_LVAL(opl->op2.u.constant) 
+#endif
+
+#define EX_T(offset) (*(temp_variable *)((char *) execute_data->Ts + offset))
+
+	zend_op      *opline          = execute_data->opline;
+	zval        *inc_filename = NULL;
+ 	zval        ***tmp;
+    int          return_status;
+    int          rewrite_op2   = 0;
+
+    opcode_handler_t zend_handler = lpc_old_opcode_handler_ptr[
+                                        (ZEND_INCLUDE_OR_EVAL*25) + 
+                                        lpc_vm_decode[opline->op1.op_type] * 5
+                                        ];
+ ///// TODO: Zend 2.4 version 
+    if (OP2_VAL(opline) == ZEND_INCLUDE_ONCE ||
+        OP2_VAL(opline) == ZEND_REQUIRE_ONCE) {
+     	switch (opline->op1.op_type) {
+		    case IS_CONST:
+			    inc_filename = &opline->op1.u.constant;
+			    break;
+		    case IS_TMP_VAR:
+    	        inc_filename = &EX_T(opline->op1.u.var).tmp_var;                
+			    break;
+		    case IS_VAR:
+                inc_filename = EX_T(opline->op1.u.var).var.ptr;
+			    break;
+		    case IS_CV:
+               /*
+                * In practice the Zend opcode generator never seems to generate INCLUDE_OR_EVAL ops
+                * with a CV op1 so here we simply default. 
+                */
+           default:
+                break;
+        }  
+       /*
+        * If filename already exists in index and the module isn't loaded
+        */
+        if (inc_filename && inc_filename->type==IS_STRING &&
+            Z_STRLEN_P(inc_filename) == strlen(Z_STRVAL_P(inc_filename))) {
+            char *fn     = Z_STRVAL_P(inc_filename);
+            int   fn_len = Z_STRLEN_P(inc_filename)+1;
+
+            if (zend_hash_exists(LPCG(lpc_cache)->index, fn, fn_len) &&
+                !zend_hash_exists(&EG(included_files), fn, fn_len)) {
+                rewrite_op2 = 1;
+                OP2_VAL(opline) = (OP2_VAL(opline) == ZEND_INCLUDE_ONCE) ?
+                                      ZEND_INCLUDE : 
+                                      ZEND_REQUIRE;
+            }
+        }
+    }       
+
+    return_status = zend_handler(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+
+    if (rewrite_op2) {
+        OP2_VAL(opline) = (OP2_VAL(opline) == ZEND_INCLUDE) ?
+                              ZEND_INCLUDE_ONCE : 
+                              ZEND_REQUIRE_ONCE;
+    }
+    return return_status;
 }
 
 /*

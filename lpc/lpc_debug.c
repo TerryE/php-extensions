@@ -84,7 +84,8 @@ int lpc_debug_enter(char *s)
 "*** lpc.c", "lpc_valid_file_match", "lpc_generate_cache_name", "lpc_atol", "lpc_resolve_path",
 "lpc_resolve_symbol",
 "*** lpc_cache.c", "lpc_cache_create", "lpc_cache_destroy", "lpc_cache_clear", "lpc_cache_insert",
-"lpc_cache_retrieve", "lpc_cache_make_key", "lpc_cache_free_key", "lpc_cache_info", 
+"lpc_cache_retrieve", "lpc_cache_make_key", "lpc_cache_free_key", "lpc_cache_info",
+"lpc_include_or_eval_handler", 
 "*** lpc_copy_class.c", "lpc_copy_new_classes", "lpc_install_classes", "lpc_copy_class_entry",
 "copy_property_info", "is_local_method", "is_local_default_property", "is_local_property_info",
 "is_local_static_member", "is_local_constant", "fixup_denormalised_methods",
@@ -102,9 +103,9 @@ int lpc_debug_enter(char *s)
 "generate_interned_strings", "pool_compress", "pool_uncompress",
 "*** lpc_request.c ***", "lpc_set_compile_hook", "lpc_module_shutdown", 
 "add_filter_delims", "lpc_request_init", "lpc_request_shutdown", "lpc_dtor_context", 
-"*** lpc_string.c", "dummy_interned_strings_snapshot_for_php",
-"dummy_interned_strings_restore_for_php", "lpc_new_interned_string", "lpc_copy_internal_strings",
-"lpc_interned_strings_init", "lpc_interned_strings_shutdown",  
+//"*** lpc_string.c", "dummy_interned_strings_snapshot_for_php",
+//"dummy_interned_strings_restore_for_php", "lpc_new_interned_string", "lpc_copy_internal_strings",
+//"lpc_interned_strings_init", "lpc_interned_strings_shutdown",  
 "*** php_lpc.c", "PHP_MINFO_FUNCTION", "PHP_GINIT_FUNCTION", "PHP_GSHUTDOWN_FUNCTION",
 "PHP_RINIT_FUNCTION", "PHP_RSHUTDOWN_FUNCTION", "PHP-lpc_cache_info", "PHP-lpc_clear_cache",
 "PHP-lpc_compile_file"};
@@ -125,10 +126,9 @@ int lpc_debug_enter(char *s)
         } \
         assert(found != 2);\
     } while (0)
-    if (!(LPCG(debug_flags)&LPC_DBG_ENTER)) {  /* */
+    if (!(LPCG(debug_flags)&(LPC_DBG_ENTER|LPC_DBG_COUNTS))) {  /* */
         return 0;
     }
-    stack_depth = get_stack_depth();
     if (n_func_probe == 0) {
         for (i = 0; i<(sizeof(module)/sizeof(char *)); i++) {
             find(module[i],ndx,found);
@@ -139,18 +139,24 @@ int lpc_debug_enter(char *s)
         lpc_debug("Funtion Table initialised with %i elements in %i probes" TSRMLS_CC,  
                   sizeof(module)/sizeof(char *), n_func_probe);
     }
-    if (s[0]=='D' && strcmp(s+1, "UMP")==0) { /* it is an entry counter */
+    if (s[0]=='D' && strcmp(s+1, "UMP")==0 && (LPCG(debug_flags)&LPC_DBG_COUNTS)) { 
+        /* it is an entry counter */
         for (i = 0; i<(sizeof(module)/sizeof(char *)); i++) {
+            if (module[i][0] == '*') continue;
             find(module[i],ndx,found);
             assert(found); /* 'cos the key should exist */
             lpc_debug("%6i  %s" TSRMLS_CC,  func_table[ndx].func_cnt, module[i]);
         }
-    } else {                    /* it is a summary table request*/
-        lpc_debug("Entering %s %s" TSRMLS_CC,
-        (stack_depth >= sizeof(fill)) ? "" : fill + (sizeof(fill)-stack_depth), s);
+    } else  {                    /* it is a summary table request*/
         find(s,ndx,found);
         assert(found); /* 'cos the key should exist */
         func_table[ndx].func_cnt++;
+        IF_DEBUG(ENTER) {
+            stack_depth = get_stack_depth();
+            lpc_debug("Entering %s %s" TSRMLS_CC,
+                      (stack_depth >= sizeof(fill) ? "" : fill + (sizeof(fill)-stack_depth)),
+                      s);
+        }
     }
     return 0;
 }

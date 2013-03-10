@@ -1,7 +1,7 @@
 TEST bypasses: Derived from PHP test script func/010
 function with many parameters
 <?php echo "===DONE===\n"; exit;
-@unlink(dirname(__FILE__).'/010-file.php');
+@unlink(dirname(__FILE__).'/010-file.inc');
 // the stack size + some random constant
 $boundary = 64*1024;
 $limit    = $boundary+42;
@@ -47,8 +47,8 @@ for($i=0; $i< $limit; ++$i) {
 
 $str .= ");\n";
 
-$filename = dirname(__FILE__).'/010-file.php';
-file_put_contents(dirname(__FILE__).'/010-file.php', $str);
+$filename = dirname(__FILE__).'/010-file.inc';
+file_put_contents(dirname(__FILE__).'/010-file.inc', $str);
 unset($str);
 
 include($filename);

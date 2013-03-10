@@ -32,7 +32,7 @@
 #include "lpc_copy_op_array.h"
 #include "lpc_hashtable.h"
 #include "php_lpc.h"
-#include "lpc_string.h"
+//#include "lpc_string.h"
 #include "Zend/zend_compile.h"
 /*
  * These functions are filter functions used in lpc_copy_class_entry as lpc_copy_hashtable
@@ -121,14 +121,15 @@ zend_bool lpc_install_classes(lpc_class_t* classes, zend_uint num_classes, lpc_p
 #endif
                                                        0, &parent TSRMLS_PC) == SUCCESS);
                 CHECK(do_inheritance);
-            }   
-
+            }
             pool_alloc(dst_cl, sizeof(zend_class_entry));
             lpc_copy_class_entry(dst_cl, &cl->class_entry,  pool);
 
+            DEBUG2(LOAD,"Class %s installed, current memory usage %u Kb)", 
+                        dst_cl->name, zend_memory_usage(0 TSRMLS_PC));
+
             if (do_inheritance) {
                 zend_do_inheritance(dst_cl, *parent TSRMLS_PC);
-//////                dst_cl->refcount++;
             }
 
             CHECK(zend_hash_add(EG(class_table), cl_name, cl_name_len+1,
@@ -178,7 +179,7 @@ error:
 void lpc_copy_class_entry(zend_class_entry* dst, zend_class_entry* src, lpc_pool* pool)
 /*
  * Deep copying a zend_class_entry (see Zend/zend.h) involves various components:
- *  1)  scalars which need to be copies "bit copied"
+ *  1)  scalars which need to be "bit copied"
  *  2)  scalars which shouldn't be inherited on copy
  *  3)  Embeded HashTables and pointers to structures which need to be deep copied
  *  4)  function pointers which need to be relocated.
@@ -197,10 +198,10 @@ void lpc_copy_class_entry(zend_class_entry* dst, zend_class_entry* src, lpc_pool
  * and the HashTables:
  *    
  *    function_table            zend_function_dtor
- *    default_properties        zval_ptr_dtor_func
+ *    default_properties        zval_ptr_dtor_wrapper
  *    properties_info           zend_destroy_property_info
- *    default_static_members    zval_ptr_dtor_func
- *    constants_table           zval_ptr_dtor_func
+ *    default_static_members    zval_ptr_dtor_wrapper
+ *    constants_table           zval_ptr_dtor_wrapper
  *    *static_members           [R] (points to default_static_member in the case of user classes)
  * 
  * (4) are the function pointers for : constructor, destructor, clone, __get, __set, __unset,
@@ -219,73 +220,85 @@ void lpc_copy_class_entry(zend_class_entry* dst, zend_class_entry* src, lpc_pool
  */
 {ENTER(lpc_copy_class_entry)
     uint i = 0;
-    TSRMLS_FETCH_FROM_POOL();
+    lpc_ht_copy_element copy_out_is_local_method           = NULL ;
+    lpc_ht_copy_element copy_out_is_local_default_property = NULL ;
+    lpc_ht_copy_element copy_out_is_local_property_info    = NULL ;
+    lpc_ht_copy_element copy_out_is_local_static_member    = NULL ;
+    lpc_ht_copy_element copy_out_is_local_constant         = NULL ;
+    TSRMLS_FETCH_FROM_POOL()
 
-    assert(src->type == ZEND_USER_CLASS);
-    BITWISE_COPY(src,dst);
+    assert( src->type == ZEND_USER_CLASS && src->name );
 
-    if (src->name) {
-        pool_nstrdup(dst->name, dst->name_length, src->name, src->name_length, 1);
-    }
+/* all done through class inheritance so can be zero for saving compiled class to cache 
+            src->iterator_funcs.funcs       == NULL &&
+            src->create_object              == NULL &&
+            src->get_iterator               == NULL &&
+            src->interface_gets_implemented == NULL &&
+            src->get_static_method          == NULL &&
+            src->module                     == NULL);
+*/
+    /* So many fields are zeroed that its easier to default to zero and only copy non-zero ones */
+    memset(dst, 0, sizeof(zend_class_entry));
 
-   /* 
-    * These will either be set inside lpc_fixup_hashtable or they will be copied
-    * out from parent inside zend_do_inheritance. 
-    */
-    dst->parent = NULL;
-    dst->constructor =  NULL;
-    dst->destructor = NULL;
-    dst->clone = NULL;
-    dst->__get = NULL;
-    dst->__set = NULL;
-    dst->__unset = NULL;
-    dst->__isset = NULL;
-    dst->__call = NULL;
-#ifdef ZEND_ENGINE_2_2
-    dst->__tostring = NULL;
-#endif
-#ifdef ZEND_ENGINE_2_3
-    dst->__callstatic = NULL;
-#endif
-   /*
-]    * Unset function proxies 
-    */
-    dst->serialize_func = NULL;
-    dst->unserialize_func = NULL;
+    pool_nstrdup(dst->name, dst->name_length, src->name, src->name_length, 1);
+    dst->type       = ZEND_USER_CLASS;
+    dst->line_start = src->line_start;
+    dst->line_end   = src->line_end;
 
-   /*
-    * If the class has a pointer to its parent class then the compiler has performed compile-time
-    * inheritance which must be backed out, but the parent class name is first interned into the
-    * parent field to be avaiable for rebinding on subsequent retrieval.
-    */
-    if (src->parent) {
-        pool_strdup(dst->parent, is_copy_out() ? src->parent->name : (char *) src->parent, 0);
-    }
-
-#define ON_COPYOUT_BOUND_CHILD(rtn) ((is_copy_out() && src->parent) ? rtn : NULL)
-   /*
-    * Class interfaces are NULLed but then populated at runtime using ADD_INTERFACE zend_op.  
-    * However, inherited ones may have been added if the class is compile-time bound to a parent. 
-    */    
     if (is_copy_out()) {
+
+       /*
+        * If the class has a pointer to its parent class then the compiler has performed compile-
+        * time inheritance which must be backed out, but the parent class name is first interned
+        * into the parent field to be avaiable for rebinding on subsequent retrieval.
+        */
+        if (src->parent) {
+            pool_strdup(dst->parent, src->parent->name, 0);
+
+            copy_out_is_local_method           = is_local_method;
+            copy_out_is_local_default_property = is_local_default_property;
+            copy_out_is_local_property_info    = is_local_property_info;
+            copy_out_is_local_static_member    = is_local_static_member;
+            copy_out_is_local_constant         = is_local_constant;
+        }
+
+       /*
+        * Local class interfaces are NULLed then populated at runtime using ADD_INTERFACE zend_op.  
+        * Inherited ones added if the class is compile-time bound to a parent, should be ignored; 
+        */    
         for(i = 0 ; (i < src->num_interfaces) && !src->interfaces[i]; i++) {}
-///  TODO: this used to be set to 0 for nonbound child classes?
         dst->num_interfaces = i;
         dst->interfaces     = src->interfaces ? LPC_ALLOCATE_TAG : NULL;  
-    } else { /* is copyin */
+///  TODO: this used to be set to 0 for nonbound child classes?
+
+    } else {
+
+        if (src->parent) {
+           pool_strdup(dst->parent, (char *)src->parent, 0);
+        }
+
+        zend_initialize_class_data(dst, 1 TSRMLS_CC);
+
         dst->num_interfaces = src->num_interfaces;
+
         if (src->interfaces) { /* Only alloc array if original was allocated */
             pool_alloc(dst->interfaces, sizeof(zend_class_entry*) * src->num_interfaces);
             memset(dst->interfaces, 0,  sizeof(zend_class_entry*) * src->num_interfaces);
-        }  
-    } 
+            }
 
-    COPY_HT(function_table, lpc_copy_function, zend_function, 
-            ON_COPYOUT_BOUND_CHILD(is_local_method), NULL);
-
-    if (is_copy_in()) {
-        lpc_fixup_hashtable(&dst->function_table, fixup_denormalised_methods, src, dst, pool);
+        CE_FILENAME(dst) = LPCGP(current_filename);
     }
+
+    dst->ce_flags   = src->ce_flags;
+
+    /* In the case of a user class dup the doc_comment if any */
+    if (CE_DOC_COMMENT(src)) {
+        pool_memcpy(CE_DOC_COMMENT(dst),
+                    CE_DOC_COMMENT(src), (CE_DOC_COMMENT_LEN(src) + 1));
+        CE_DOC_COMMENT_LEN(dst) = CE_DOC_COMMENT_LEN(src);
+    }
+ 
+    COPY_HT(function_table, lpc_copy_function, zend_function, copy_out_is_local_method, NULL);
 
 #ifdef ZEND_ENGINE_2_4
     dst->default_properties_count = src->default_properties_count;
@@ -306,15 +319,18 @@ void lpc_copy_class_entry(zend_class_entry* dst, zend_class_entry* src, lpc_pool
     }
 #else
     COPY_HT(default_properties, lpc_copy_zval_ptr, zval *, 
-            ON_COPYOUT_BOUND_CHILD(is_local_default_property), NULL);
+            copy_out_is_local_default_property, NULL);
 #endif
 
     COPY_HT(properties_info, copy_property_info, zend_property_info, 
-            ON_COPYOUT_BOUND_CHILD(is_local_property_info), NULL);
+            copy_out_is_local_property_info, NULL);
 
+    if (is_copy_in()) {
+        lpc_fixup_hashtable(&dst->function_table, fixup_denormalised_methods, src, dst, pool);
 #ifdef ZEND_ENGINE_2_2
-    lpc_fixup_hashtable(&dst->properties_info, fixup_property_info_ce_field, src, dst, pool);
+        lpc_fixup_hashtable(&dst->properties_info, fixup_property_info_ce_field, src, dst, pool);
 #endif
+    }
 
 #ifdef ZEND_ENGINE_2_4
     dst->default_static_members_count = src->default_static_members_count;
@@ -337,33 +353,19 @@ void lpc_copy_class_entry(zend_class_entry* dst, zend_class_entry* src, lpc_pool
     }
     TAG_SETPTR(dst->static_members_table, dst->default_static_members_table);
 #else
-    COPY_HT(default_static_members, lpc_copy_zval_ptr, zval *, 
-            ON_COPYOUT_BOUND_CHILD(is_local_static_member), NULL);
+    COPY_HT(default_static_members, lpc_copy_zval_ptr, zval *,
+            copy_out_is_local_static_member, NULL);
 
     if (src->static_members && src->static_members != &src->default_static_members) {
         pool_alloc_ht(dst->static_members); 
         COPY_HT_P(static_members, lpc_copy_zval_ptr, zval *,
-                  ON_COPYOUT_BOUND_CHILD(is_local_static_member), (void *)1);
+                  copy_out_is_local_static_member, (void *)1);
     } else if (is_copy_in()){
         dst->static_members = &dst->default_static_members;
-    } else {
-        dst->static_members = NULL;  /* NULL is used in lieu in the serial pool */
     }
 #endif
-
     COPY_HT(constants_table, lpc_copy_zval_ptr, zval *, 
-            ON_COPYOUT_BOUND_CHILD(is_local_constant), NULL);
-
-    /* In the case of a user class dup the doc_comment if any */
-    if (CE_DOC_COMMENT(src)) {
-        pool_memcpy(CE_DOC_COMMENT(dst),
-                    CE_DOC_COMMENT(src), (CE_DOC_COMMENT_LEN(src) + 1));
-    }
-   /*
-    * is the class filename is the current source file name then the RTS doesn't free this as
-    * it also points to the op_array filename, so replicate this to avoid the memory leak.
-    */    
-    CE_FILENAME(dst) = is_copy_out() ? NULL : LPCGP(current_filename);
+            copy_out_is_local_constant, NULL);
 
 }
 /* }}} */
@@ -518,26 +520,26 @@ void fixup_denormalised_methods(Bucket *p, zend_class_entry *src, zend_class_ent
     } else {
         char *method = zf->common.function_name;
         if (method[0] == '_' && method[1] == '_') {
-#define SET_IF_SAME(m)  if (!strcmp(method, "__" #m)) dst->__ ## m = zf; 
+#define SET_IF_SAME(ame,fld)  if (!strcmp(method+3, #ame)) dst->__ ## fld = zf; 
             switch (method[2]) {
 
             case 'c':
 #ifdef ZEND_ENGINE_2_3
-                SET_IF_SAME(callstatic);
+                SET_IF_SAME(allStatic, callstatic);
 #endif
-                SET_IF_SAME(call);         break;
+                SET_IF_SAME(all, call);         break;
             case 'g':
-                SET_IF_SAME(get);          break;
+                SET_IF_SAME(et, get);           break;
             case 'i':
-                SET_IF_SAME(isset);        break;
+                SET_IF_SAME(sset, isset);       break;
             case 's':
-                SET_IF_SAME(set);          break;
+                SET_IF_SAME(et, set);           break;
 #ifdef ZEND_ENGINE_2_2
             case 't':
-                SET_IF_SAME(tostring);     break;
+                SET_IF_SAME(oString, tostring); break;
 #endif
             case 'u':
-                SET_IF_SAME(unset);        break;
+                SET_IF_SAME(unset, unset);      break;
             default: break;
 #undef SET_IF_SAME
             }

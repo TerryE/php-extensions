@@ -34,50 +34,27 @@
 #include "lpc.h"
 #include "lpc_pool.h"
 
-/* {{{ Enum typedefs for op-array and common */
-typedef enum {
-    CHECK_SKIP_ELT      = 0x0,  /* Skip the current HashTable Entry */
-    CHECK_ACCEPT_ELT    = 0x1,  /* Accept the current HashTable Entry */
-} lpc_check_t;
-#if 0
-typedef enum {
-    NO_PTRS    = 0x0,  /* HashTable doesn't hold pointers */
-    HOLDS_PTRS = 0x1,  /* HashTable does hold pointers */
-} lpc_ptr_flag_t;
-
-typedef enum {
-    COPY_FUNCTION  = 0x0,
-    COPY_ZVAL_PTR  = 0x1,
-    COPY_PROP_INFO = 0x02
-} lpc_ht_copy_t;
-
-typedef struct _lpc_hashtable_copy_args_t {
-    lpc_ht_copy_fun_t copy_fn;
-    lpc_ptr_flag_t    holds_ptrs;
-    uint              data_size;
-} lpc_hashtable_copy_args_t;
-#endif
 #define COPY_HT(fld, copyfunc, size_type, checkfunc, optarg) \
-    lpc_copy_hashtable(&dst->fld, &src->fld, pool, (lpc_ht_copy_fun_t) copyfunc, sizeof(size_type) ,\
-    (lpc_ht_check_copy_fun_t) checkfunc, src, optarg)
+    lpc_copy_hashtable(&dst->fld, &src->fld, pool, (lpc_ht_copy_fun_t) copyfunc, \
+    sizeof(size_type), (lpc_ht_copy_element) checkfunc, src, optarg)
 
 #define COPY_HT_P(fld, copyfunc, size_type, checkfunc, optarg) \
-    lpc_copy_hashtable(dst->fld, src->fld, pool, (lpc_ht_copy_fun_t) copyfunc, sizeof(size_type) ,\
-    (lpc_ht_check_copy_fun_t) checkfunc, src, optarg)
+    lpc_copy_hashtable(dst->fld, src->fld, pool, (lpc_ht_copy_fun_t) copyfunc, \
+    sizeof(size_type), (lpc_ht_copy_element) checkfunc, src, optarg)
 
 /* }}} */
 
 /* {{{ LPC abstract function typedefs */
 typedef void* (*lpc_ht_copy_fun_t)(void*, const void*, lpc_pool*);
-typedef lpc_check_t (*lpc_ht_check_copy_fun_t)(Bucket*, const void *, const void *);
+typedef int   (*lpc_ht_copy_element)(Bucket*, const void *, const void *);
 typedef void  (*lpc_ht_fixup_fun_t)(Bucket*, zend_class_entry*, zend_class_entry*, lpc_pool*);
 /* }}} */
 
 /* {{{ Top-level copy functions for op-array and common */
 extern void lpc_copy_hashtable(HashTable* dst, const HashTable* src, lpc_pool* pool, 
-                              lpc_ht_copy_fun_t copy_fn, size_t rec_size,
-                              lpc_ht_check_copy_fun_t check_fn,
-                              const void *cf_arg1, const void *cf_arg2);
+                               lpc_ht_copy_fun_t copy_fn, size_t rec_size,
+                               lpc_ht_copy_element check_fn,
+                               const void *cf_arg1, const void *cf_arg2);
 extern void lpc_fixup_hashtable(HashTable *ht, lpc_ht_fixup_fun_t fixup, 
                                 zend_class_entry *src, zend_class_entry *dst, 
                                 lpc_pool *pool);

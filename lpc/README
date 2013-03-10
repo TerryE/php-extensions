@@ -1,10 +1,12 @@
-
 LPC
   Terry Ellison<Terry@ellisons.org.uk> 
 
-LPC is a work of Terry Ellison who greants joint copyright to the PHP Group under version 3.01 of the PHP license, that is bundled with this package in the file LICENSE, and is available through the world-wide-web at the following url: http://www.php.net/license/3_01.txt.
+LPC is a work of Terry Ellison who grants joint copyright to the PHP Group under version 3.01 of the PHP 
+license, that is bundled with this package in the file LICENSE, and is available through the world-wide-web 
+at the following url: http://www.php.net/license/3_01.txt.
 
-LPC is based on a fork of APC, and fully acknowledges the original contributions by Community Connect Inc. and Yahoo! Inc. and the PHP developement, and specifically the following authors.
+LPC is based on a fork of APC, and fully acknowledges the original contributions by Community Connect Inc. 
+and Yahoo! Inc. and the PHP developement, and specifically the following authors.
  
   Daniel Cowgill <dcowgill@communityconnect.com>
   Edin Kadribasic <edink@php.net>
@@ -17,3 +19,4 @@ LPC is based on a fork of APC, and fully acknowledges the original contributions
   Gopal Vijayaraghavan <gopalv@yahoo-inc.com>
   Andrei Zmievski <andrei@php.net>
 
+See TECHNOTES.txt for further details.

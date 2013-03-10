@@ -163,7 +163,7 @@ static PHP_GSHUTDOWN_FUNCTION(lpc)
 /* }}} */
 
 #define OPCODE_TABLE_SIZE 25*LPC_MAX_OPCODE+26
-static opcode_handler_t *old_opcode_handler_ptr = NULL;
+opcode_handler_t *lpc_old_opcode_handler_ptr = NULL;
 static opcode_handler_t opcode_handlers[OPCODE_TABLE_SIZE];
 
 /* {{{ PHP_MINIT_FUNCTION(lpc) */
@@ -180,6 +180,7 @@ static PHP_MINIT_FUNCTION(lpc)
     REGISTER_INI_ENTRIES();
 
     if (INI_INT("lpc.enabled") && (!LPCG(initialized))) {
+        static int hook =1;
         lpc_module_init(module_number TSRMLS_CC);
         /*
          * Intercept all ZEND_INCLUDE_OR_EVAL instructions with LPCs own handler.  This copy / 
@@ -189,10 +190,10 @@ static PHP_MINIT_FUNCTION(lpc)
         memcpy(opcode_handlers, zend_opcode_handlers, sizeof(opcode_handlers));
         for(i = 0; i < 25; i++) {
             if ((i/5) != _LPC_UNUSED_CODE) { /* op1 must be specified so skip unused */
-//////not yet                opcode_handlers[(ZEND_INCLUDE_OR_EVAL*25) + i] = lpc_include_or_eval_handler; 
+                opcode_handlers[(ZEND_INCLUDE_OR_EVAL*25) + i] = lpc_include_or_eval_handler; 
             }
         }
-        old_opcode_handler_ptr = zend_opcode_handlers;
+        lpc_old_opcode_handler_ptr = zend_opcode_handlers;
         zend_opcode_handlers   = opcode_handlers;
     }
 
@@ -207,8 +208,8 @@ static PHP_MSHUTDOWN_FUNCTION(lpc)
         lpc_module_shutdown(TSRMLS_C);
     }
     UNREGISTER_INI_ENTRIES();
-    if (!old_opcode_handler_ptr) {
-        zend_opcode_handlers = old_opcode_handler_ptr;
+    if (!lpc_old_opcode_handler_ptr) {
+        zend_opcode_handlers = lpc_old_opcode_handler_ptr;
     }
     return SUCCESS;
 }
@@ -227,8 +228,9 @@ static PHP_RINIT_FUNCTION(lpc)
 /* {{{ PHP_RSHUTDOWN_FUNCTION(lpc) */
 static PHP_RSHUTDOWN_FUNCTION(lpc)
 {ENTER(PHP_RSHUTDOWN_FUNCTION)
-    if (LPCG(debug_flags)&LPC_DBG_COUNTS) { /* Print out function summary counts */
-        ENTER(DUMP);
+
+    IF_DEBUG(COUNTS) {
+        ENTER(DUMP);     /* Print out function summary counts */
     }
    /*
     * Since errors can flip the enabled state off, the request shutdown is always executed whether

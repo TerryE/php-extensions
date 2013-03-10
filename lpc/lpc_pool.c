@@ -85,7 +85,7 @@ static void pool_uncompress(zend_uchar *outbuf, zend_uint outsize,
 int lpc_pool_init(uint max_module_len TSRMLS_DC)
 {ENTER(lpc_pool_init)
     uint num_quanta;
-    TSRMLS_FETCH_GLOBAL_VEC()
+    FETCH_GLOBAL_VEC()
 
     zend_llist_init(&gv->exec_pools, sizeof(lpc_pool), (void (*)(void *)) lpc_pool_destroy, 0);
 
@@ -161,11 +161,8 @@ void _lpc_pool_alloc(void **dest, lpc_pool* pool, uint size ZEND_FILE_LINE_DC)
         return;
     }
 
-#ifdef LPC_DEBUG
-    if (LPCGP(debug_flags)&LPC_DBG_ALLOC)  /* Storage Allocation */
-        lpc_debug("%s alloc: 0x%08lx allocated 0x%04x bytes at %s:%d" TSRMLS_PC, 
-                   POOL_TYPE_STR(), storage, size ZEND_FILE_LINE_RELAY_CC);
-#endif
+    DEBUG3(ALLOC,"%s alloc: 0x%08lx allocated 0x%04x bytes at %s:%d", POOL_TYPE_STR(),
+           storage, size ZEND_FILE_LINE_RELAY_CC);
 
     pool->size += size;
     pool->count++;
@@ -187,10 +184,7 @@ void _lpc_pool_alloc_zval(void **dest, lpc_pool* pool ZEND_FILE_LINE_DC)
         zval *z;
         ALLOC_ZVAL(z);
         if (dest) *dest = z;
-#ifdef LPC_DEBUG
-        if (LPCGP(debug_flags)&LPC_DBG_ALLOC)  /* Storage Allocation */
-            lpc_debug("Exec alloc: 0x%08lx allocated zval" TSRMLS_PC, z);
-#endif
+        DEBUG1(ALLOC, "Exec alloc: 0x%08lx allocated zval", z);
     } else {
         return _lpc_pool_alloc(dest, pool, sizeof(zval) ZEND_FILE_LINE_RELAY_CC);
     }
@@ -205,10 +199,7 @@ void _lpc_pool_alloc_ht(void **dest, lpc_pool* pool ZEND_FILE_LINE_DC)
         HashTable *ht;
         ALLOC_HASHTABLE(ht);
         if (dest) *dest = ht;
-#ifdef LPC_DEBUG
-        if (LPCGP(debug_flags)&LPC_DBG_ALLOC)  /* Storage Allocation */
-            lpc_debug("Exec alloc: 0x%08lx allocated HashTable" TSRMLS_PC, ht);
-#endif
+        DEBUG1(ALLOC, "Exec alloc: 0x%08lx allocated HashTable", ht);
     } else {
         return _lpc_pool_alloc(dest, pool, sizeof(HashTable) ZEND_FILE_LINE_RELAY_CC);
     }
@@ -242,31 +233,22 @@ void _lpc_pool_nstrdup(const char **d, uint *dn,
             if (LPC_IS_SERIAL_INTERNED(s)) { /* this might be a dup from the pool */
                 *d = s;
                 *dn = 0;
-#ifdef LPC_DEBUG
-                if (LPCGP(debug_flags)&LPC_DBG_INTN)  /* Intern tracking */
-                    lpc_debug("strndup: dup of copy-out intern:%u at %s:%u" TSRMLS_PC, 
-                               LPC_SERIAL_INTERNED_ID(s) ZEND_FILE_LINE_RELAY_CC);
-#endif
+                DEBUG1(INTN, "strndup: dup of copy-out intern:%u at %s:%u", 
+                             LPC_SERIAL_INTERNED_ID(s) ZEND_FILE_LINE_RELAY_CC);
             } else { /* copy out of non-interned string */
                 ulong h =  zend_inline_hash_func(s, sn+1);
                 if (zend_hash_quick_find(&LPCGP(intern_hash), s, sn+1, h, &intern_d)==SUCCESS) {
                     *d = *(void**)intern_d; /*find returns a ptr to the previously stored intern */
-#ifdef LPC_DEBUG
-                    if (LPCGP(debug_flags)&LPC_DBG_INTN)  /* Intern tracking */
-                        lpc_debug("strndup: Rep copy-out of %08lx:\"%s\" to intern:%u at %s:%u" 
-                                  TSRMLS_PC, s, s, LPC_SERIAL_INTERNED_ID(*(void**)intern_d) 
-                                  ZEND_FILE_LINE_RELAY_CC);
-#endif
+                    DEBUG3(INTN, "strndup: Rep copy-out of %08lx:\"%s\" to intern:%u at %s:%u",
+                                 s, s, LPC_SERIAL_INTERNED_ID(*(void**)intern_d) 
+                                 ZEND_FILE_LINE_RELAY_CC);
                 } else {
                     *d = intern_d = LPC_SERIAL_INTERN(zend_hash_num_elements(&LPCGP(intern_hash)));
                     zend_hash_quick_add(&LPCGP(intern_hash), s, sn+1, h, 
                                         &intern_d, sizeof(void *), NULL);
-#ifdef LPC_DEBUG
-                    if (LPCGP(debug_flags)&LPC_DBG_INTN)  /* Intern tracking */
-                        lpc_debug("strndup: New copy-out of %08lx:\"%s\" to intern:%u at %s:%u" 
-                                  TSRMLS_PC, s, s, LPC_SERIAL_INTERNED_ID(intern_d) 
-                                  ZEND_FILE_LINE_RELAY_CC);
-#endif
+                    DEBUG3(INTN,"strndup: New copy-out of %08lx:\"%s\" to intern:%u at %s:%u", 
+                                s, s, LPC_SERIAL_INTERNED_ID(intern_d) 
+                                ZEND_FILE_LINE_RELAY_CC);
                 }
                 *dn = 0;
             }
@@ -282,13 +264,9 @@ void _lpc_pool_nstrdup(const char **d, uint *dn,
             *d = (dynamic) ? (const char *) estrndup_rel(p + sizeof(uint), len-1) :
                              (const char *) (p + sizeof(uint));
             *dn = len - 1;
-#ifdef LPC_DEBUG
-            if (LPCGP(debug_flags)&LPC_DBG_INTN)  /* Intern tracking */
-                lpc_debug("strndup:  %s of intern:%u to %08lx:\"%s\" at %s:%u" 
-                          TSRMLS_PC, dynamic ? "emalloc copy-in" : "Copy-in byref", 
-                          LPC_SERIAL_INTERNED_ID(s), *d, *d 
-                          ZEND_FILE_LINE_RELAY_CC);
-#endif
+            DEBUG4(INTN, "strndup:  %s of intern:%u to %08lx:\"%s\" at %s:%u",  
+                          (dynamic ? "emalloc copy-in" : "Copy-in byref"), 
+                          LPC_SERIAL_INTERNED_ID(s), *d, *d ZEND_FILE_LINE_RELAY_CC);
         }
     } else {
         *d  = NULL;
@@ -390,11 +368,7 @@ void _lpc_pool_tag_ptr(void **ptr, lpc_pool* pool ZEND_FILE_LINE_DC)
     * Handle obvious no-ops and errors
     */
     if (ptr == NULL) {
-#ifdef LPC_DEBUG
-        if (LPCGP(debug_flags)&LPC_DBG_ALLOC)  /* Storage Allocation */
-            lpc_debug("check: Null relocation ptr call at %s:%u" TSRMLS_PC, 
-                       ptr ZEND_FILE_LINE_RELAY_CC);
-#endif
+        DEBUG1(ALLOC, "check: Null relocation ptr call at %s:%u", ptr ZEND_FILE_LINE_RELAY_CC);
         return;
     }
 
@@ -413,18 +387,12 @@ void _lpc_pool_tag_ptr(void **ptr, lpc_pool* pool ZEND_FILE_LINE_DC)
         if (GET_BYTEOFF(*ptr,pool->storage) < pool->allocated) {
             ulong offset = GET_PTROFF(ptr,pool->storage);
             zend_hash_index_update(&pool->tags, offset, &dummy, sizeof(void *), NULL);
-#ifdef LPC_DEBUG
-            if (LPCGP(debug_flags)&LPC_DBG_RELC)  /* Relocation Address check */
-                lpc_debug("check: 0x%08lx (0x%08lx + 0x%04x) "
-                          "Inserting relocation addr to 0x%08lx call at %s:%u"
-                          TSRMLS_PC, ptr, pool->storage, offset,  *(void **)ptr ZEND_FILE_LINE_RELAY_CC);
-#endif
+            DEBUG4(RELC, "check: 0x%08lx (0x%08lx + 0x%04x) "
+                         "Inserting relocation addr to 0x%08lx call at %s:%u",
+                         ptr, pool->storage, offset,  *(void **)ptr ZEND_FILE_LINE_RELAY_CC);
         } else {
-#ifdef LPC_DEBUG
-            if (LPCGP(debug_flags)&LPC_DBG_RELO)  /* Relocation outside pool */
-                lpc_debug("check: 0x%08lx Relocation addr call to 0x%08lx  outside pool at %s:%u"  
-                          TSRMLS_PC, ptr, *(size_t *)ptr ZEND_FILE_LINE_RELAY_CC);
-#endif
+            DEBUG2(RELO, "check: 0x%08lx Relocation addr call to 0x%08lx  outside pool at %s:%u",  
+                         ptr, *(size_t *)ptr ZEND_FILE_LINE_RELAY_CC);
             return;
         }
     }
@@ -441,7 +409,14 @@ extern void  lpc_pool_storage(zend_uint arg1, zend_uint compressed_size,
 {ENTER(lpc_pool_storage)
     zend_uint storage_size;
     int       num_quanta;
-    TSRMLS_FETCH_GLOBAL_VEC()
+    FETCH_GLOBAL_VEC()
+#ifdef LPC_DEBUG
+    lpc_pool *pool = (lpc_pool *) &LPCG(serial_pool);  /* botch so DEBUGx macros work */
+#  ifdef ZTS
+    pool->tsrm_ls  = tsrm_ls;
+#  endif
+    pool->gv = gv;
+#endif
 
     if(compressed_size && opt_addr) {
         zend_uint record_size = arg1;
@@ -474,12 +449,14 @@ extern void  lpc_pool_storage(zend_uint arg1, zend_uint compressed_size,
         if (!gv->reuse_serial_buffer || !gv->pool_buffer) {
             gv->pool_buffer      = malloc(storage_size);
             gv->pool_buffer_size = storage_size;
-
+            DEBUG2(LOAD, "Pool storage allocated (size %u) at 0x%012x)", 
+                         gv->pool_buffer_size, gv->pool_buffer);
         } else if (storage_size > gv->pool_buffer_size) {
 
             gv->pool_buffer      = realloc(gv->pool_buffer, storage_size);
             gv->pool_buffer_size = storage_size;
-
+            DEBUG2(LOAD,"Pool storage re-allocated (size %u) at 0x%012x)", 
+                        gv->pool_buffer_size, gv->pool_buffer);
         }
 
         if (!gv->pool_buffer) {
@@ -544,22 +521,20 @@ extern lpc_pool* lpc_pool_create(lpc_pool_type_t type, void** arg1 TSRMLS_DC)
 {ENTER(lpc_pool_create)   
     char *s;
     void *dummy;
-    TSRMLS_FETCH_GLOBAL_VEC()
+    FETCH_GLOBAL_VEC()
 
     if (type == LPC_EXECPOOL) {
        /*
         * This just a simple wrapper around the emalloc storage allocator to unify the API for
         * serial and exec pools. 
         */
-        lpc_pool pool = {LPC_EXECPOOL,};     /* this is just a blank template */
+        lpc_pool pool_on_stack = {LPC_EXECPOOL,};     /* this is just a blank template */
+        lpc_pool *pool = &pool_on_stack;
 #if ZTS
-        pool.tsrm_ls  = tsrm_ls;
-        pool.gv       = ((zend_lpc_globals *)(*((void ***)tsrm_ls))[TSRM_UNSHUFFLE_RSRC_ID(lpc_globals_id)]);
+        pool->tsrm_ls  = tsrm_ls;
+        pool->gv       = (zend_lpc_globals *) &LPCG(enabled);  /* first element addr = GV addr */
 #endif 
-#ifdef LPC_DEBUG
-        if (LPCG(debug_flags)&LPC_DBG_LOAD)  /* Load/Unload Info */
-            lpc_debug("Exec pool created" TSRMLS_CC);
-#endif
+        DEBUG0(LOAD, "Exec pool created");
        /*
         * To enable strdups by reference, the interns vector is copied into emalloced memory.  This
         * is then freed as a single block as part of the exec pool DTOR.
@@ -569,20 +544,20 @@ extern lpc_pool* lpc_pool_create(lpc_pool_type_t type, void** arg1 TSRMLS_DC)
             zend_uint   *q  = (zend_uint *)(gv->interns[0]);
             zend_uint    total_size = q[0], cnt = q[1], off = 0, len = 0, i;
 
-            pool.intern_copy = emalloc(total_size - 2*sizeof(uint));
+            pool->intern_copy = emalloc(total_size - 2*sizeof(uint));
             q += 2;
-            memcpy(pool.intern_copy, q, total_size - 2*sizeof(uint));
+            memcpy(pool->intern_copy, q, total_size - 2*sizeof(uint));
 
             for (i=0; i < gv->intern_cnt; i++) {
                 memcpy(&len, ADD_BYTEOFF(q, off), sizeof(zend_uint));  /* not uint aligned */
-                p[i] = pool.intern_copy + off;
-                off += len + sizeof(zend_uint);;
+                p[i] = pool->intern_copy + off;
+                off += len + sizeof(zend_uint);
             }
         }
        /*
         * zend llists take a copy of the data element (the exec pool) and this is the one used
         */
-	    zend_llist_add_element(&gv->exec_pools, &pool);
+	    zend_llist_add_element(&gv->exec_pools, pool);
         return zend_llist_get_first(&gv->exec_pools);
 
     } else if (type == LPC_SERIALPOOL) {
@@ -596,13 +571,11 @@ extern lpc_pool* lpc_pool_create(lpc_pool_type_t type, void** arg1 TSRMLS_DC)
         pool->type    = LPC_SERIALPOOL;
 #if ZTS
         pool->tsrm_ls = tsrm_ls;
-        pool->gv      = ((zend_lpc_globals *)(*((void ***)tsrm_ls))[TSRM_UNSHUFFLE_RSRC_ID(lpc_globals_id)]);
+        pool->gv      = (zend_lpc_globals *) &LPCG(enabled);  /* first element addr = GV addr */
 
 #endif 
-#ifdef LPC_DEBUG
-        if (LPCG(debug_flags)&LPC_DBG_LOAD)  /* Load/Unload Info */
-            lpc_debug("Serial pool created for %s" TSRMLS_CC, gv->current_filename);
-#endif       
+        DEBUG3(LOAD, "Serial pool created for %s (size %u at 0x%012x)", 
+                     gv->current_filename, gv->pool_buffer_size, gv->pool_buffer);
        /*
         * Use the pool global variables to allocate the appropriate pool storage. 
         */
@@ -637,7 +610,7 @@ extern lpc_pool* lpc_pool_create(lpc_pool_type_t type, void** arg1 TSRMLS_DC)
         pool->type    = LPC_RO_SERIALPOOL;
     #if ZTS
         pool->tsrm_ls = tsrm_ls;
-        pool->gv      = ((zend_lpc_globals *)(*((void ***)tsrm_ls))[TSRM_UNSHUFFLE_RSRC_ID(lpc_globals_id)]);
+        pool->gv      = (zend_lpc_globals *) &LPCG(enabled);  /* first element addr = GV addr */
     #endif 
        /* 
         * Allocate pick up the pool buffer which was allocated / reused in lpc_prepare() and 
@@ -652,6 +625,9 @@ extern lpc_pool* lpc_pool_create(lpc_pool_type_t type, void** arg1 TSRMLS_DC)
             pool_uncompress(gv->pool_buffer, gv->pool_buffer_rec_size,
                             comp_buf, gv->pool_buffer_comp_size TSRMLS_CC);
         }
+
+        DEBUG3(LOAD, "Serial R/O pool created for %s (size %u at 0x%012x)", 
+                     gv->current_filename, gv->pool_buffer_size, gv->pool_buffer);
 
         pool->storage     = (void *) gv->pool_buffer;
         pool->allocated   = record_size;
@@ -675,11 +651,8 @@ extern lpc_pool* lpc_pool_create(lpc_pool_type_t type, void** arg1 TSRMLS_DC)
         
         relocate_pool(pool, 0);
 
-    #ifdef LPC_DEBUG
-        if (gv->debug_flags&LPC_DBG_LOAD)  /* Load/Unload Info */
-            lpc_debug("Shared pool (compressed %u -> %u uncompressed bytes) recreated" 
-                      TSRMLS_CC, gv->pool_buffer_comp_size, record_size); 
-    #endif
+        DEBUG2(LOAD, "Shared pool (compressed %u -> %u uncompressed bytes) recreated", 
+                     gv->pool_buffer_comp_size, record_size); 
 
         if (first_rec) {
             *first_rec = (void *) (gv->pool_buffer + ROUNDUP(sizeof(pool_storage_header)));
@@ -751,13 +724,10 @@ zend_uchar* lpc_pool_serialize(lpc_pool* pool, zend_uint* compressed_size,
 
         memmove(storage + offset, storage, size);   /* overlapped buffers so use memmove! */
         *compressed_size = pool_compress(storage, storage + offset, size  TSRMLS_CC);
-#ifdef LPC_DEBUG
-        if (LPCG(debug_flags)&LPC_DBG_LOAD)  /* Load/Unload Info */
-            lpc_debug("unload:  buffer %u bytes (%u + %u + %u compressed to %u bytes) unloaded"
-                      TSRMLS_CC, size, h.reloc_vec*sizeof(size_t),
-                      (h.intern_vec-h.reloc_vec)*sizeof(size_t),
-                      size-(h.intern_vec*sizeof(size_t)), *compressed_size);
-#endif
+        DEBUG5(LOAD, "unload:  buffer %u bytes (%u + %u + %u compressed to %u bytes) unloaded",
+                     size, h.reloc_vec*sizeof(size_t),
+                     (h.intern_vec-h.reloc_vec)*sizeof(size_t),
+                     size-(h.intern_vec*sizeof(size_t)), *compressed_size);
     }
     pool->storage = NULL;
     return (zend_uchar*) storage;
@@ -767,15 +737,13 @@ zend_uchar* lpc_pool_serialize(lpc_pool* pool, zend_uint* compressed_size,
 /* {{{ lpc_pool_destroy */
 void lpc_pool_destroy(lpc_pool *pool)
 {ENTER(lpc_pool_destroy)
-    zend_lpc_globals *gv = pool->gv;
+    FETCH_GLOBAL_VEC_POOL()
     TSRMLS_FETCH_FROM_POOL()
 
-#ifdef LPC_DEBUG
-    if (gv->debug_flags&LPC_DBG_LOAD)  /* Load/Unload Info */
-        lpc_debug("Destroy %s pool 0x%08lx (%u)" TSRMLS_PC, 
+    DEBUG3(LOAD, "Destroy %s pool 0x%08lx (%u)", 
                   POOL_TYPE_STR(), pool, (uint) pool->size);
-#endif
-   /* The pool can contain the following dynamic elements which need garbage collected on destruction:
+   /*
+    * The pool can contain the following dynamic elements which need garbage collected on destruction:
     *    The tags and intern_hash HashTables used in serial pools
     *    The interns pointer vector used in R/O serial pools
     * Once destroyed, the pool record is zeroed. 
@@ -789,12 +757,14 @@ void lpc_pool_destroy(lpc_pool *pool)
         gv->interns = NULL;
     }
 
-    if (!pool->tags.inconsistent && pool->tags.arBuckets) {
+    if (pool->tags.arBuckets) {
         zend_hash_destroy(&pool->tags);
+        pool->tags.arBuckets = NULL;
         }
 
-    if (!gv->intern_hash.inconsistent && gv->intern_hash.arBuckets) {
+    if (gv->intern_hash.arBuckets) {
         zend_hash_destroy(&gv->intern_hash);
+        gv->intern_hash.arBuckets = NULL;
         }
     /* free the pool storage if not in reuse mode */
     if (pool->storage && !gv->reuse_serial_buffer) {
@@ -860,11 +830,8 @@ static zend_uchar *make_pool_rbvec(lpc_pool *pool)
         if (*p < max_offset) {
             p++;
         } else {
-#ifdef LPC_DEBUG
-            if (LPCGP(debug_flags)&LPC_DBG_RELC)  /* Relocation address check */
-                lpc_debug("Relocation notice: external pointer %08lx at offset %08x in serial pool"
-                          TSRMLS_CC, *q, (uint) GET_BYTEOFF(q,pool->storage));
-#endif
+            DEBUG2(RELC, "Relocation notice: external pointer %08lx at offset %08x in serial pool",
+                         *q, (uint) GET_BYTEOFF(q,pool->storage));
         }
     }
 
@@ -946,39 +913,38 @@ static void missed_tag_check(lpc_pool *pool)
     zend_uint    max_offset   = max_offset_x * sizeof(size_t);
     zend_uint i, missed = 0, externs = 0;
 
-    if (!(LPCGP(debug_flags)&LPC_DBG_RELR)) {
-        return;
-    }
-    lpc_debug("=== Missed Report ====" TSRMLS_PC);
+    IF_DEBUGP(RELR) {
+        lpc_debug("=== Missed Report ====" TSRMLS_PC);
 
-    for (i=0; i<max_offset_x; i++) {
-        zend_uchar **ptr    = storage + i;
-        size_t       target = (size_t) *ptr;
-        zend_uint    target_offset = GET_BYTEOFF(target, storage);
+        for (i=0; i<max_offset_x; i++) {
+            zend_uchar **ptr    = storage + i;
+            size_t       target = (size_t) *ptr;
+            zend_uint    target_offset = GET_BYTEOFF(target, storage);
 
-        if (target_offset < max_offset) {
-            lpc_debug("checkR: 0x%08lx (0x%08lx + 0x%08x): potential reference to "
-                      "0x%08lx (0x%08lx + 0x%08x)" TSRMLS_PC,
-                      ptr, storage, i*sizeof(size_t),
-                      target, storage, target_offset);
-            missed++;
-       /*
-        * This is an empirical exclusion list. No apologies.  It might miss some but the 
-        * detections don't seem to be false-alarms on my system. 
-        */
-        } else if ( !LPC_IS_SERIAL_INTERNED(target) &&
-                    (target > 0x0000000001000000 && target < 0x00007ffffffff000) &&
-                     target & 0x00000000fffff000 &&
-                    (target < 000000000004000000 || target > 0x00007ff0000000000) ) {
-            lpc_debug("checkE: 0x%08lx (0x%08lx + 0x%08x): possible external reference to "
-                      "0x%08lx" TSRMLS_PC, ptr, storage, i*sizeof(size_t),
-                       target);
-            externs++;
+            if (target_offset < max_offset) {
+                lpc_debug("checkR: 0x%08lx (0x%08lx + 0x%08x): potential reference to "
+                          "0x%08lx (0x%08lx + 0x%08x)" TSRMLS_PC,
+                          ptr, storage, i*sizeof(size_t),
+                          target, storage, target_offset);
+                missed++;
+           /*
+            * This is an empirical exclusion list. No apologies.  It might miss some but the 
+            * detections don't seem to be false-alarms on my system. 
+            */
+            } else if ( !LPC_IS_SERIAL_INTERNED(target) &&
+                        (target > 0x0000000001000000 && target < 0x00007ffffffff000) &&
+                         target & 0x00000000fffff000 &&
+                        (target < 000000000004000000 || target > 0x00007ff0000000000) ) {
+                lpc_debug("checkE: 0x%08lx (0x%08lx + 0x%08x): possible external reference to "
+                          "0x%08lx" TSRMLS_PC, ptr, storage, i*sizeof(size_t),
+                           target);
+                externs++;
+            }
         }
-    }
-    if (missed || externs) {
-        lpc_debug("=== Missed Totals %d / %d listed ====" TSRMLS_PC, missed, externs);
-    }
+        if (missed || externs) {
+            lpc_debug("=== Missed Totals %d / %d listed ====" TSRMLS_PC, missed, externs);
+        }
+    } 
 #endif
 }
 /* }}} */
@@ -1018,7 +984,7 @@ static void *relocate_pool(lpc_pool *pool, zend_bool copy_out)
         }
         if (copy_out) {
             if ((unsigned) GET_PTROFF(*q, pool->storage) >= maxqval) {
-                lpc_debug("Relocation error: external pointer %08lx at offset %08lx in serial pool"
+                lpc_error("Relocation error: external pointer %08lx at offset %08lx in serial pool"
                           TSRMLS_CC, *q, GET_BYTEOFF(q, pool->storage));
             } else { 
                 *q -= (size_t) pool->storage;

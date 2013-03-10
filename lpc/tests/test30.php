@@ -1,7 +1,7 @@
 TEST Stupid null test
-<?php
+<.inc
 if (0) {
-	include("dderror.php");
+	include("dderror.inc");
 }
 ?>
 ===DONE===

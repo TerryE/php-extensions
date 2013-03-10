@@ -57,7 +57,7 @@ int lpc_module_init(int module_number TSRMLS_DC)
     REGISTER_LONG_CONSTANT("\000lpc_compile_file", (long)&lpc_compile_file, CONST_PERSISTENT | CONST_CS);
 
 #ifdef ZEND_ENGINE_2_4
-    lpc_interned_strings_init(TSRMLS_C);
+//    lpc_interned_strings_init(TSRMLS_C);
 #endif
 
     LPCG(initialized) = 1;
@@ -112,13 +112,12 @@ int lpc_request_init(TSRMLS_D)
     struct stat            *sb = sapi_get_stat(TSRMLS_C);
     size_t                  dir_length, basename_length;
     uint                    max_module_len;
-    TSRMLS_FETCH_GLOBAL_VEC()
+    FETCH_GLOBAL_VEC()
 
    /*
     * To enable phpinfo() and php -i to return meaning parameter listings for LPC, the "PER_DIR
     * scoped ini variables are fetched whether or not LPC is enabled.  
     */
-    gv->enabled          = 1;
     gv->max_file_size    = lpc_atol(INI_STR("lpc.max_file_size"),0);
     gv->fpstat           = INI_INT("lpc.stat_percentage");
     gv->clear_cookie     = INI_STR("lpc.clear_cookie");
@@ -158,14 +157,13 @@ int lpc_request_init(TSRMLS_D)
     rc->request_mtime      = sb->st_mtime;
     rc->request_filesize   = sb->st_size;
 
-#ifdef LPC_DEBUG
-    if (gv->debug_flags&LPC_DBG_LOG_OPCODES) 
+    IF_DEBUG(LOG_OPCODES) {
         LPCG(opcode_logger) = php_stream_open_wrapper("/tmp/opcodes.log", "a+", 0, NULL);
-#endif
+    }
    /* 
     * Generate the cache name and create the cache.  Disable caching if any probs.  
     */
-    if (gv->enabled && request_path && lpc_generate_cache_name(rc TSRMLS_CC) &&
+    if (request_path && lpc_generate_cache_name(rc TSRMLS_CC) &&
         (lpc_cache_create(&max_module_len TSRMLS_CC)==SUCCESS)) {
         return lpc_pool_init(max_module_len TSRMLS_CC);
     } else {
@@ -177,16 +175,17 @@ int lpc_request_init(TSRMLS_D)
 /* {{{ request shutdown */
 int lpc_request_shutdown(TSRMLS_D)
 {ENTER(lpc_request_shutdown)
-#ifdef LPC_DEBUG
-    if ((LPCG(debug_flags)&LPC_DBG_LOG_OPCODES) && LPCG(opcode_logger)) {
-        php_stream_close(LPCG(opcode_logger));
-        LPCG(opcode_logger) = NULL;
+
+    IF_DEBUG(LOG_OPCODES) {
+            if LPCG(opcode_logger) {
+            php_stream_close(LPCG(opcode_logger));
+            LPCG(opcode_logger) = NULL;
+        }
     }
-#endif
     lpc_pool_shutdown(TSRMLS_C);
     lpc_cache_destroy(TSRMLS_C);
 #ifdef ZEND_ENGINE_2_4
-    lpc_interned_strings_shutdown(TSRMLS_C);
+//    lpc_interned_strings_shutdown(TSRMLS_C);
 #endif
     lpc_dtor_request_context(TSRMLS_C);
     return 0;

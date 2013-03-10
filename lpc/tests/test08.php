@@ -1,6 +1,6 @@
 TEST @include to check error suppression
-<?php
-if (1 != @include("dd_missing.php")) {
+<.inc
+if (1 != @include("dd_missing.inc")) {
     echo "include error detected \n";
 }
 echo "hello word\n";

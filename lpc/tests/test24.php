@@ -1,6 +1,6 @@
 TEST one required class
-<?php
-require "dd1.php";
+<.inc
+require "dd1.inc";
 class X {
     static function US($y) {
         return $y == 0 ? "America" : "Canada";

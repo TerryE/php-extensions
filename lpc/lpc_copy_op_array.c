@@ -28,7 +28,7 @@
 #include "lpc_hashtable.h"
 #include "lpc_copy_function.h"
 #include "lpc_copy_class.h"
-#include "lpc_string.h"
+//#include "lpc_string.h"
 #include "ext/standard/php_var.h"
 
 /*
@@ -144,22 +144,16 @@ static void copy_zval_out(zval* dst, const zval* src, lpc_pool* pool)
         case IS_CONSTANT:
         case IS_STRING:
             if (Z_STRVAL_P(src)) {
-#ifdef LPC_DEBUG
-                if (LPCGP(debug_flags)&LPC_DBG_ZVAL)  /* Intern tracking */
-                    lpc_debug("ZVAL copy-out type %u:%u/%u %08lx" TSRMLS_PC,
-                              Z_TYPE_P((zval*)src), Z_ISREF_P((zval*)src),
-                              Z_REFCOUNT_P((zval*)src), Z_STRVAL_P((zval*)src));
-#endif
+                DEBUG4(ZVAL,"ZVAL copy-out type %u:%u/%u %08lx",
+                            Z_TYPE_P((zval*)src), Z_ISREF_P((zval*)src),
+                            Z_REFCOUNT_P((zval*)src), Z_STRVAL_P((zval*)src));
                 pool_nstrdup(Z_STRVAL_P(dst), Z_STRLEN_P(dst), Z_STRVAL_P(src), Z_STRLEN_P(src), 0);
             }
             break;
 
         case IS_ARRAY:
         case IS_CONSTANT_ARRAY:
-#ifdef LPC_DEBUG
-                if (LPCGP(debug_flags)&LPC_DBG_ZVAL)  /* Intern tracking */
-                    lpc_debug("ZVAL copy-out HASH %u" TSRMLS_PC, src->value.ht->nNumOfElements);
-#endif
+            DEBUG1(ZVAL,"ZVAL copy-out HASH %u", src->value.ht->nNumOfElements);
             pool_alloc_ht(Z_ARRVAL_P(dst));
             COPY_HT_P(value.ht, lpc_copy_zval_ptr, zval *, NULL, NULL);
             break;
@@ -190,23 +184,19 @@ static zend_always_inline void copy_zval_in(zval* dst, const zval* src, lpc_pool
         case IS_CONSTANT:
         case IS_STRING:
             if (Z_STRVAL_P(src)) {
-#ifdef LPC_DEBUG
-                if (LPCGP(debug_flags)&LPC_DBG_ZVAL)  /* Intern tracking */
-                    lpc_debug("ZVAL copy-in type %u:%u/%u %08lx" TSRMLS_PC,
-                              Z_TYPE_P((zval*)src), Z_ISREF_P((zval*)src),
-                              Z_REFCOUNT_P((zval*)src), Z_STRVAL_P((zval*)src));
-#endif
+                DEBUG4(ZVAL,"ZVAL copy-in type %u:%u/%u %08lx",
+                             Z_TYPE_P((zval*)src), Z_ISREF_P((zval*)src),
+                             Z_REFCOUNT_P((zval*)src), Z_STRVAL_P((zval*)src));
                 pool_nstrdup(Z_STRVAL_P(dst), Z_STRLEN_P(dst), Z_STRVAL_P(src), Z_STRLEN_P(src), 1);
             }
             break;
 
         case IS_ARRAY:
         case IS_CONSTANT_ARRAY:
-#ifdef LPC_DEBUG
-            if (LPCGP(debug_flags)&LPC_DBG_ZVAL)  /* Intern tracking */
-                lpc_debug("ZVAL copy-in HASH %u" TSRMLS_PC, src->value.ht->nNumOfElements);
-#endif
-            pool_alloc_ht(Z_ARRVAL_P(dst));
+            DEBUG1(ZVAL,"ZVAL copy-in HASH %u", src->value.ht->nNumOfElements);
+            pool_alloc_ht(dst->value.ht);
+/////// TODO:  check protection on copy-out and if 0 use _ex variant
+			zend_hash_init(dst->value.ht, src->value.ht->nNumOfElements, NULL, ZVAL_PTR_DTOR, 0);
             COPY_HT_P(value.ht, lpc_copy_zval_ptr, zval *, NULL, NULL);
             break;
 
@@ -243,13 +233,12 @@ static void copy_opcodes_out(zend_op_array *dst, zend_op_array *src, lpc_pool* p
          src_zo < src_zo_last; 
          src_zo++, dst_zo++) {
 
-#ifdef LPC_DEBUG
-    if (LPCGP(debug_flags)&LPC_DBG_LOG_OPCODES) 
-        php_stream_printf(LPCG(opcode_logger) TSRMLS_CC, "%u,%u,%u\n", src_zo->opcode,
-                          lpc_vm_decode[src_zo->op1.op_type], lpc_vm_decode[src_zo->op2.op_type]);
-#endif
-
-       if( src_zo->handler == lpc_vm_get_opcode_handler(src_zo)) {
+        IF_DEBUGP(LOG_OPCODES) {
+            php_stream_printf(LPCG(opcode_logger) TSRMLS_CC, "%u,%u,%u\n", src_zo->opcode,
+                              lpc_vm_decode[src_zo->op1.op_type], 
+                              lpc_vm_decode[src_zo->op2.op_type]);
+        }
+        if( src_zo->handler == lpc_vm_get_opcode_handler(src_zo)) {
             dst_zo->handler = NULL;
         }
 
@@ -431,8 +420,11 @@ TODO: Add processing of literals and interned strings for Zend 2.4
     if (src->static_variables) {
         pool_alloc_ht(dst->static_variables);
         LPCGP(copied_zvals) = LPC_COPIED_ZVALS_COUNTDOWN;
-        COPY_HT_P(static_variables, lpc_copy_zval_ptr, 
-                  zend_property_info *, NULL, NULL);
+        if (is_copy_in()) {
+		    zend_hash_init(dst->static_variables, src->static_variables->nNumOfElements, 
+                           NULL, ZVAL_PTR_DTOR, 0);
+        }
+        COPY_HT_P(static_variables, lpc_copy_zval_ptr, zend_property_info *, NULL, NULL);
     }
 
     dst->filename = is_copy_in() ? LPCG(current_filename) : NULL;

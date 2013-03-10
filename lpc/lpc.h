@@ -34,11 +34,39 @@
 # define LPC_DEBUG 1
 #endif
 
+# define LPC_DBG_ALLOC  (1<<0)  /* Storage Allocation */
+# define LPC_DBG_RELO   (1<<1)  /* Relocation outside pool */
+# define LPC_DBG_RELC   (1<<2)  /* Relocation Address check */
+# define LPC_DBG_RELR   (1<<3)  /* Missed relocation report */
+# define LPC_DBG_LOAD   (1<<4)  /* Load/Unload Info */
+# define LPC_DBG_ENTER  (1<<5)  /* Print out function enty audit */
+# define LPC_DBG_COUNTS (1<<6)  /* Print out function summary counts */
+# define LPC_DBG_FILES  (1<<7)  /* Print out any file requests */
+# define LPC_DBG_INTN   (1<<8)  /* Duplicate intern allocation */
+# define LPC_DBG_ZVAL   (1<<9)  /* ZVAL tracking */
+# define LPC_DBG_LOG_OPCODES (1<<10)  /* Opcode loggin */
+
 #ifdef LPC_DEBUG
 # define ENTER(s) int dummy_to_be_ignored = lpc_debug_enter(#s);
 extern int lpc_debug_enter(char *s);
-#else 
+#define IF_DEBUG(flg) if (LPCG(debug_flags) & LPC_DBG_##flg)
+#define IF_DEBUGP(flg) if (LPCGP(debug_flags) & LPC_DBG_##flg)
+#define DEBUG0(flg,fmt) IF_DEBUGP(flg) lpc_debug(fmt TSRMLS_PC)
+#define DEBUG1(flg,fmt,a1) IF_DEBUGP(flg) lpc_debug(fmt TSRMLS_PC, a1)
+#define DEBUG2(flg,fmt,a1,a2) IF_DEBUGP(flg) lpc_debug(fmt TSRMLS_PC,a1,a2)
+#define DEBUG3(flg,fmt,a1,a2,a3) IF_DEBUGP(flg) lpc_debug(fmt TSRMLS_PC,a1,a2,a3)
+#define DEBUG4(flg,fmt,a1,a2,a3,a4) IF_DEBUGP(flg) lpc_debug(fmt TSRMLS_PC,a1,a2,a3,a4)
+#define DEBUG5(flg,fmt,a1,a2,a3,a4,a5) IF_DEBUGP(flg) lpc_debug(fmt TSRMLS_PC,a1,a2,a3,a4,a5)
+#else
 # define ENTER(s) 
+#define IF_DEBUG(flg) if (0)
+#define IF_DEBUGP(flg) if (0)
+#define DEBUG0(flg,fmt)
+#define DEBUG1(flg,fmt,a1)
+#define DEBUG2(flg,fmt,a1,a2)
+#define DEBUG3(flg,fmt,a1,a2,a3)
+#define DEBUG4(flg,fmt,a1,a2,a3,a4)
+#define DEBUG5(flg,fmt,a1,a2,a3,a4,a5)
 #endif
 #define NOENTER(s) 
 
@@ -177,30 +205,20 @@ extern int lpc_reserved_offset;
 # define LPCG(v) TSRMG(lpc_globals_id, zend_lpc_globals *, v)
 # define LPCGP(v) (pool->gv->v)
 # define TSRMLS_FETCH_FROM_POOL() void ***tsrm_ls = TSRMLS_P;
-# define TSRMLS_FETCH_GLOBAL_VEC() zend_lpc_globals *gv = \
+# define FETCH_GLOBAL_VEC() zend_lpc_globals *gv = \
     ((zend_lpc_globals *)(*((void ***)tsrm_ls))[TSRM_UNSHUFFLE_RSRC_ID(lpc_globals_id)]);
+# define FETCH_GLOBAL_VEC_POOL() zend_lpc_globals *gv = pool->gv;
 #else
 # define TSRMLS_P
 # define TSRMLS_PC
 # define LPCG(v) (lpc_globals.v)
 # define LPCGP(v) (lpc_globals.v)
 # define TSRMLS_FETCH_FROM_POOL()
-# define TSRMLS_FETCH_GLOBAL_VEC() zend_lpc_globals *gv = &lpc_globals;
+# define FETCH_GLOBAL_VEC() zend_lpc_globals *gv = &lpc_globals;
+# define FETCH_GLOBAL_VEC_POOL() zend_lpc_globals *gv = &lpc_globals;
 #endif
 
 #define LPC_COPIED_ZVALS_COUNTDOWN  1000        
-
-# define LPC_DBG_ALLOC  (1<<0)  /* Storage Allocation */
-# define LPC_DBG_RELO   (1<<1)  /* Relocation outside pool */
-# define LPC_DBG_RELC   (1<<2)  /* Relocation Address check */
-# define LPC_DBG_RELR   (1<<3)  /* Missed relocation report */
-# define LPC_DBG_LOAD   (1<<4)  /* Load/Unload Info */
-# define LPC_DBG_ENTER  (1<<5)  /* Print out function enty audit */
-# define LPC_DBG_COUNTS (1<<6)  /* Print out function summary counts */
-# define LPC_DBG_FILES  (1<<7)  /* Print out any file requests */
-# define LPC_DBG_INTN   (1<<8)  /* Duplicate intern allocation */
-# define LPC_DBG_ZVAL   (1<<9)  /* ZVAL tracking */
-# define LPC_DBG_LOG_OPCODES (1<<10)  /* Opcode loggin */
 
 #define LPC_POOL_OVERFLOW 1
 
@@ -273,9 +291,12 @@ extern int lpc_reserved_offset;
 #define _LPC_UNUSED_CODE 3
 #define _LPC_CV_CODE     4
 extern const int lpc_vm_decode[];
+extern opcode_handler_t *lpc_old_opcode_handler_ptr;
 static zend_always_inline opcode_handler_t lpc_vm_get_opcode_handler(zend_op* op)
 {
-		return zend_opcode_handlers[op->opcode * 25 + lpc_vm_decode[op->op1.op_type] * 5 + lpc_vm_decode[op->op2.op_type]];
+		return zend_opcode_handlers[ (op->opcode*25) + 
+                                     (lpc_vm_decode[op->op1.op_type]*5) + 
+                                     lpc_vm_decode[op->op2.op_type] ];
 }
 /* }}} */
 

@@ -1,6 +1,6 @@
 TEST One local function, one class with one static and one public function
-<?php
-require "dd.php";
+<.inc
+require "dd.inc";
 function hw($x) {
     echo "hello world $x\n";
 }
